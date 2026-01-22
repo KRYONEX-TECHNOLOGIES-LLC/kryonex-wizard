@@ -1,0 +1,184 @@
+import React from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import LandingPage from "./pages/LandingPage.jsx";
+import LoginPage from "./pages/LoginPage.jsx";
+import WizardPage from "./pages/WizardPage.jsx";
+import DashboardPage from "./pages/DashboardPage.jsx";
+import CalendarPage from "./pages/CalendarPage.jsx";
+import BillingPage from "./pages/BillingPage.jsx";
+import AdminDashboardPage from "./pages/AdminDashboardPage.jsx";
+import AdminCallCenterPage from "./pages/AdminCallCenterPage.jsx";
+import AdminClientWizardPage from "./pages/AdminClientWizardPage.jsx";
+import SalesConsolePage from "./pages/SalesConsolePage.jsx";
+import TrackingSharePage from "./pages/TrackingSharePage.jsx";
+import TechTrackingPage from "./pages/TechTrackingPage.jsx";
+import AdminUsersPage from "./pages/AdminUsersPage.jsx";
+import AdminLogsPage from "./pages/AdminLogsPage.jsx";
+import AdminFinancialsPage from "./pages/AdminFinancialsPage.jsx";
+import AdminSellersPage from "./pages/AdminSellersPage.jsx";
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import RequireOnboarding from "./components/RequireOnboarding.jsx";
+import { supabaseReady } from "./lib/supabase";
+import RequireAdmin from "./components/RequireAdmin.jsx";
+import RequireRole from "./components/RequireRole.jsx";
+
+export default function App() {
+  if (!supabaseReady) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "grid",
+          placeItems: "center",
+          background: "#050505",
+          color: "#10b981",
+          padding: "2rem",
+          textAlign: "center",
+          letterSpacing: "0.12rem",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: "1.4rem", marginBottom: "0.6rem" }}>
+            SUPABASE KEYS REQUIRED
+          </div>
+          <div style={{ color: "#9ca3af", maxWidth: "520px" }}>
+            Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to
+            <span className="mono"> frontend/.env</span>, then restart Vite.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/wizard"
+        element={
+          <ProtectedRoute>
+            <WizardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <DashboardPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/billing"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <BillingPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/calendar"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <CalendarPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminDashboardPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/call-center"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminCallCenterPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/wizard/create"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminClientWizardPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/users"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminUsersPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/logs"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminLogsPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/financials"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminFinancialsPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/sellers"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminSellersPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/client-wizard"
+        element={<Navigate to="/admin/wizard/create" replace />}
+      />
+      <Route
+        path="/console/dialer"
+        element={
+          <ProtectedRoute>
+            <RequireRole roles={["seller", "admin"]} fallback="/dashboard">
+              <SalesConsolePage />
+            </RequireRole>
+          </ProtectedRoute>
+        }
+      />
+      <Route path="/track/:token" element={<TrackingSharePage />} />
+      <Route path="/tech/track/:token" element={<TechTrackingPage />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}

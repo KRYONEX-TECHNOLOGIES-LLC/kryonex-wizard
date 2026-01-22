@@ -1,0 +1,21 @@
+{
+  "name": "kryonex-wizard",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.5",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "morgan": "^1.10.0",
+    "stripe": "^17.3.1"
+  }
+}
