@@ -7,6 +7,7 @@ import { createClientDeployment, getAdminLeads } from "../lib/api";
 import { FEATURES, TIER_FEATURE_DEFAULTS, getTierOptions } from "../lib/billingConstants";
 import { AGENT_TONES, INDUSTRIES } from "../lib/wizardConstants";
 import TimeSelect from "../components/TimeSelect.jsx";
+import { normalizePhone } from "../lib/phone.js";
 
 const buildFeatureMap = (list, defaults = []) => {
   const map = {};
@@ -30,9 +31,10 @@ const cleanNumeric = (raw) => raw.replace(/[^0-9.]/g, "");
 
 const formatPhone = (value) => {
   const digits = value.replace(/\D/g, "");
-  const part1 = digits.slice(0, 3);
-  const part2 = digits.slice(3, 6);
-  const part3 = digits.slice(6, 10);
+  const cleaned = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  const part1 = cleaned.slice(0, 3);
+  const part2 = cleaned.slice(3, 6);
+  const part3 = cleaned.slice(6, 10);
   if (!part2) return part1;
   if (!part3) return `(${part1}) ${part2}`;
   return `(${part1}) ${part2}-${part3}`;
@@ -82,6 +84,7 @@ export default function AdminClientWizardPage() {
   const [error, setError] = React.useState("");
   const [submitted, setSubmitted] = React.useState(false);
   const [deploymentResult, setDeploymentResult] = React.useState(null);
+  const [referrerId, setReferrerId] = React.useState("");
 
   React.useEffect(() => {
     if (!leadId) return;
@@ -100,6 +103,7 @@ export default function AdminClientWizardPage() {
             industry: target.industry || "",
             phone: target.phone || "",
           }));
+          setReferrerId(target.owner_id || "");
         }
       })
       .catch(() => {});
@@ -128,6 +132,19 @@ export default function AdminClientWizardPage() {
   const handlePhoneChange = (field) => (event) => {
     const digits = event.target.value.replace(/\D/g, "");
     setForm((prev) => ({ ...prev, [field]: digits }));
+  };
+
+  const handlePhoneBlur = (field) => (event) => {
+    const normalized = normalizePhone(event.target.value);
+    if (normalized) {
+      setForm((prev) => ({ ...prev, [field]: normalized }));
+    }
+  };
+
+  const handleAreaCodeBlur = (event) => {
+    const digits = String(event.target.value || "").replace(/\D/g, "");
+    if (!digits) return;
+    setForm((prev) => ({ ...prev, areaCode: digits.slice(0, 3) }));
   };
 
   const handleChange = (field) => (event) => {
@@ -169,6 +186,7 @@ export default function AdminClientWizardPage() {
         tierId,
         features: selectedFeatures.map((feature) => feature.id),
         leadId,
+        referrerId: referrerId || undefined,
       });
       setDeploymentResult(response.data || null);
       setSubmitted(true);
@@ -384,6 +402,7 @@ export default function AdminClientWizardPage() {
                         className="input-field w-full"
                         value={form.areaCode}
                         onChange={handleChange("areaCode")}
+                        onBlur={handleAreaCodeBlur}
                       />
                     </label>
                   </div>
@@ -403,6 +422,7 @@ export default function AdminClientWizardPage() {
                         className="input-field w-full"
                         value={formatPhone(form.phone)}
                         onChange={handlePhoneChange("phone")}
+                        onBlur={handlePhoneBlur("phone")}
                       />
                     </label>
                   </div>
@@ -524,6 +544,7 @@ export default function AdminClientWizardPage() {
                             className="input-field w-full"
                             value={formatPhone(form.emergencyPhone)}
                             onChange={handlePhoneChange("emergencyPhone")}
+                            onBlur={handlePhoneBlur("emergencyPhone")}
                           />
                         </label>
                         <label className="space-y-2">
@@ -532,6 +553,7 @@ export default function AdminClientWizardPage() {
                             className="input-field w-full"
                             value={formatPhone(form.transferNumber)}
                             onChange={handlePhoneChange("transferNumber")}
+                            onBlur={handlePhoneBlur("transferNumber")}
                           />
                         </label>
                       </div>

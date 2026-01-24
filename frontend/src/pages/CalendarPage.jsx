@@ -1,41 +1,106 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import SideNav from "../components/SideNav.jsx";
 import TopMenu from "../components/TopMenu.jsx";
-import { createTrackingSession, sendSms } from "../lib/api";
+import {
+  createAppointment,
+  createTrackingSession,
+  deleteAppointment,
+  updateAppointment,
+} from "../lib/api";
 import { supabase } from "../lib/supabase";
+import { getSavedState, saveState } from "../lib/persistence.js";
+import { normalizePhone } from "../lib/phone.js";
 
 const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
 const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0);
 
 const pad = (value) => String(value).padStart(2, "0");
+const defaultCalendarFormState = {
+  customer_name: "",
+  customer_phone: "",
+  start_date: "",
+  start_time: "",
+  duration_minutes: "60",
+  location: "",
+  notes: "",
+  reminder_minutes: "15",
+  reminder_enabled: true,
+  eta_enabled: false,
+  eta_minutes: "10",
+  eta_link: "",
+  send_confirmation: false,
+};
+const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const formatLocalDateKey = (date) =>
+  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+const formatLocalTime = (date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+const PUBLIC_CAL_MONTH_KEY = "publicCalendar.currentMonth";
+const PUBLIC_CAL_SELECTED_KEY = "publicCalendar.selectedDate";
+const PUBLIC_CAL_FORM_KEY = "publicCalendar.form";
 
 export default function CalendarPage() {
   const navigate = useNavigate();
-  const [currentMonth, setCurrentMonth] = React.useState(new Date());
-  const [selectedDate, setSelectedDate] = React.useState(new Date());
+  const [searchParams] = useSearchParams();
+  const [currentMonth, setCurrentMonth] = React.useState(() => {
+    const stored = getSavedState(PUBLIC_CAL_MONTH_KEY);
+    return stored ? new Date(stored) : new Date();
+  });
+  const [selectedDate, setSelectedDate] = React.useState(() => {
+    const stored = getSavedState(PUBLIC_CAL_SELECTED_KEY);
+    if (stored) {
+      const [year, month, day] = String(stored).split("-").map(Number);
+      if (year && month && day) {
+        return new Date(year, month - 1, day);
+      }
+      return new Date(stored);
+    }
+    return new Date();
+  });
   const [appointments, setAppointments] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
-  const [form, setForm] = React.useState({
-    customer_name: "",
-    customer_phone: "",
-    start_date: "",
-    start_time: "",
-    duration_minutes: "60",
-    location: "",
-    notes: "",
-    reminder_minutes: "15",
-    reminder_enabled: true,
-    eta_enabled: false,
-    eta_minutes: "10",
-    eta_link: "",
-  });
+  const [form, setForm] = React.useState(
+    () => getSavedState(PUBLIC_CAL_FORM_KEY) || defaultCalendarFormState
+  );
   const [messageStatus, setMessageStatus] = React.useState("");
-  const [customMessage, setCustomMessage] = React.useState("");
-  const [etaLink, setEtaLink] = React.useState("");
-  const [etaMinutes, setEtaMinutes] = React.useState("20");
-  const [trackingUrl, setTrackingUrl] = React.useState("");
   const [trackingStatus, setTrackingStatus] = React.useState("");
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [viewAppointmentId, setViewAppointmentId] = React.useState(null);
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [editOpen, setEditOpen] = React.useState(false);
+  const [editForm, setEditForm] = React.useState(defaultCalendarFormState);
+  const [editStatus, setEditStatus] = React.useState("");
+  const [editAppointmentId, setEditAppointmentId] = React.useState(null);
+  const [deleteStatus, setDeleteStatus] = React.useState("");
+  const [manifestIndex, setManifestIndex] = React.useState(0);
+  const [isSeller, setIsSeller] = React.useState(false);
+  const [isAdmin, setIsAdmin] = React.useState(false);
+
+  const updateCurrentMonth = (updater) => {
+    setCurrentMonth((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      saveState(PUBLIC_CAL_MONTH_KEY, next.toISOString());
+      return next;
+    });
+  };
+
+  const persistSelectedDate = (value) => {
+    setSelectedDate(value);
+    saveState(PUBLIC_CAL_SELECTED_KEY, formatLocalDateKey(value));
+  };
+
+  const persistForm = (value) => {
+    setForm(value);
+    saveState(PUBLIC_CAL_FORM_KEY, value);
+  };
+
+  const mergeForm = (partial) => {
+    setForm((prev) => {
+      const next = { ...prev, ...partial };
+      saveState(PUBLIC_CAL_FORM_KEY, next);
+      return next;
+    });
+  };
 
   const loadAppointments = async (date) => {
     setLoading(true);
@@ -61,101 +126,155 @@ export default function CalendarPage() {
     loadAppointments(currentMonth);
   }, [currentMonth]);
 
+  React.useEffect(() => {
+    const dateParam = searchParams.get("date");
+    const appointmentId = searchParams.get("appointmentId");
+    if (dateParam) {
+      const [year, month, day] = dateParam.split("-").map(Number);
+      if (year && month && day) {
+        const nextDate = new Date(year, month - 1, day);
+        updateCurrentMonth(nextDate);
+        persistSelectedDate(nextDate);
+      }
+    }
+    if (appointmentId) {
+      setViewAppointmentId(appointmentId);
+      setDrawerOpen(true);
+    }
+  }, [searchParams]);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const loadRole = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user) return;
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (mounted && profile) {
+        setIsSeller(profile.role === "seller");
+        setIsAdmin(profile.role === "admin");
+      }
+    };
+    loadRole();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const handleCreate = async () => {
     setMessageStatus("");
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData?.session?.user;
-    if (!user) return;
     if (!form.customer_name || !form.start_date || !form.start_time) {
       setMessageStatus("Please fill customer name, date, and time.");
       return;
     }
-    const [year, month, day] = form.start_date.split("-").map(Number);
-    const [hour, minute] = form.start_time.split(":").map(Number);
-    const startTime = new Date(year, month - 1, day, hour, minute);
-    const durationMinutes = parseInt(form.duration_minutes || "60", 10);
-    const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
-
-    const { error } = await supabase.from("appointments").insert({
-      user_id: user.id,
-      customer_name: form.customer_name,
-      customer_phone: form.customer_phone || null,
-      start_time: startTime.toISOString(),
-      end_time: endTime.toISOString(),
-      location: form.location || null,
-      notes: form.notes || null,
-        reminder_minutes: parseInt(form.reminder_minutes || "0", 10),
+    try {
+      const response = await createAppointment({
+        customer_name: form.customer_name,
+        customer_phone: form.customer_phone || null,
+        start_date: form.start_date,
+        start_time: form.start_time,
+        duration_minutes: form.duration_minutes,
+        location: form.location || null,
+        notes: form.notes || null,
+        reminder_minutes: form.reminder_minutes,
         reminder_enabled: Boolean(form.reminder_enabled),
         eta_enabled: Boolean(form.eta_enabled),
-        eta_minutes: parseInt(form.eta_minutes || "10", 10),
+        eta_minutes: form.eta_minutes,
         eta_link: form.eta_link || null,
-      status: "booked",
-    });
-
-    if (error) {
-      setMessageStatus(error.message);
+      });
+      if (response?.data?.appointment?.id) {
+        setViewAppointmentId(response.data.appointment.id);
+      }
+    } catch (err) {
+      setMessageStatus(err.response?.data?.error || "Failed to create appointment.");
       return;
     }
-    setForm({
-      customer_name: "",
-      customer_phone: "",
-      start_date: "",
-      start_time: "",
-      duration_minutes: "60",
-      location: "",
-      notes: "",
-      reminder_minutes: "15",
-        reminder_enabled: true,
-        eta_enabled: false,
-        eta_minutes: "10",
-        eta_link: "",
-    });
+    persistForm(defaultCalendarFormState);
     await loadAppointments(currentMonth);
     setMessageStatus("Appointment locked.");
+    setCreateOpen(false);
+    setViewAppointmentId(null);
   };
 
-  const dayKey = (date) => date.toISOString().slice(0, 10);
-  const dayAppointments = appointments.filter(
-    (appt) => appt.start_time?.slice(0, 10) === dayKey(selectedDate)
-  );
+  const canConfirm =
+    Boolean(form.customer_name && form.start_date && form.start_time);
+
+  const dayKey = (date) => formatLocalDateKey(date);
+  const appointmentDateKey = (appt) =>
+    appt?.start_time ? formatLocalDateKey(new Date(appt.start_time)) : null;
+  const dayAppointments = React.useMemo(() => {
+    const key = dayKey(selectedDate);
+    return appointments.filter((appt) => appointmentDateKey(appt) === key);
+  }, [appointments, selectedDate]);
+
+  React.useEffect(() => {
+    if (!dayAppointments.length) {
+      setViewAppointmentId(null);
+      setManifestIndex(0);
+      return;
+    }
+    if (viewAppointmentId) {
+      const index = dayAppointments.findIndex(
+        (appt) => String(appt.id) === String(viewAppointmentId)
+      );
+      if (index >= 0) {
+        setManifestIndex(index);
+        return;
+      }
+    }
+    setViewAppointmentId(dayAppointments[0].id);
+    setManifestIndex(0);
+  }, [dayAppointments, viewAppointmentId]);
+
+  React.useEffect(() => {
+    if (!dayAppointments.length) return;
+    const active = dayAppointments[manifestIndex];
+    if (active?.id && String(active.id) !== String(viewAppointmentId)) {
+      setViewAppointmentId(active.id);
+    }
+  }, [manifestIndex, dayAppointments, viewAppointmentId]);
+
+  React.useEffect(() => {
+    if (!drawerOpen || !viewAppointmentId) return;
+    const handle = window.requestAnimationFrame(() => {
+      const target = document.getElementById(`manifest-${viewAppointmentId}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [drawerOpen, viewAppointmentId, dayAppointments]);
 
   const daysInView = () => {
     const start = startOfMonth(currentMonth);
     const end = endOfMonth(currentMonth);
-    const days = [];
-    for (let d = 1; d <= end.getDate(); d += 1) {
-      days.push(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d));
+    const cells = [];
+    const prefix = start.getDay();
+    for (let i = 0; i < prefix; i += 1) {
+      cells.push({ placeholder: true, key: `prefix-${i}` });
     }
-    return days;
+    for (let day = 1; day <= end.getDate(); day += 1) {
+      const date = new Date(
+        currentMonth.getFullYear(),
+        currentMonth.getMonth(),
+        day
+      );
+      cells.push({ date, key: date.toISOString(), placeholder: false });
+    }
+    const remainder = cells.length % 7;
+    const offset = remainder === 0 ? 0 : 7 - remainder;
+    for (let i = 0; i < offset; i += 1) {
+      cells.push({ placeholder: true, key: `suffix-${i}` });
+    }
+    return cells;
   };
 
   const countForDay = (date) =>
-    appointments.filter((appt) => appt.start_time?.slice(0, 10) === dayKey(date))
-      .length;
-
-  const handleSendSms = async (to, body) => {
-    if (!to) {
-      setMessageStatus("Customer phone required to send SMS.");
-      return;
-    }
-    try {
-      await sendSms({ to, body });
-      setMessageStatus("Message sent.");
-    } catch (err) {
-      setMessageStatus(err.response?.data?.error || "SMS failed.");
-    }
-  };
-
-  const buildEtaMessage = () => {
-    const minutes = String(etaMinutes || form.eta_minutes || "20").trim();
-    return `Kryonex update: Your tech is en route. ETA ${minutes} minutes.`;
-  };
-
-  const buildTrackingMessage = () => {
-    const link = String(etaLink || form.eta_link || "").trim();
-    if (!link) return "Kryonex update: Live tracking link pending.";
-    return `Kryonex update: Track your tech live here: ${link}`;
-  };
+    appointments.filter((appt) => appointmentDateKey(appt) === dayKey(date)).length;
 
   const handleCreateTracking = async () => {
     setTrackingStatus("");
@@ -166,12 +285,11 @@ export default function CalendarPage() {
     try {
       const response = await createTrackingSession({
         customerPhone: form.customer_phone,
-        etaMinutes: etaMinutes,
+        etaMinutes: form.eta_minutes,
       });
       const url = response.data?.tracking_url;
-      setTrackingUrl(url || "");
       if (url) {
-        setEtaLink(url);
+        mergeForm({ eta_link: url });
       }
       setTrackingStatus("Tracking link generated.");
     } catch (err) {
@@ -179,12 +297,116 @@ export default function CalendarPage() {
     }
   };
 
-  const toggleAppointment = async (id, updates) => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData?.session?.user;
-    if (!user) return;
-    await supabase.from("appointments").update(updates).eq("id", id);
-    await loadAppointments(currentMonth);
+  const openDrawerForDate = (date) => {
+    if (date) {
+      persistSelectedDate(date);
+      mergeForm({ start_date: dayKey(date) });
+    }
+    setDrawerOpen(true);
+  };
+
+  const openCreateModal = (date) => {
+    if (date) {
+      persistSelectedDate(date);
+      mergeForm({ start_date: dayKey(date) });
+    }
+    setMessageStatus("");
+    setTrackingStatus("");
+    setCreateOpen(true);
+  };
+
+  const openEditModal = (appt) => {
+    if (!appt) return;
+    const start = appt.start_time ? new Date(appt.start_time) : null;
+    setEditAppointmentId(appt.id);
+    setEditForm({
+      customer_name: appt.customer_name || "",
+      customer_phone: appt.customer_phone || "",
+      start_date: start ? formatLocalDateKey(start) : form.start_date,
+      start_time: start ? formatLocalTime(start) : form.start_time,
+      duration_minutes: String(appt.duration_minutes || form.duration_minutes || "60"),
+      location: appt.location || "",
+      notes: appt.notes || "",
+      reminder_minutes: String(appt.reminder_minutes ?? form.reminder_minutes ?? "15"),
+      reminder_enabled: Boolean(appt.reminder_enabled),
+      eta_enabled: Boolean(appt.eta_enabled),
+      eta_minutes: String(appt.eta_minutes ?? form.eta_minutes ?? "10"),
+      eta_link: appt.eta_link || "",
+      send_confirmation: Boolean(appt.send_confirmation),
+    });
+    setEditStatus("");
+    setDeleteStatus("");
+    setEditOpen(true);
+  };
+
+  const closeEditModal = () => {
+    setEditOpen(false);
+    setEditAppointmentId(null);
+    setEditStatus("");
+    setDeleteStatus("");
+  };
+
+  const handleEditSave = async () => {
+    if (!editAppointmentId) return;
+    setEditStatus("");
+    if (!editForm.customer_name || !editForm.start_date || !editForm.start_time) {
+      setEditStatus("Customer name, date, and time are required.");
+      return;
+    }
+    try {
+      await updateAppointment(editAppointmentId, {
+        customer_name: editForm.customer_name,
+        customer_phone: editForm.customer_phone || null,
+        start_date: editForm.start_date,
+        start_time: editForm.start_time,
+        duration_minutes: editForm.duration_minutes,
+        location: editForm.location || null,
+        notes: editForm.notes || null,
+        reminder_minutes: editForm.reminder_minutes,
+        reminder_enabled: Boolean(editForm.reminder_enabled),
+        eta_enabled: Boolean(editForm.eta_enabled),
+        eta_minutes: editForm.eta_minutes,
+        eta_link: editForm.eta_link || null,
+      });
+      let reloadMonth = currentMonth;
+      const [year, month, day] = editForm.start_date.split("-").map(Number);
+      if (year && month && day) {
+        const nextDate = new Date(year, month - 1, day);
+        persistSelectedDate(nextDate);
+        updateCurrentMonth(nextDate);
+        reloadMonth = nextDate;
+      }
+      await loadAppointments(reloadMonth);
+      closeEditModal();
+      setEditStatus("Appointment updated.");
+    } catch (err) {
+      setEditStatus(err.response?.data?.error || "Failed to update appointment.");
+    }
+  };
+
+  const handleDeleteAppointment = async (apptId) => {
+    if (!apptId) return;
+    const confirmed = window.confirm("Delete this appointment? This cannot be undone.");
+    if (!confirmed) return;
+    setDeleteStatus("");
+    try {
+      await deleteAppointment(apptId);
+      await loadAppointments(currentMonth);
+      setDeleteStatus("Appointment deleted.");
+      closeEditModal();
+    } catch (err) {
+      setDeleteStatus(err.response?.data?.error || "Failed to delete appointment.");
+    }
+  };
+
+  const handleManifestStep = (direction) => {
+    if (!dayAppointments.length) return;
+    setManifestIndex((prev) => {
+      const next = prev + direction;
+      if (next < 0) return 0;
+      if (next >= dayAppointments.length) return dayAppointments.length - 1;
+      return next;
+    });
   };
 
   const monthLabel = currentMonth.toLocaleString("default", {
@@ -193,7 +415,7 @@ export default function CalendarPage() {
   });
 
   return (
-    <div className="war-room">
+    <div className="war-room bg-black text-cyan-400 font-mono">
       <TopMenu />
       <div className="dashboard-layout">
         <SideNav
@@ -204,29 +426,33 @@ export default function CalendarPage() {
           tier="calendar"
           agentLive
           lastUpdated={new Date()}
-          isSeller
+          isSeller={isSeller}
+          isAdmin={isAdmin}
         />
 
-        <div className="war-room-shell">
+        <div className="war-room-shell w-full max-w-full px-4 sm:px-6 lg:px-8">
           <div className="calendar-header">
             <div>
               <div className="war-room-kicker">SCHEDULING CORE</div>
               <div className="war-room-title">Operations Calendar</div>
             </div>
             <div className="calendar-actions">
+              <button className="button-primary" onClick={() => openCreateModal(selectedDate)}>
+                New Appointment
+              </button>
               <button className="button-primary" onClick={() => navigate("/dashboard")}>
                 Back to Dashboard
               </button>
             </div>
           </div>
 
-          <div className="calendar-panel glass-panel">
+          <div className="calendar-panel glass-panel bg-gray-900/50 border border-cyan-500/30 backdrop-blur-md">
             <div className="calendar-top">
               <button
                 className="button-primary"
                 onClick={() =>
-                  setCurrentMonth(
-                    new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1)
+                  updateCurrentMonth(
+                    (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
                   )
                 }
               >
@@ -236,349 +462,560 @@ export default function CalendarPage() {
               <button
                 className="button-primary"
                 onClick={() =>
-                  setCurrentMonth(
-                    new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1)
+                  updateCurrentMonth(
+                    (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
                   )
                 }
               >
                 ▶
               </button>
             </div>
-              <div className="calendar-grid">
-              {daysInView().map((day) => {
-                const count = countForDay(day);
-                const selected = dayKey(day) === dayKey(selectedDate);
+            <div className="calendar-grid">
+              {weekDays.map((weekDay) => (
+                <div key={`header-${weekDay}`} className="calendar-weekday-header">
+                  {weekDay}
+                </div>
+              ))}
+              {daysInView().map((cell) => {
+                if (cell.placeholder) {
+                  return (
+                    <div
+                      key={cell.key}
+                      className="calendar-day placeholder"
+                      aria-hidden="true"
+                    />
+                  );
+                }
+                const dayDate = cell.date;
+                const count = countForDay(dayDate);
+                const selected = dayKey(dayDate) === dayKey(selectedDate);
                 const intensity =
                   count >= 4 ? "high" : count >= 2 ? "mid" : count > 0 ? "low" : "none";
                 return (
                   <button
-                    key={day.toISOString()}
-                    className={`calendar-day ${intensity} ${selected ? "active" : ""}`}
-                    onClick={() => setSelectedDate(day)}
+                    key={dayDate.toISOString()}
+                    className={`calendar-day ${intensity} ${
+                      selected ? "active" : ""
+                    }`}
+                    onClick={() => openDrawerForDate(dayDate)}
                   >
-                    <div>{pad(day.getDate())}</div>
+                    <div className="calendar-day-number">{pad(dayDate.getDate())}</div>
                     <span>{count} jobs</span>
                   </button>
                 );
               })}
             </div>
           </div>
+        </div>
+      </div>
 
-            <div className="glass-panel" style={{ marginTop: "1.5rem", padding: "1.5rem" }}>
-              <div className="war-room-kicker">Customer Messaging</div>
-              <div style={{ color: "#9ca3af", marginTop: "0.4rem" }}>
-                Send ETA or live tracking updates (optional).
-              </div>
-              <div style={{ marginTop: "1rem", display: "grid", gap: "0.8rem" }}>
-                <label style={{ display: "grid", gap: "0.4rem" }}>
-                  <span style={{ color: "#9ca3af" }}>ETA Minutes</span>
-                  <input
-                    className="input-field"
-                    value={etaMinutes}
-                    onChange={(event) => setEtaMinutes(event.target.value)}
-                    placeholder="20"
-                  />
-                </label>
-                <label style={{ display: "grid", gap: "0.4rem" }}>
-                  <span style={{ color: "#9ca3af" }}>Live Tracking Link</span>
-                  <input
-                    className="input-field"
-                    value={etaLink}
-                    onChange={(event) => setEtaLink(event.target.value)}
-                    placeholder="https://tracking.yourdomain.com/..."
-                  />
-                </label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.6rem" }}>
-                  <button className="button-primary" onClick={handleCreateTracking}>
-                    Generate Tracking Link
-                  </button>
-                  {trackingUrl ? (
-                    <button
-                      className="button-primary"
-                      onClick={() => window.open(trackingUrl, "_blank")}
-                    >
-                      Open Tracking Page
-                    </button>
-                  ) : null}
-                </div>
-                {trackingStatus ? (
-                  <div style={{ color: "#9ca3af" }}>{trackingStatus}</div>
-                ) : null}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.6rem" }}>
-                  <button
-                    className="button-primary"
-                    onClick={() =>
-                      handleSendSms(form.customer_phone, buildEtaMessage())
-                    }
-                  >
-                    Send ETA Text
-                  </button>
-                  <button
-                    className="button-primary"
-                    onClick={() =>
-                      handleSendSms(form.customer_phone, buildTrackingMessage())
-                    }
-                  >
-                    Send Live Tracking Text
-                  </button>
-                </div>
-              </div>
+      {drawerOpen ? (
+        <div
+          role="presentation"
+          onClick={() => setDrawerOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(3, 7, 18, 0.7)",
+            backdropFilter: "blur(6px)",
+            zIndex: 40,
+          }}
+        />
+      ) : null}
+      <div
+        className="calendar-drawer"
+        style={{
+          transform: drawerOpen ? "translateX(0)" : "translateX(105%)",
+        }}
+      >
+        <div className="calendar-manifest-header">
+          <div>
+            <div className="war-room-kicker">Manifest</div>
+            <div className="war-room-title" style={{ fontSize: "1.4rem" }}>
+              {selectedDate.toLocaleDateString(undefined, {
+                weekday: "long",
+                month: "short",
+                day: "2-digit",
+                year: "numeric",
+              })}
             </div>
-          <div className="command-grid" id="calendar">
-            <div className="deck-card glass-panel">
-              <div className="deck-title">New Appointment</div>
-              <label className="deck-label">Customer</label>
-              <input
-                className="glass-input"
-                value={form.customer_name}
-                onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
-                placeholder="Jane Smith"
-              />
-              <label className="deck-label">Phone</label>
-              <input
-                className="glass-input mono"
-                value={form.customer_phone}
-                onChange={(e) => setForm({ ...form, customer_phone: e.target.value })}
-                placeholder="+1 555 220 1399"
-              />
-              <label className="deck-label">Date</label>
-              <input
-                className="glass-input"
-                type="date"
-                value={form.start_date}
-                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
-              />
-              <label className="deck-label">Time</label>
-              <input
-                className="glass-input"
-                type="time"
-                value={form.start_time}
-                onChange={(e) => setForm({ ...form, start_time: e.target.value })}
-              />
-              <label className="deck-label">Duration</label>
-              <select
-                className="glass-input"
-                value={form.duration_minutes}
-                onChange={(e) => setForm({ ...form, duration_minutes: e.target.value })}
-              >
-                <option value="30">30 minutes</option>
-                <option value="60">60 minutes</option>
-                <option value="90">90 minutes</option>
-                <option value="120">120 minutes</option>
-              </select>
-              <label className="deck-label">Location</label>
-              <input
-                className="glass-input"
-                value={form.location}
-                onChange={(e) => setForm({ ...form, location: e.target.value })}
-                placeholder="123 Main St"
-              />
-              <label className="deck-label">Reminder</label>
-              <select
-                className="glass-input"
-                value={form.reminder_minutes}
-                onChange={(e) => setForm({ ...form, reminder_minutes: e.target.value })}
-              >
-                <option value="0">No reminder</option>
-                <option value="15">15 minutes before</option>
-                <option value="30">30 minutes before</option>
-                <option value="60">60 minutes before</option>
-              </select>
-              <label className="deck-label">Auto Reminder</label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={form.reminder_enabled}
-                  onChange={(e) =>
-                    setForm({ ...form, reminder_enabled: e.target.checked })
-                  }
-                />
-                <span className="toggle-slider" />
-                <span className="toggle-label">
-                  {form.reminder_enabled ? "Enabled" : "Disabled"}
-                </span>
-              </label>
-              <label className="deck-label">ETA Tracking</label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={form.eta_enabled}
-                  onChange={(e) =>
-                    setForm({ ...form, eta_enabled: e.target.checked })
-                  }
-                />
-                <span className="toggle-slider" />
-                <span className="toggle-label">
-                  {form.eta_enabled ? "Enabled" : "Disabled"}
-                </span>
-              </label>
-              <label className="deck-label">ETA Minutes</label>
-              <select
-                className="glass-input"
-                value={form.eta_minutes}
-                onChange={(e) => setForm({ ...form, eta_minutes: e.target.value })}
-              >
-                <option value="5">5 minutes</option>
-                <option value="10">10 minutes</option>
-                <option value="15">15 minutes</option>
-              </select>
-              <label className="deck-label">ETA Link</label>
-              <input
-                className="glass-input"
-                value={form.eta_link}
-                onChange={(e) => setForm({ ...form, eta_link: e.target.value })}
-                placeholder="https://maps.google.com/?q=..."
-              />
-              <label className="deck-label">Notes</label>
-              <textarea
-                className="glass-input"
-                rows="3"
-                value={form.notes}
-                onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                placeholder="Special instructions..."
-              />
-              <button className="glow-button deck-action" onClick={handleCreate}>
-                Lock Appointment
-              </button>
-              {messageStatus ? (
-                <div className="deck-status">{messageStatus}</div>
-              ) : null}
+            <div className="calendar-manifest-badge">
+              {dayAppointments.length} Jobs Scheduled
             </div>
+          </div>
+          <button className="button-primary" onClick={() => setDrawerOpen(false)}>
+            Close
+          </button>
+        </div>
 
-            <div className="deck-card glass-panel">
-              <div className="deck-title">
-                Schedule · {selectedDate.toDateString()}
+        <div className="calendar-manifest-scroll">
+          {dayAppointments.length ? (
+            <>
+              <div className="calendar-manifest-nav">
+                <button
+                  className="manifest-nav-button"
+                  onClick={() => handleManifestStep(-1)}
+                  disabled={manifestIndex === 0}
+                >
+                  ◀
+                </button>
+                <div className="manifest-nav-meta">
+                  <div className="manifest-nav-label">Manifest Index</div>
+                  <div className="manifest-nav-count">
+                    {manifestIndex + 1} / {dayAppointments.length}
+                  </div>
+                </div>
+                <button
+                  className="manifest-nav-button"
+                  onClick={() => handleManifestStep(1)}
+                  disabled={manifestIndex >= dayAppointments.length - 1}
+                >
+                  ▶
+                </button>
               </div>
-              {loading ? (
-                <div className="blackbox-empty">Loading schedule...</div>
-              ) : dayAppointments.length ? (
-                dayAppointments.map((appt) => (
-                  <div key={appt.id} className="blackbox-item">
-                    <div className="blackbox-head">
-                      <div>{appt.customer_name}</div>
-                      <span className="mono text-neon-cyan">
-                        {new Date(appt.start_time).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
+              {dayAppointments[manifestIndex] ? (() => {
+                const appt = dayAppointments[manifestIndex];
+                const timeLabel = appt.start_time
+                  ? new Date(appt.start_time).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "--";
+                return (
+                  <div
+                    key={appt.id}
+                    id={`manifest-${appt.id}`}
+                    className="calendar-manifest-card manifest-focus-card"
+                  >
+                    <div className="calendar-manifest-meta">
+                      <span className="badge">
+                        {(appt.status || "booked").toString().toUpperCase()}
                       </span>
+                      <span className="calendar-manifest-time">{timeLabel}</span>
                     </div>
-                    <div className="blackbox-body">{appt.location || "No location"}</div>
-                    <div className="blackbox-meta">
-                      Reminder: {appt.reminder_minutes || 0} min
-                    </div>
-                    <div className="calendar-cta">
+                    <h3>
+                      {appt.customer_name || "Unknown"}{" "}
+                      {appt.notes ? `(${appt.notes})` : ""}
+                    </h3>
+                    <p>{appt.location || "Location TBD"}</p>
+                    <div className="calendar-manifest-actions">
+                      {appt.customer_phone ? (
+                        <a
+                          className="action-button"
+                          href={`tel:${appt.customer_phone}`}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          📞 Call
+                        </a>
+                      ) : (
+                        <span className="action-button muted">📞 Call</span>
+                      )}
                       <button
-                        className="button-primary"
-                        onClick={() =>
-                          handleSendSms(
-                            appt.customer_phone,
-                            `Reminder: ${appt.customer_name}, your appointment is scheduled for ${new Date(
-                              appt.start_time
-                            ).toLocaleString()}.`
-                          )
-                        }
+                        className="action-button"
+                        type="button"
+                        onClick={() => openEditModal(appt)}
                       >
-                        Send Reminder Now
+                        ✏️ Edit
                       </button>
                       <button
-                        className="button-primary"
-                        onClick={() =>
-                          handleSendSms(
-                            appt.customer_phone,
-                            `We are running about 10 minutes late for your appointment.`
-                          )
-                        }
+                        className="action-button danger"
+                        type="button"
+                        onClick={() => handleDeleteAppointment(appt.id)}
                       >
-                        Running Late
-                      </button>
-                      <button
-                        className="button-primary"
-                        onClick={() =>
-                          handleSendSms(
-                            appt.customer_phone,
-                            `We need to reschedule your appointment. Reply with a time that works for you.`
-                          )
-                        }
-                      >
-                        Reschedule
-                      </button>
-                      <button
-                        className="button-primary"
-                        onClick={() =>
-                          toggleAppointment(appt.id, {
-                            reminder_enabled: !appt.reminder_enabled,
-                          })
-                        }
-                      >
-                        Reminder {appt.reminder_enabled ? "ON" : "OFF"}
-                      </button>
-                      <button
-                        className="button-primary"
-                        onClick={() =>
-                          toggleAppointment(appt.id, {
-                            eta_enabled: !appt.eta_enabled,
-                          })
-                        }
-                      >
-                        ETA {appt.eta_enabled ? "ON" : "OFF"}
+                        🗑 Delete
                       </button>
                     </div>
                   </div>
-                ))
-              ) : (
-                <div className="blackbox-empty">No appointments for this day.</div>
-              )}
+                );
+              })() : null}
+            </>
+          ) : (
+            <div className="calendar-manifest-empty">
+              No jobs scheduled for this day yet.
+            </div>
+          )}
+        </div>
+
+        <div className="calendar-manifest-footer">
+          <button
+            className="glow-button deck-action"
+            onClick={() => openCreateModal(selectedDate)}
+          >
+            + Add New Job to {selectedDate.toLocaleDateString(undefined, { month: "short", day: "2-digit" })}
+          </button>
+        </div>
+      </div>
+
+      {createOpen ? (
+        <div className="glass-modal" onClick={() => setCreateOpen(false)}>
+          <div
+            className="glass-modal-card calendar-modal-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="calendar-modal-header">
+              <div>
+                <div className="war-room-kicker">Configure New Deployment</div>
+                <div className="war-room-title" style={{ fontSize: "1.6rem" }}>
+                  New Appointment
+                </div>
+              </div>
+              <button className="button-primary" onClick={() => setCreateOpen(false)}>
+                Close
+              </button>
             </div>
 
-            <div className="deck-card glass-panel">
-              <div className="deck-title">Customer Updates</div>
-              <label className="deck-label">Custom SMS</label>
-              <textarea
-                className="glass-input"
-                rows="4"
-                value={customMessage}
-                onChange={(e) => setCustomMessage(e.target.value)}
-                placeholder="Write a custom update to all booked customers..."
-              />
-              <label className="deck-label">GPS / ETA Link</label>
-              <input
-                className="glass-input"
-                value={etaLink}
-                onChange={(e) => setEtaLink(e.target.value)}
-                placeholder="https://maps.google.com/?q=..."
-              />
-              <div className="calendar-cta">
-                <button
-                  className="glow-button"
-                  onClick={() => {
-                    const target = dayAppointments[0]?.customer_phone;
-                    handleSendSms(target, customMessage || "We are on the way.");
+            <div className="calendar-modal-grid">
+              <div className="calendar-modal-section">
+                <div className="deck-title">Customer Intel</div>
+                <label className="deck-label">Name</label>
+                <input
+                  className="glass-input"
+                  value={form.customer_name}
+                  onChange={(e) => mergeForm({ customer_name: e.target.value })}
+                  placeholder="Jane Smith"
+                />
+                <label className="deck-label">Phone</label>
+                <input
+                  className="glass-input mono"
+                  value={form.customer_phone}
+                  onChange={(e) => mergeForm({ customer_phone: e.target.value })}
+                  onBlur={(e) => {
+                    const normalized = normalizePhone(e.target.value);
+                    if (normalized) {
+                      mergeForm({ customer_phone: normalized });
+                    }
                   }}
+                  placeholder="+1 555 220 1399"
+                />
+                <label className="deck-label">Address</label>
+                <input
+                  className="glass-input"
+                  value={form.location}
+                  onChange={(e) => mergeForm({ location: e.target.value })}
+                  placeholder="123 Service Rd"
+                />
+                <label className="deck-label">Date</label>
+                <input
+                  className="glass-input"
+                  type="date"
+                  value={form.start_date}
+                  onChange={(e) => mergeForm({ start_date: e.target.value })}
+                />
+                <label className="deck-label">Time Window</label>
+                <input
+                  className="glass-input"
+                  type="time"
+                  value={form.start_time}
+                  onChange={(e) => mergeForm({ start_time: e.target.value })}
+                />
+                <label className="deck-label">Duration</label>
+                <select
+                  className="glass-input"
+                  value={form.duration_minutes}
+                  onChange={(e) => mergeForm({ duration_minutes: e.target.value })}
                 >
-                  Send Custom Update
-                </button>
-                <button
-                  className="button-primary"
-                  onClick={() => {
-                    const target = dayAppointments[0]?.customer_phone;
-                    handleSendSms(
-                      target,
-                      `Your technician is 10 minutes away. Track here: ${etaLink}`
-                    );
-                  }}
-                >
-                  Send ETA
-                </button>
+                  <option value="30">30 minutes</option>
+                  <option value="60">60 minutes</option>
+                  <option value="90">90 minutes</option>
+                  <option value="120">120 minutes</option>
+                </select>
+                <label className="deck-label">Notes</label>
+                <textarea
+                  className="glass-input"
+                  rows="3"
+                  value={form.notes}
+                  onChange={(e) => mergeForm({ notes: e.target.value })}
+                  placeholder="Special instructions..."
+                />
               </div>
-              <div className="blackbox-meta">
-                GPS messages use the first appointment of the day. Add phone numbers
-                to enable SMS.
+
+              <div className="calendar-modal-section">
+                <div className="deck-title">Mission Control</div>
+                <div className="calendar-modal-tabs">
+                  <div className="calendar-tab">
+                    <div className="deck-title">Automation</div>
+                    <label className="toggle" style={{ display: "flex", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={form.send_confirmation}
+                        onChange={(e) => mergeForm({ send_confirmation: e.target.checked })}
+                      />
+                      <span className="toggle-slider" />
+                      <span className="toggle-label">
+                        Send Immediate Booking Confirmation
+                      </span>
+                    </label>
+                    <label className="deck-label">Pre-Arrival Reminder</label>
+                    <select
+                      className="glass-input"
+                      value={form.reminder_minutes}
+                      onChange={(e) => mergeForm({ reminder_minutes: e.target.value })}
+                    >
+                      <option value="0">No reminder</option>
+                      <option value="15">15 minutes before</option>
+                      <option value="60">1 hour before</option>
+                    </select>
+                    <div className="deck-status">
+                      System will text customer automatically.
+                    </div>
+                  </div>
+                  <div className="calendar-tab">
+                    <div className="deck-title">Tracking (Elite)</div>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={form.eta_enabled}
+                        onChange={(e) => mergeForm({ eta_enabled: e.target.checked })}
+                      />
+                      <span className="toggle-slider" />
+                      <span className="toggle-label">Enable Live GPS Link</span>
+                    </label>
+                    <label className="deck-label">ETA Minutes</label>
+                    <select
+                      className="glass-input"
+                      value={form.eta_minutes}
+                      onChange={(e) => mergeForm({ eta_minutes: e.target.value })}
+                    >
+                      <option value="5">5 minutes</option>
+                      <option value="10">10 minutes</option>
+                      <option value="15">15 minutes</option>
+                    </select>
+                    <label className="deck-label">Tracking URL</label>
+                    <input
+                      className="glass-input"
+                      value={form.eta_link}
+                      onChange={(e) => mergeForm({ eta_link: e.target.value })}
+                      placeholder="https://maps.google.com/?q=..."
+                    />
+                    <button className="button-primary" onClick={handleCreateTracking}>
+                      Generate Tracking URL
+                    </button>
+                    {trackingStatus ? (
+                      <div className="deck-status">{trackingStatus}</div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
+            </div>
+
+            {messageStatus ? <div className="deck-status">{messageStatus}</div> : null}
+            {!canConfirm && !messageStatus ? (
+              <div className="deck-status">
+                Complete customer name, date, and time to confirm.
+              </div>
+            ) : null}
+            <div className="calendar-modal-footer">
+              <button className="button-primary muted" onClick={() => setCreateOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="glow-button deck-action"
+                onClick={handleCreate}
+                disabled={!canConfirm}
+              >
+                Confirm & Book
+              </button>
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
+
+      {editOpen ? (
+        <div className="glass-modal" onClick={closeEditModal}>
+          <div
+            className="glass-modal-card calendar-modal-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="calendar-modal-header">
+              <div>
+                <div className="war-room-kicker">Update Manifest</div>
+                <div className="war-room-title" style={{ fontSize: "1.6rem" }}>
+                  Edit Appointment
+                </div>
+              </div>
+              <button className="button-primary" onClick={closeEditModal}>
+                Close
+              </button>
+            </div>
+
+            <div className="calendar-modal-grid">
+              <div className="calendar-modal-section">
+                <div className="deck-title">Customer Intel</div>
+                <label className="deck-label">Name</label>
+                <input
+                  className="glass-input"
+                  value={editForm.customer_name}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, customer_name: e.target.value }))
+                  }
+                  placeholder="Jane Smith"
+                />
+                <label className="deck-label">Phone</label>
+                <input
+                  className="glass-input mono"
+                  value={editForm.customer_phone}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, customer_phone: e.target.value }))
+                  }
+                  onBlur={(e) => {
+                    const normalized = normalizePhone(e.target.value);
+                    if (normalized) {
+                      setEditForm((prev) => ({ ...prev, customer_phone: normalized }));
+                    }
+                  }}
+                  placeholder="+1 555 220 1399"
+                />
+                <label className="deck-label">Address</label>
+                <input
+                  className="glass-input"
+                  value={editForm.location}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, location: e.target.value }))
+                  }
+                  placeholder="123 Service Rd"
+                />
+                <label className="deck-label">Date</label>
+                <input
+                  className="glass-input"
+                  type="date"
+                  value={editForm.start_date}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, start_date: e.target.value }))
+                  }
+                />
+                <label className="deck-label">Time Window</label>
+                <input
+                  className="glass-input"
+                  type="time"
+                  value={editForm.start_time}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, start_time: e.target.value }))
+                  }
+                />
+                <label className="deck-label">Duration</label>
+                <select
+                  className="glass-input"
+                  value={editForm.duration_minutes}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({
+                      ...prev,
+                      duration_minutes: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="30">30 minutes</option>
+                  <option value="60">60 minutes</option>
+                  <option value="90">90 minutes</option>
+                  <option value="120">120 minutes</option>
+                </select>
+                <label className="deck-label">Notes</label>
+                <textarea
+                  className="glass-input"
+                  rows="3"
+                  value={editForm.notes}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, notes: e.target.value }))
+                  }
+                  placeholder="Special instructions..."
+                />
+              </div>
+
+              <div className="calendar-modal-section">
+                <div className="deck-title">Mission Control</div>
+                <div className="calendar-modal-tabs">
+                  <div className="calendar-tab">
+                    <div className="deck-title">Automation</div>
+                    <label className="toggle" style={{ display: "flex", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={editForm.reminder_enabled}
+                        onChange={(e) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            reminder_enabled: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span className="toggle-slider" />
+                      <span className="toggle-label">Send Reminder</span>
+                    </label>
+                    <label className="deck-label">Pre-Arrival Reminder</label>
+                    <select
+                      className="glass-input"
+                      value={editForm.reminder_minutes}
+                      onChange={(e) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          reminder_minutes: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="0">No reminder</option>
+                      <option value="15">15 minutes before</option>
+                      <option value="60">1 hour before</option>
+                    </select>
+                    <div className="deck-status">
+                      Adjust reminder timing or disable if needed.
+                    </div>
+                  </div>
+                  <div className="calendar-tab">
+                    <div className="deck-title">Tracking (Elite)</div>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={editForm.eta_enabled}
+                        onChange={(e) =>
+                          setEditForm((prev) => ({
+                            ...prev,
+                            eta_enabled: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span className="toggle-slider" />
+                      <span className="toggle-label">Enable Live GPS Link</span>
+                    </label>
+                    <label className="deck-label">ETA Minutes</label>
+                    <select
+                      className="glass-input"
+                      value={editForm.eta_minutes}
+                      onChange={(e) =>
+                        setEditForm((prev) => ({ ...prev, eta_minutes: e.target.value }))
+                      }
+                    >
+                      <option value="5">5 minutes</option>
+                      <option value="10">10 minutes</option>
+                      <option value="15">15 minutes</option>
+                    </select>
+                    <label className="deck-label">Tracking URL</label>
+                    <input
+                      className="glass-input"
+                      value={editForm.eta_link}
+                      onChange={(e) =>
+                        setEditForm((prev) => ({ ...prev, eta_link: e.target.value }))
+                      }
+                      placeholder="https://maps.google.com/?q=..."
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {editStatus ? <div className="deck-status">{editStatus}</div> : null}
+            {deleteStatus ? <div className="deck-status">{deleteStatus}</div> : null}
+            <div className="calendar-modal-footer">
+              <button className="button-primary muted" onClick={closeEditModal}>
+                Cancel
+              </button>
+              <button className="button-primary danger" onClick={() => handleDeleteAppointment(editAppointmentId)}>
+                Delete
+              </button>
+              <button className="glow-button deck-action" onClick={handleEditSave}>
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

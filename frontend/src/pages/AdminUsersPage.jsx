@@ -4,8 +4,9 @@ import { Settings, UserCheck, CreditCard } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
+import { getSavedState, saveState } from "../lib/persistence.js";
 
-const users = [
+const defaultUsers = [
   {
     id: "usr_001",
     business: "Apex Heating",
@@ -39,6 +40,30 @@ const statusDot = {
 
 export default function AdminUsersPage() {
   const navigate = useNavigate();
+  const storedUsers = getSavedState("fleet.users");
+  const [fleetUsers, setFleetUsers] = React.useState(() => storedUsers || defaultUsers);
+  const persistUsers = (next) => {
+    setFleetUsers(next);
+    saveState("fleet.users", next);
+  };
+
+  const handleAddUser = () => {
+    const business = window.prompt("Enter new business name (HVAC/Plumbing only)");
+    const email = window.prompt("Enter contact email");
+    if (!business || !email) return;
+    const next = [
+      ...fleetUsers,
+      {
+        id: `usr_${Date.now()}`,
+        business,
+        email,
+        plan: "CORE",
+        status: "active",
+        usage: 0,
+      },
+    ];
+    persistUsers(next);
+  };
 
   return (
     <div className="min-h-screen w-full bg-void-black text-white relative overflow-hidden font-sans">
@@ -69,6 +94,13 @@ export default function AdminUsersPage() {
             <p className="mt-1 text-white/60">
               Live roster of every deployment across the Kryonex fleet.
             </p>
+            <button
+              className="glow-button mt-4 w-max"
+              onClick={handleAddUser}
+              type="button"
+            >
+              Add User
+            </button>
           </motion.div>
 
           <motion.div
@@ -86,7 +118,7 @@ export default function AdminUsersPage() {
               <div>Actions</div>
             </div>
             <div className="mt-3 space-y-2">
-              {users.map((user) => (
+              {fleetUsers.map((user) => (
                 <div
                   key={user.id}
                   className="grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 hover:border-neon-cyan/40 transition"

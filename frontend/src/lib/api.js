@@ -15,7 +15,7 @@ api.interceptors.request.use(async (config) => {
 });
 
 export const deployAgent = (data) => api.post("/deploy-agent", data);
-export const getStats = () => api.get("/dashboard-stats");
+export const getStats = () => api.get("/api/dashboard/stats");
 export const getLeads = () => api.get("/leads");
 export const getAdminLeads = () => api.get("/admin/leads");
 export const updateLeadStatus = (leadId, status) =>
@@ -43,6 +43,11 @@ export const acceptConsent = () => api.post("/consent");
 export const getUsageStatus = () => api.get("/usage/status");
 export const sendSms = (data) => api.post("/send-sms", data);
 export const createTrackingSession = (data) => api.post("/tracking/create", data);
+export const createAppointment = (data) => api.post("/appointments", data);
+export const updateAppointment = (appointmentId, data) =>
+  api.put(`/appointments/${appointmentId}`, data);
+export const deleteAppointment = (appointmentId) =>
+  api.delete(`/appointments/${appointmentId}`);
 export const getTrackingSession = (token) =>
   api.get(`/tracking/session/${token}`);
 export const getTrackingPoints = (token) =>
@@ -52,6 +57,13 @@ export const postTrackingUpdate = (data) => api.post("/tracking/update", data);
 export const logOutboundCallAttempt = (data) =>
   api.post("/activity/outbound-call", data);
 
+export const fetchCallRecordings = (params) =>
+  api.get("/admin/call-recordings", { params });
+export const createCallRecording = (data) => api.post("/call-recordings", data);
+export const updateCallFeedback = (recordingId, payload) =>
+  api.post(`/admin/call-recordings/${recordingId}/feedback`, payload);
+export const fetchUserCallRecordings = () => api.get("/call-recordings");
+
 export const fetchSellerRoster = () => api.get("/admin/sellers");
 export const fetchSellerDossier = (sellerId) =>
   api.get(`/admin/sellers/${sellerId}/dossier`);
@@ -59,5 +71,11 @@ export const fetchSellerAudit = (sellerId, limit = 40) =>
   api.get(`/admin/sellers/${sellerId}/audit`, { params: { limit } });
 export const approveCommissionPayout = (commissionId, payload) =>
   api.post(`/admin/commissions/${commissionId}/approve`, payload);
+
+export const getDialerQueue = () => api.get("/admin/dialer-queue");
+export const transferLeadsToDialer = (leadIds) =>
+  api.post("/admin/dialer-queue", { leadIds });
+
+export const triggerDemoCall = (data) => api.post("/retell/demo-call", data);
 
 export default api;

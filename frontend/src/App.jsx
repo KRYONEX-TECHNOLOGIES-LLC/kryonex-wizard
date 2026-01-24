@@ -6,6 +6,8 @@ import WizardPage from "./pages/WizardPage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
 import CalendarPage from "./pages/CalendarPage.jsx";
 import BillingPage from "./pages/BillingPage.jsx";
+import BlackBoxPage from "./pages/BlackBoxPage.jsx";
+import LeadsPage from "./pages/LeadsPage.jsx";
 import AdminDashboardPage from "./pages/AdminDashboardPage.jsx";
 import AdminCallCenterPage from "./pages/AdminCallCenterPage.jsx";
 import AdminClientWizardPage from "./pages/AdminClientWizardPage.jsx";
@@ -14,8 +16,14 @@ import TrackingSharePage from "./pages/TrackingSharePage.jsx";
 import TechTrackingPage from "./pages/TechTrackingPage.jsx";
 import AdminUsersPage from "./pages/AdminUsersPage.jsx";
 import AdminLogsPage from "./pages/AdminLogsPage.jsx";
+import AdminFinalLogsPage from "./pages/AdminFinalLogsPage.jsx";
 import AdminFinancialsPage from "./pages/AdminFinancialsPage.jsx";
 import AdminSellersPage from "./pages/AdminSellersPage.jsx";
+import AdminLeadsPage from "./pages/AdminLeadsPage.jsx";
+import AdminBlackBoxPage from "./pages/AdminBlackBoxPage.jsx";
+import AdminMessagesPage from "./pages/AdminMessagesPage.jsx";
+import AdminCalendarPage from "./pages/AdminCalendarPage.jsx";
+import MessagesPage from "./pages/MessagesPage.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import RequireOnboarding from "./components/RequireOnboarding.jsx";
 import { supabaseReady } from "./lib/supabase";
@@ -93,7 +101,36 @@ export default function App() {
         }
       />
       <Route
-        path="/admin"
+        path="/black-box"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <BlackBoxPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/leads"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <LeadsPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/messages"
+        element={
+          <ProtectedRoute>
+            <MessagesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
+      <Route
+        path="/admin/dashboard"
         element={
           <ProtectedRoute>
             <RequireAdmin>
@@ -123,6 +160,10 @@ export default function App() {
         }
       />
       <Route
+        path="/admin/wizard"
+        element={<Navigate to="/admin/wizard/create" replace />}
+      />
+      <Route
         path="/admin/users"
         element={
           <ProtectedRoute>
@@ -143,6 +184,16 @@ export default function App() {
         }
       />
       <Route
+        path="/admin/final-logs"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminFinalLogsPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/admin/financials"
         element={
           <ProtectedRoute>
@@ -158,6 +209,46 @@ export default function App() {
           <ProtectedRoute>
             <RequireAdmin>
               <AdminSellersPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/leads"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminLeadsPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/black-box"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminBlackBoxPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/messages"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminMessagesPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/calendar"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminCalendarPage />
             </RequireAdmin>
           </ProtectedRoute>
         }
