@@ -13,6 +13,21 @@ VITE_SUPABASE_URL=https://xxxx.supabase.co
 VITE_SUPABASE_ANON_KEY=...
 ```
 
+## Retell + Webhooks (Backend)
+Retell webhooks must point to your public backend URL (Railway, etc).
+Set this in the backend `.env`:
+```
+SERVER_URL=https://your-railway-service.up.railway.app
+```
+Required webhook routes:
+- `POST /retell-webhook`
+- `POST /webhooks/sms-inbound`
+
+## Deploy Notes
+- “Activate” in the Wizard deploys the Retell agent and provisions an SMS-enabled number.
+- The agent selects HVAC vs Plumbing LLM based on the Wizard industry choice.
+- Inbound SMS is synced into the Messages tab.
+
 ## Key Pages
 - `src/pages/LandingPage.jsx`
 - `src/pages/LoginPage.jsx`

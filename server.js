@@ -7,6 +7,7 @@ const axios = require("axios");
 const Stripe = require("stripe");
 const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
+const { Resend } = require("resend");
 
 const {
   PORT = 3000,
@@ -26,13 +27,19 @@ const {
   STRIPE_TOPUP_CALL_800,
   STRIPE_TOPUP_SMS_500,
   STRIPE_TOPUP_SMS_1000,
-  STRIPE_WHITE_GLOVE,
+  STRIPE_PRICE_ID_SCALE,
   FRONTEND_URL,
+  APP_URL,
+  SERVER_URL,
   RETELL_WEBHOOK_SECRET,
+  RETELL_DEMO_AGENT_ID,
+  RETELL_DEMO_FROM_NUMBER,
+  RETELL_SMS_SANDBOX,
   ADMIN_IP_ALLOWLIST,
   ADMIN_ACCESS_CODE,
   ADMIN_EMAIL,
   CONSENT_VERSION,
+  RESEND_API_KEY,
 } = process.env;
 
 if (!RETELL_API_KEY) throw new Error("Missing RETELL_API_KEY");
@@ -51,10 +58,15 @@ if (!STRIPE_PRICE_ID_ELITE && !STRIPE_PRICE_ID_PLUMBING)
   throw new Error(
     "Missing STRIPE_PRICE_ID_ELITE (or STRIPE_PRICE_ID_PLUMBING)"
   );
+if (!STRIPE_PRICE_ID_SCALE)
+  throw new Error("Missing STRIPE_PRICE_ID_SCALE");
 if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL");
 
 const app = express();
 const stripe = Stripe(STRIPE_SECRET_KEY);
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+const appBaseUrl = APP_URL || FRONTEND_URL || "https://app.kryonextech.com";
+const serverBaseUrl = SERVER_URL || APP_URL || FRONTEND_URL || appBaseUrl;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -62,6 +74,62 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     persistSession: false,
   },
 });
+
+const ensureAppointmentsSchema = async () => {
+  try {
+    const { error: tableError } = await supabaseAdmin
+      .from("appointments")
+      .select("id")
+      .limit(1);
+
+    if (tableError && String(tableError.code || "").includes("42P01")) {
+      console.warn(
+        "[schema check] `public.appointments` missing. Run this SQL:",
+        `
+CREATE TABLE IF NOT EXISTS public.appointments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  customer_name text,
+  customer_phone text,
+  start_time timestamptz,
+  end_time timestamptz,
+  job_value numeric,
+  status text,
+  created_at timestamptz DEFAULT now()
+);
+        `
+      );
+      return;
+    }
+
+    const { error: columnError } = await supabaseAdmin
+      .from("appointments")
+      .select("job_value")
+      .limit(1);
+
+    if (columnError && String(columnError.code || "").includes("42703")) {
+      console.warn(
+        "[schema check] Missing appointments.job_value. Run:",
+        "ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS job_value numeric;"
+      );
+    }
+
+    const { error: durationError } = await supabaseAdmin
+      .from("appointments")
+      .select("duration_minutes")
+      .limit(1);
+    if (durationError && String(durationError.code || "").includes("42703")) {
+      console.warn(
+        "[schema check] Missing appointments.duration_minutes. Run:",
+        "ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS duration_minutes integer;"
+      );
+    }
+  } catch (err) {
+    console.error("[schema check] Unable to verify appointments table:", err.message);
+  }
+};
+
+ensureAppointmentsSchema();
 
 app.use(
   cors({
@@ -86,6 +154,10 @@ const allowlist = ADMIN_IP_ALLOWLIST
   : [];
 
 const generateToken = (size = 16) => crypto.randomBytes(size).toString("hex");
+const pad2 = (value) => String(value).padStart(2, "0");
+const formatDate = (date) =>
+  `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+const formatTime = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 
 const enforceIpAllowlist = (req, res, next) => {
   if (!allowlist.length) return next();
@@ -173,10 +245,35 @@ const sendSmsInternal = async ({ userId, to, body, leadId, source }) => {
     throw new Error("Usage limit reached");
   }
 
-  const retellResponse = await retellClient.post("/sms", {
-    to,
-    body,
-  });
+  if (String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true") {
+    await supabaseAdmin.from("messages").insert({
+      user_id: userId,
+      lead_id: leadId || null,
+      direction: "outbound",
+      body,
+    });
+    await auditLog({
+      userId,
+      action: "sms_sandboxed",
+      entity: "message",
+      entityId: leadId || null,
+      metadata: { to, source: source || "manual" },
+    });
+    return { sandbox: true };
+  }
+
+  const { data: agentRow, error: agentError } = await supabaseAdmin
+    .from("agents")
+    .select("phone_number")
+    .eq("user_id", userId)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .maybeSingle();
+  if (agentError || !agentRow?.phone_number) {
+    throw new Error("Agent phone number not found");
+  }
+  const payload = { to, body, from_number: agentRow.phone_number };
+  const retellResponse = await retellSmsClient.post("/sms", payload);
 
   await supabaseAdmin.from("messages").insert({
     user_id: userId,
@@ -209,6 +306,123 @@ const sendSmsInternal = async ({ userId, to, body, leadId, source }) => {
   });
 
   return retellResponse.data;
+};
+
+const sendSmsFromAgent = async ({ agentId, to, body, userId, source }) => {
+  if (!agentId || !to || !body) {
+    throw new Error("agentId, to, and body are required");
+  }
+  const { data: agentRow, error: agentError } = await supabaseAdmin
+    .from("agents")
+    .select("phone_number, user_id")
+    .eq("agent_id", agentId)
+    .maybeSingle();
+  if (agentError || !agentRow?.phone_number) {
+    throw new Error("Agent phone number not found");
+  }
+
+  if (String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true") {
+    await supabaseAdmin.from("messages").insert({
+      user_id: userId || agentRow.user_id,
+      lead_id: null,
+      direction: "outbound",
+      body,
+    });
+    await auditLog({
+      userId: userId || agentRow.user_id,
+      action: "sms_sandboxed",
+      entity: "message",
+      entityId: agentId,
+      metadata: { to, source: source || "agent_tool" },
+    });
+    return { sandbox: true };
+  }
+
+  const payload = {
+    to,
+    body,
+    from_number: agentRow.phone_number,
+  };
+  const retellResponse = await retellSmsClient.post("/sms", payload);
+
+  await supabaseAdmin.from("messages").insert({
+    user_id: userId || agentRow.user_id,
+    lead_id: null,
+    direction: "outbound",
+    body,
+  });
+  await auditLog({
+    userId: userId || agentRow.user_id,
+    action: "sms_sent",
+    entity: "message",
+    entityId: agentId,
+    metadata: { to, source: source || "agent_tool" },
+  });
+
+  return retellResponse.data;
+};
+
+const sendBookingAlert = async (userEmail, appointment) => {
+  if (!resend || !userEmail || !appointment?.id) return;
+  const appointmentDate =
+    appointment.start_time?.slice(0, 10) ||
+    appointment.start_date ||
+    new Date().toISOString().slice(0, 10);
+  const deepLink = `${appBaseUrl}/calendar?date=${appointmentDate}&appointmentId=${appointment.id}`;
+  const customerName = appointment.customer_name || "Customer";
+  const formatDateTime = (value) =>
+    value
+      ? new Date(value).toLocaleString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : "TBD";
+  const duration = appointment.duration_minutes
+    ? `${appointment.duration_minutes} min`
+    : "60 min";
+  const jobValue =
+    appointment.job_value && Number(appointment.job_value)
+      ? `$${Number(appointment.job_value).toLocaleString()}`
+      : "Not set";
+  const detailRows = [
+    { label: "Customer", value: customerName },
+    {
+      label: "When",
+      value: formatDateTime(appointment.start_time || appointment.start_date),
+    },
+    { label: "Location", value: appointment.location || "Location TBD" },
+    { label: "Phone", value: appointment.customer_phone || "—" },
+    { label: "Duration", value: duration },
+    { label: "Job Value", value: jobValue },
+    { label: "Status", value: (appointment.status || "Booked").toUpperCase() },
+  ]
+    .map(
+      (row) =>
+        `<tr><td style="padding:4px 8px;color:#475569;font-weight:600;">${row.label}</td><td style="padding:4px 8px;color:#0f172a;">${row.value}</td></tr>`
+    )
+    .join("");
+  const notes = appointment.notes ? appointment.notes : "No additional notes.";
+  await resend.emails.send({
+    from: "Kryonex Alerts <alerts@kryonextech.com>",
+    to: userEmail,
+    subject: `New Appointment: ${customerName}`,
+    html: `
+      <div style="font-family: 'Inter', system-ui, sans-serif; color: #0f172a; background:#f8fafc; padding:24px; border-radius:20px;">
+        <h2 style="margin: 0 0 8px; color:#0f172a;">Manifest: ${customerName}</h2>
+        <p style="margin:0 0 18px; color:#475569;">The job has been booked and is now visible inside your Kryonex Command Deck.</p>
+        <table cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; border:1px solid rgba(15,23,42,0.08);">
+          ${detailRows}
+        </table>
+        <p style="margin:12px 0 20px; color:#475569;"><strong>Notes:</strong> ${notes}</p>
+        <a href="${deepLink}" style="display:inline-block;padding:14px 22px;background:#0f172a;color:#f8fafc;text-decoration:none;border-radius:10px;font-weight:700;">
+          Open Daily Manifest
+        </a>
+      </div>
+    `,
+  });
 };
 
 // Stripe webhook needs raw body
@@ -419,6 +633,14 @@ const retellClient = axios.create({
   },
 });
 
+const retellSmsClient = axios.create({
+  baseURL: "https://api.retellai.com",
+  headers: {
+    Authorization: `Bearer ${RETELL_API_KEY}`,
+    "Content-Type": "application/json",
+  },
+});
+
 const rateBuckets = new Map();
 const rateLimit = ({ keyPrefix, limit, windowMs }) => (req, res, next) => {
   const key = `${keyPrefix}:${req.user?.id || req.ip}`;
@@ -447,12 +669,12 @@ const isSubscriptionActive = (subscription) => {
 
 const currentConsentVersion = CONSENT_VERSION || "v1";
 const topupPriceMap = {
-  calls_300: {
+  call_300: {
     priceId: STRIPE_TOPUP_CALL_300,
     call_seconds: 300 * 60,
     sms_count: 0,
   },
-  calls_800: {
+  call_800: {
     priceId: STRIPE_TOPUP_CALL_800,
     call_seconds: 800 * 60,
     sms_count: 0,
@@ -474,27 +696,33 @@ const topupCatalog = {
   call_800: { price: STRIPE_TOPUP_CALL_800, call_seconds: 800 * 60, sms: 0 },
   sms_500: { price: STRIPE_TOPUP_SMS_500, call_seconds: 0, sms: 500 },
   sms_1000: { price: STRIPE_TOPUP_SMS_1000, call_seconds: 0, sms: 1000 },
-  white_glove: { price: STRIPE_WHITE_GLOVE, call_seconds: 0, sms: 0 },
+  scale: { price: STRIPE_PRICE_ID_SCALE, call_seconds: 0, sms: 0 },
 };
 
 const resolveTopup = (type) => topupCatalog[type] || null;
 
 const planConfig = (planType) => {
   const plan = (planType || "").toLowerCase();
+  if (plan.includes("scale") || plan.includes("white_glove")) {
+    return { call_minutes: 3000, sms_count: 5000, grace_seconds: 600 };
+  }
   if (plan.includes("elite")) {
     return { call_minutes: 1200, sms_count: 2000, grace_seconds: 600 };
-  }
-  if (plan.includes("core")) {
-    return { call_minutes: 150, sms_count: 250, grace_seconds: 600 };
   }
   if (plan.includes("pro")) {
     return { call_minutes: 500, sms_count: 800, grace_seconds: 600 };
   }
-  return { call_minutes: 200, sms_count: 300, grace_seconds: 600 };
+  if (plan.includes("core") || plan.includes("starter")) {
+    return { call_minutes: 150, sms_count: 250, grace_seconds: 600 };
+  }
+  return { call_minutes: 150, sms_count: 250, grace_seconds: 600 };
 };
 
 const planPriceId = (planTier) => {
   const tier = (planTier || "").toLowerCase();
+  if (tier === "scale") {
+    return STRIPE_PRICE_ID_SCALE;
+  }
   if (tier === "elite") {
     return STRIPE_PRICE_ID_ELITE || STRIPE_PRICE_ID_PLUMBING;
   }
@@ -597,6 +825,63 @@ const getUsageRemaining = (usage) => {
   return { total, remaining };
 };
 
+const getDashboardStats = async (userId) => {
+  const avgJobValue = 450;
+  const { count: totalLeads, error: totalError } = await supabaseAdmin
+    .from("leads")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId);
+
+  if (totalError) {
+    throw totalError;
+  }
+
+  const { count: bookedLeads, error: bookedError } = await supabaseAdmin
+    .from("leads")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .in("status", ["booked", "confirmed"]);
+
+  if (bookedError) {
+    throw bookedError;
+  }
+
+  let bookedAppointments = 0;
+  let jobSum = 0;
+  try {
+    const { data: appointmentRows, error: appointmentError } = await supabaseAdmin
+      .from("appointments")
+      .select("job_value")
+      .eq("user_id", userId)
+      .in("status", ["booked", "confirmed"]);
+
+    if (appointmentError) {
+      throw appointmentError;
+    }
+    const rows = appointmentRows || [];
+    bookedAppointments = rows.length;
+    jobSum = rows.reduce((sum, row) => {
+      const value = Number(row.job_value);
+      return sum + (Number.isFinite(value) && value > 0 ? value : avgJobValue);
+    }, 0);
+  } catch (err) {
+    bookedAppointments = 0;
+    jobSum = 0;
+  }
+
+  const bookedTotal = bookedAppointments || bookedLeads || 0;
+  const pipelineValue = jobSum || bookedTotal * avgJobValue;
+
+  return {
+    total_leads: totalLeads || 0,
+    booked_leads: bookedTotal,
+    booked_appointments: bookedAppointments || 0,
+    call_volume: totalLeads || 0,
+    pipeline_value: pipelineValue,
+    avg_job_value: avgJobValue,
+  };
+};
+
 const requireAdmin = async (req, res, next) => {
   try {
     const { data: profile, error } = await supabaseAdmin
@@ -647,6 +932,112 @@ const pickLlmId = (industry) => {
   return RETELL_LLM_ID_HVAC;
 };
 
+const normalizeToolPayload = (payload) => {
+  if (!payload) return null;
+  if (payload.tool_call) return payload.tool_call;
+  if (payload.tool_calls && Array.isArray(payload.tool_calls)) return payload.tool_calls;
+  if (payload.data?.tool_call) return payload.data.tool_call;
+  if (payload.data?.tool_calls) return payload.data.tool_calls;
+  return null;
+};
+
+const parseToolArgs = (raw) => {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+};
+
+const resolveToolAppointmentWindow = ({ start_date, start_time, start_time_iso, duration_minutes }) => {
+  if (start_time_iso) {
+    const start = new Date(start_time_iso);
+    const duration = parseInt(duration_minutes || "60", 10);
+    const end = new Date(start.getTime() + duration * 60000);
+    return { start, end };
+  }
+  if (start_date && start_time) {
+    const [year, month, day] = String(start_date).split("-").map(Number);
+    const [hour, minute] = String(start_time).split(":").map(Number);
+    const start = new Date(year, month - 1, day, hour, minute);
+    const duration = parseInt(duration_minutes || "60", 10);
+    const end = new Date(start.getTime() + duration * 60000);
+    return { start, end };
+  }
+  return { start: null, end: null };
+};
+
+const handleToolCall = async ({ tool, agentId, userId }) => {
+  const toolName = tool?.name || tool?.tool_name || tool?.function?.name;
+  const args = parseToolArgs(tool?.arguments || tool?.args || tool?.function?.arguments);
+  if (!toolName) return { ok: false, error: "Missing tool name" };
+
+  if (toolName === "check_calendar_availability") {
+    const { start, end } = resolveToolAppointmentWindow(args);
+    if (!start || !end) {
+      return { ok: false, error: "Missing start time" };
+    }
+    const { data, error } = await supabaseAdmin
+      .from("appointments")
+      .select("id,start_time,end_time")
+      .eq("user_id", userId)
+      .lt("start_time", end.toISOString())
+      .gt("end_time", start.toISOString());
+    if (error) return { ok: false, error: error.message };
+    const conflicts = data || [];
+    return { ok: true, available: conflicts.length === 0, conflicts };
+  }
+
+  if (toolName === "book_appointment") {
+    const { start, end } = resolveToolAppointmentWindow(args);
+    if (!start || !end) {
+      return { ok: false, error: "Missing start time" };
+    }
+    const { data, error } = await supabaseAdmin
+      .from("appointments")
+      .insert({
+        user_id: userId,
+        customer_name: args.customer_name || "Customer",
+        customer_phone: args.customer_phone || null,
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        location: args.service_address || args.location || null,
+        notes: args.service_issue || args.notes || null,
+        status: "booked",
+      })
+      .select("*")
+      .single();
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, appointment: data };
+  }
+
+  if (toolName === "send_sms") {
+    const to = args.to || args.phone || args.customer_phone;
+    const body = args.body || args.message;
+    if (!to || !body) return { ok: false, error: "Missing to/body" };
+    const response = await sendSmsFromAgent({
+      agentId,
+      to,
+      body,
+      userId,
+      source: "agent_tool",
+    });
+    return { ok: true, response };
+  }
+
+  if (toolName === "transfer_call") {
+    return { ok: true, transfer_number: args.transfer_number || args.number || null };
+  }
+
+  if (toolName === "end_call") {
+    return { ok: true, ended: true };
+  }
+
+  return { ok: false, error: "Unknown tool" };
+};
+
 const extractLead = (transcript) => {
   const nameMatch = transcript.match(
     /(?:name is|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i
@@ -691,6 +1082,12 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
 
     if (eventType === "call_ended") {
       const transcript = call.transcript || payload.transcript || "";
+      const extractedVars =
+        payload.variables ||
+        call.variables ||
+        call.retell_llm_dynamic_variables ||
+        payload.retell_llm_dynamic_variables ||
+        null;
       const agentId = call.agent_id || payload.agent_id;
       const callId = call.call_id || payload.call_id || payload.id || null;
       const durationSeconds =
@@ -724,14 +1121,15 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
         user_id: agentRow.user_id,
         owner_id: agentRow.user_id,
         agent_id: agentId,
-        name: extracted.name,
-        phone: extracted.phone,
+        name: extracted.name || extractedVars?.customer_name || null,
+        phone: extracted.phone || extractedVars?.customer_phone || null,
         status: "New",
         summary: extracted.summary,
         transcript,
         sentiment: extracted.sentiment,
         recording_url: recordingUrl,
         call_duration_seconds: durationSeconds || null,
+        metadata: extractedVars ? { extracted: extractedVars } : null,
       });
 
       if (leadError) {
@@ -878,6 +1276,34 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
       }
     }
 
+    if (eventType === "tool_call" || eventType === "function_call") {
+      const toolCalls = normalizeToolPayload(payload);
+      const agentId = payload.agent_id || call.agent_id || payload.data?.agent_id;
+      if (!agentId) {
+        return res.status(400).json({ error: "Missing agent_id" });
+      }
+      const { data: agentRow, error: agentError } = await supabaseAdmin
+        .from("agents")
+        .select("user_id")
+        .eq("agent_id", agentId)
+        .maybeSingle();
+      if (agentError || !agentRow) {
+        return res.status(404).json({ error: "Agent not found" });
+      }
+      const calls = Array.isArray(toolCalls) ? toolCalls : [toolCalls];
+      const results = [];
+      for (const tool of calls.filter(Boolean)) {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await handleToolCall({
+          tool,
+          agentId,
+          userId: agentRow.user_id,
+        });
+        results.push({ tool: tool.name || tool.tool_name, result });
+      }
+      return res.json({ ok: true, results });
+    }
+
     return res.json({ received: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -901,6 +1327,10 @@ app.post(
         emergencyFee,
         paymentId,
         transferNumber,
+        calComLink,
+        dispatchBaseLocation,
+        travelLimitValue,
+        travelLimitMode,
       } = req.body || {};
       if (!businessName || !industry) {
         return res
@@ -946,6 +1376,28 @@ app.post(
       const llmId = pickLlmId(industry);
       const cleanTransfer =
         transferNumber && String(transferNumber).replace(/[^\d+]/g, "");
+      const baseInput = String(dispatchBaseLocation || "").trim();
+      if (!baseInput) {
+        return res
+          .status(400)
+          .json({ error: "dispatchBaseLocation is required" });
+      }
+      const isZipBase = /^\d{5}$/.test(baseInput);
+      const travelValue = Number(travelLimitValue);
+      if (!travelValue || travelValue <= 0) {
+        return res
+          .status(400)
+          .json({ error: "travelLimitValue must be greater than 0" });
+      }
+      const travelMode =
+        String(travelLimitMode || "").toLowerCase() === "miles"
+          ? "miles"
+          : "minutes";
+      const travelInstruction = `Your Dispatch Base is ${
+        isZipBase ? `the center of Zip Code ${baseInput}` : baseInput
+      }. The client's strict travel limit is ${travelValue} ${travelMode}. Estimate the travel effort from that ${
+        isZipBase ? "Zip Code center" : "location"
+      }. If the customer is too far, decline.`;
       if (cleanTransfer && cleanTransfer.length < 8) {
         return res
           .status(400)
@@ -964,12 +1416,17 @@ app.post(
         cleanTransfer
           ? `If a human transfer is required, route the caller to ${cleanTransfer}.`
           : ""
-      }`.trim();
+      } ${travelInstruction}`.trim();
 
       const agentPayload = {
         llm_id: llmId,
         agent_name: `${businessName} AI Agent`,
-        prompt,
+        prompt: `${prompt}
+
+Business Variables:
+- business_name: ${businessName}
+- cal_com_link: ${calComLink || "not_set"}
+- transfer_number: ${cleanTransfer || "not_set"}`.trim(),
       };
       if (voiceId) {
         agentPayload.voice_id = voiceId;
@@ -985,6 +1442,8 @@ app.post(
       const phonePayload = {
         agent_id: agentId,
         area_code: areaCode && String(areaCode).length === 3 ? areaCode : "auto",
+        inbound_sms_enabled: true,
+        inbound_sms_webhook: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/sms-inbound`,
       };
       const phoneResponse = await retellClient.post("/phone-numbers", phonePayload);
 
@@ -1018,7 +1477,13 @@ app.post(
         entity: "agent",
         entityId: agentId,
         req,
-        metadata: { industry, phone_number: phoneNumber },
+        metadata: {
+          industry,
+          phone_number: phoneNumber,
+          dispatch_base: baseInput,
+          travel_limit_value: travelValue,
+          travel_limit_mode: travelMode,
+        },
       });
 
       return res.json({ agent_id: agentId, phone_number: phoneNumber });
@@ -1067,43 +1532,17 @@ app.post("/update-agent", requireAuth, async (req, res) => {
 
 app.get("/dashboard-stats", requireAuth, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const stats = await getDashboardStats(req.user.id);
+    return res.json(stats);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
-    const { count: totalLeads, error: totalError } = await supabaseAdmin
-      .from("leads")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId);
-
-    if (totalError) {
-      return res.status(500).json({ error: totalError.message });
-    }
-
-    const { count: newLeads, error: newError } = await supabaseAdmin
-      .from("leads")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .ilike("status", "new");
-
-    if (newError) {
-      return res.status(500).json({ error: newError.message });
-    }
-
-    const { count: bookedLeads, error: bookedError } = await supabaseAdmin
-      .from("leads")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .ilike("status", "booked");
-
-    if (bookedError) {
-      return res.status(500).json({ error: bookedError.message });
-    }
-
-    return res.json({
-      total_leads: totalLeads || 0,
-      new_leads: newLeads || 0,
-      booked_leads: bookedLeads || 0,
-      call_volume: totalLeads || 0,
-    });
+app.get("/api/dashboard/stats", requireAuth, async (req, res) => {
+  try {
+    const stats = await getDashboardStats(req.user.id);
+    return res.json(stats);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1149,6 +1588,114 @@ app.get("/admin/leads", requireAuth, requireAdmin, async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+app.get("/call-recordings", requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("call_recordings")
+      .select(
+        `
+        id,
+        duration,
+        recording_url,
+        outcome,
+        created_at,
+        lead:leads(id, name, business_name, phone, summary, transcript)
+      `
+      )
+      .eq("seller_id", req.user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    const recordings = (data || []).map((row) => ({
+      ...row,
+      caller_name:
+        row.lead?.business_name || row.lead?.name || "Unknown Caller",
+      caller_phone: row.lead?.phone || "--",
+      transcript: row.lead?.transcript || row.lead?.summary || "",
+    }));
+
+    return res.json({ recordings });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/admin/dialer-queue", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("dialer_queue")
+      .select("id,status,created_at,lead:leads(*)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    const queue = (data || [])
+      .map((entry) => {
+        if (!entry.lead) return null;
+        return {
+          queue_id: entry.id,
+          queue_status: entry.status,
+          queue_created_at: entry.created_at,
+          ...entry.lead,
+        };
+      })
+      .filter(Boolean);
+
+    return res.json({ queue });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post(
+  "/admin/dialer-queue",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { leadIds } = req.body || {};
+      if (!Array.isArray(leadIds) || !leadIds.length) {
+        return res.status(400).json({ error: "leadIds are required" });
+      }
+
+      const rows = leadIds.map((leadId) => ({
+        lead_id: leadId,
+        created_by: req.user.id,
+      }));
+
+      const { data, error } = await supabaseAdmin
+        .from("dialer_queue")
+        .upsert(rows, { onConflict: "lead_id" })
+        .select("id,status,created_at,lead:leads(*)");
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      const queue = (data || [])
+        .map((entry) => {
+          if (!entry.lead) return null;
+          return {
+            queue_id: entry.id,
+            queue_status: entry.status,
+            queue_created_at: entry.created_at,
+            ...entry.lead,
+          };
+        })
+        .filter(Boolean);
+
+      return res.json({ queue });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
 
 app.post(
   "/leads/update-status",
@@ -1215,7 +1762,7 @@ app.post(
   rateLimit({ keyPrefix: "sms", limit: 20, windowMs: 60_000 }),
   async (req, res) => {
     try {
-      const { leadId, to, body } = req.body || {};
+      const { leadId, to, body, source } = req.body || {};
       if (!body) {
         return res.status(400).json({ error: "body is required" });
       }
@@ -1239,18 +1786,127 @@ app.post(
       if (!destination) {
         return res.status(400).json({ error: "to or leadId is required" });
       }
-      const data = await sendSmsInternal({
+
+      const isSandbox =
+        String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true";
+      const retellResponse = await sendSmsInternal({
         userId: req.user.id,
         to: destination,
         body,
         leadId,
-        source: "manual",
+        source: source || "manual",
       });
 
-      return res.json({ sent: true, data });
+      await supabaseAdmin.from("messages").insert({
+        user_id: req.user.id,
+        lead_id: leadId || null,
+        direction: "outbound",
+        body,
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        action: "sms_sent",
+        entity: "message",
+        entityId: leadId || null,
+        metadata: { to: destination, source: source || "manual" },
+      });
+
+      return res.json({ sent: true, sandbox: isSandbox, data: retellResponse });
     } catch (err) {
-      const message =
+      let message =
         err.response?.data?.error || err.response?.data || err.message;
+      if (typeof message === "string" && message.includes("<!DOCTYPE")) {
+        message = "SMS provider error. Check Retell SMS setup.";
+      }
+      return res.status(500).json({ error: message });
+    }
+  }
+);
+
+app.post("/webhooks/sms-inbound", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const toNumber = payload.to_number || payload.to || payload.phone_number;
+    const fromNumber = payload.from_number || payload.from || payload.sender;
+    const body = payload.body || payload.text || payload.message || "";
+    if (!toNumber || !fromNumber) {
+      return res.status(400).json({ error: "to_number and from_number required" });
+    }
+    const { data: agentRow } = await supabaseAdmin
+      .from("agents")
+      .select("user_id, agent_id")
+      .eq("phone_number", toNumber)
+      .maybeSingle();
+    if (!agentRow?.user_id) {
+      return res.status(404).json({ error: "Agent not found for number" });
+    }
+    await supabaseAdmin.from("messages").insert({
+      user_id: agentRow.user_id,
+      direction: "inbound",
+      body,
+    });
+    await auditLog({
+      userId: agentRow.user_id,
+      action: "sms_received",
+      entity: "message",
+      entityId: agentRow.agent_id || null,
+      metadata: { from: fromNumber, to: toNumber },
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post(
+  "/retell/demo-call",
+  requireAuth,
+  rateLimit({ keyPrefix: "retell-demo-call", limit: 8, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { to, name, leadId } = req.body || {};
+      if (!to) {
+        return res.status(400).json({ error: "to is required" });
+      }
+      if (!RETELL_DEMO_AGENT_ID || !RETELL_DEMO_FROM_NUMBER) {
+        return res
+          .status(500)
+          .json({ error: "Retell demo call is not configured" });
+      }
+
+      const payload = {
+        from_number: RETELL_DEMO_FROM_NUMBER,
+        to_number: to,
+        override_agent_id: RETELL_DEMO_AGENT_ID,
+        retell_llm_dynamic_variables: name ? { customer_name: name } : undefined,
+        metadata: {
+          source: "admin_sniper_kit",
+          lead_id: leadId || null,
+          user_id: req.user.id,
+        },
+      };
+
+      const retellResponse = await retellClient.post(
+        "/create-phone-call",
+        payload
+      );
+
+      await auditLog({
+        userId: req.user.id,
+        action: "demo_call_triggered",
+        entity: "lead",
+        entityId: leadId || null,
+        metadata: { to, source: "admin_sniper_kit" },
+      });
+
+      return res.json({ call: retellResponse.data });
+    } catch (err) {
+      let message =
+        err.response?.data?.error || err.response?.data || err.message;
+      if (typeof message === "object" && message !== null) {
+        message = message.message || JSON.stringify(message);
+      }
       return res.status(500).json({ error: message });
     }
   }
@@ -1293,6 +1949,219 @@ app.post(
         tracking_url: `${FRONTEND_URL}/track/${token}`,
         update_url: `${FRONTEND_URL}/tech/track/${token}?key=${updateKey}`,
       });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/appointments",
+  requireAuth,
+  rateLimit({ keyPrefix: "appointments", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const {
+        customer_name,
+        customer_phone,
+        start_date,
+        start_time,
+        duration_minutes,
+        location,
+        notes,
+        reminder_minutes,
+        reminder_enabled,
+        eta_enabled,
+        eta_minutes,
+        eta_link,
+      } = req.body || {};
+
+      if (!customer_name || !start_date || !start_time) {
+        return res
+          .status(400)
+          .json({ error: "customer_name, start_date, start_time are required" });
+      }
+
+      const [year, month, day] = String(start_date).split("-").map(Number);
+      const [hour, minute] = String(start_time).split(":").map(Number);
+      const startTime = new Date(year, month - 1, day, hour, minute);
+      const durationMinutes = parseInt(duration_minutes || "60", 10);
+      const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+
+      const { data, error } = await supabaseAdmin
+        .from("appointments")
+        .insert({
+          user_id: req.user.id,
+          customer_name,
+          customer_phone: customer_phone || null,
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          location: location || null,
+          notes: notes || null,
+          reminder_minutes: parseInt(reminder_minutes || "0", 10),
+          reminder_enabled: Boolean(reminder_enabled),
+          eta_enabled: Boolean(eta_enabled),
+          eta_minutes: parseInt(eta_minutes || "10", 10),
+          eta_link: eta_link || null,
+          status: "booked",
+        })
+        .select("*")
+        .single();
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      if (req.user?.email) {
+        try {
+          await sendBookingAlert(req.user.email, data);
+        } catch (err) {
+          console.error("sendBookingAlert error:", err.message);
+        }
+      }
+
+      return res.json({ appointment: data });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.put(
+  "/appointments/:id",
+  requireAuth,
+  rateLimit({ keyPrefix: "appointments-update", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { id } = req.params || {};
+      if (!id) {
+        return res.status(400).json({ error: "appointment id is required" });
+      }
+      const {
+        customer_name,
+        customer_phone,
+        start_date,
+        start_time,
+        duration_minutes,
+        location,
+        notes,
+        reminder_minutes,
+        reminder_enabled,
+        eta_enabled,
+        eta_minutes,
+        eta_link,
+        status,
+      } = req.body || {};
+
+      const { data: existing, error: existingError } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", req.user.id)
+        .maybeSingle();
+      if (existingError) {
+        return res.status(500).json({ error: existingError.message });
+      }
+      if (!existing) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+
+      const updates = {
+        customer_name: customer_name !== undefined ? customer_name : undefined,
+        customer_phone: customer_phone !== undefined ? customer_phone : undefined,
+        location: location !== undefined ? location : undefined,
+        notes: notes !== undefined ? notes : undefined,
+        reminder_minutes:
+          reminder_minutes !== undefined
+            ? parseInt(reminder_minutes || "0", 10)
+            : undefined,
+        reminder_enabled:
+          reminder_enabled !== undefined ? Boolean(reminder_enabled) : undefined,
+        eta_enabled: eta_enabled !== undefined ? Boolean(eta_enabled) : undefined,
+        eta_minutes:
+          eta_minutes !== undefined ? parseInt(eta_minutes || "10", 10) : undefined,
+        eta_link: eta_link !== undefined ? eta_link : undefined,
+        status: status !== undefined ? status : undefined,
+      };
+
+      const existingStart = existing.start_time ? new Date(existing.start_time) : null;
+      const needsTimeUpdate =
+        start_date !== undefined ||
+        start_time !== undefined ||
+        duration_minutes !== undefined;
+      if (needsTimeUpdate) {
+        if (!existingStart && (!start_date || !start_time)) {
+          return res
+            .status(400)
+            .json({ error: "start_date and start_time are required" });
+        }
+        const dateSource = start_date || (existingStart && formatDate(existingStart));
+        const timeSource = start_time || (existingStart && formatTime(existingStart));
+        const [year, month, day] = String(dateSource).split("-").map(Number);
+        const [hour, minute] = String(timeSource).split(":").map(Number);
+        const startTime = new Date(year, month - 1, day, hour, minute);
+        const durationResolved = parseInt(
+          duration_minutes || existing.duration_minutes || "60",
+          10
+        );
+        const endTime = new Date(startTime.getTime() + durationResolved * 60000);
+        updates.start_time = startTime.toISOString();
+        updates.end_time = endTime.toISOString();
+        updates.duration_minutes = durationResolved;
+      }
+
+      const attemptUpdate = async (payload) =>
+        supabaseAdmin
+          .from("appointments")
+          .update(payload)
+          .eq("id", id)
+          .eq("user_id", req.user.id)
+          .select("*")
+          .single();
+
+      let { data, error } = await attemptUpdate(updates);
+      if (error) {
+        const message = String(error.message || "");
+        if (message.includes("duration_minutes") || message.includes("schema cache")) {
+          const retryUpdates = { ...updates };
+          delete retryUpdates.duration_minutes;
+          ({ data, error } = await attemptUpdate(retryUpdates));
+        }
+      }
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      return res.json({ appointment: data });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.delete(
+  "/appointments/:id",
+  requireAuth,
+  rateLimit({ keyPrefix: "appointments-delete", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { id } = req.params || {};
+      if (!id) {
+        return res.status(400).json({ error: "appointment id is required" });
+      }
+      const { data, error } = await supabaseAdmin
+        .from("appointments")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", req.user.id)
+        .select("id")
+        .maybeSingle();
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      if (!data) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+      return res.json({ deleted: true });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -1438,7 +2307,7 @@ app.post(
             .status(400)
             .json({ error: "planTier or lookup_key is required" });
         }
-        if (!["pro", "elite", "core"].includes(planTier.toLowerCase())) {
+      if (!["pro", "elite", "core", "starter", "scale"].includes(planTier.toLowerCase())) {
           return res.status(400).json({ error: "Invalid planTier" });
         }
         priceId = planPriceId(planTier);
@@ -1805,6 +2674,120 @@ const buildCommissionStats = (commissions) => {
   return map;
 };
 
+const fetchCallRecordings = async ({ limit = 50, outcomeFilters = [] }) => {
+  const query = supabaseAdmin
+    .from("call_recordings")
+    .select(
+      `
+      id,
+      duration,
+      recording_url,
+      outcome,
+      qa_flags,
+      manager_notes,
+      flagged_for_review,
+      created_at,
+      seller:profiles!call_recordings_seller_id_fkey(full_name, user_id),
+      lead:leads!call_recordings_lead_id_fkey(name, business_name, id)
+    `
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (outcomeFilters.length) {
+    query.in("outcome", outcomeFilters);
+  }
+  const { data, error } = await query;
+  if (error) {
+    throw error;
+  }
+  return (data || []).map((row) => ({
+    ...row,
+    seller_name: row.seller?.full_name || `Seller ${row.seller?.user_id}`,
+    lead_name: row.lead?.business_name || row.lead?.name || "Unknown Lead",
+  }));
+};
+
+app.get(
+  "/admin/call-recordings",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-call-recordings", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { outcome } = req.query || {};
+      const outcomeFilters = outcome ? String(outcome).split(",").map((item) => item.trim()) : [];
+      const recordings = await fetchCallRecordings({ outcomeFilters });
+      return res.json({ recordings });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/call-recordings",
+  requireAuth,
+  rateLimit({ keyPrefix: "call-recording", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { leadId, duration = 0, recordingUrl = null, outcome = "No Answer" } = req.body || {};
+      const recording = {
+        seller_id: req.user.id,
+        lead_id: leadId || null,
+        duration: Number(duration) || 0,
+        recording_url: recordingUrl,
+        outcome,
+      };
+      const { data, error } = await supabaseAdmin
+        .from("call_recordings")
+        .insert(recording)
+        .select("*")
+        .single();
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      return res.json({ call: data });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/admin/call-recordings/:recordingId/feedback",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-call-feedback", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { recordingId } = req.params || {};
+      const { qaFlags, managerNotes, flaggedForReview } = req.body || {};
+      if (!recordingId) {
+        return res.status(400).json({ error: "recordingId is required" });
+      }
+      const updates = {
+        qa_flags: qaFlags ? JSON.stringify(qaFlags) : undefined,
+        manager_notes: managerNotes || undefined,
+        flagged_for_review:
+          flaggedForReview !== undefined ? Boolean(flaggedForReview) : undefined,
+        updated_at: new Date().toISOString(),
+      };
+      const { data, error } = await supabaseAdmin
+        .from("call_recordings")
+        .update(updates)
+        .eq("id", recordingId)
+        .select("*")
+        .single();
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      return res.json({ call: data });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.get(
   "/admin/sellers",
   requireAuth,
@@ -2024,14 +3007,30 @@ app.post(
         tierId,
         features,
         leadId,
+        referrerId: referrerOverride,
       } = req.body || {};
 
       if (!email) {
         return res.status(400).json({ error: "email is required" });
       }
 
+      let referrerId = req.user.id;
+      if (leadId) {
+        const { data: leadRow } = await supabaseAdmin
+          .from("leads")
+          .select("owner_id")
+          .eq("id", leadId)
+          .maybeSingle();
+        if (leadRow?.owner_id) {
+          referrerId = leadRow.owner_id;
+        }
+      }
+      if (referrerOverride) {
+        referrerId = referrerOverride;
+      }
+
       const planTier = String(tierId || "pro").toLowerCase();
-      if (!["pro", "elite", "core"].includes(planTier)) {
+      if (!["pro", "elite", "core", "starter", "scale"].includes(planTier)) {
         return res.status(400).json({ error: "Invalid tierId" });
       }
 
@@ -2061,7 +3060,7 @@ app.post(
         business_name: businessName || null,
         industry: industry || null,
         phone: phone || null,
-        referrer_id: req.user.id,
+        referrer_id: referrerId,
       });
 
       const customer = await stripe.customers.create({
@@ -2094,8 +3093,8 @@ app.post(
         .from("deals")
         .insert({
           lead_id: leadId || null,
-          seller_id: req.user.id,
-          referrer_id: req.user.id,
+          seller_id: referrerId,
+          referrer_id: referrerId,
           stripe_session_id: session.id,
           amount: dealAmount,
           status: "pending",
@@ -2110,7 +3109,7 @@ app.post(
         (dealAmount * DEFAULT_COMMISSION_RATE).toFixed(2)
       );
       const { error: commissionError } = await supabaseAdmin.from("commissions").insert({
-        seller_id: req.user.id,
+        seller_id: referrerId,
         deal_id: dealRow.id,
         deal_amount: dealAmount,
         commission_amount: commissionAmount,
@@ -2133,6 +3132,7 @@ app.post(
           lead_id: leadId || null,
           deal_amount: dealAmount,
           commission_amount: commissionAmount,
+          referrer_id: referrerId,
         },
       });
 

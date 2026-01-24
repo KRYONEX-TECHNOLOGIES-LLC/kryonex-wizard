@@ -18,12 +18,12 @@ export const TIERS = [
     title: "CORE",
     description: "Private launch tier with limited access.",
     accent: "#f59e0b",
-    price: "$97/mo",
+    price: "$99/mo",
   },
   {
-    id: "white_glove",
-    title: "WHITE GLOVE",
-    description: "Full-service premium onboarding with dedicated support.",
+    id: "scale",
+    title: "KRYONEX SCALE",
+    description: "Scale tier with premium onboarding and dedicated support.",
     accent: "#ec4899",
     price: "$997/mo",
   },
@@ -79,7 +79,7 @@ export const TIER_FEATURE_DEFAULTS = {
     "emergency_afterhours",
   ],
   core: ["call_recordings", "auto_sms_followup"],
-  white_glove: [
+  scale: [
     "call_recordings",
     "auto_sms_followup",
     "sms_reminders",

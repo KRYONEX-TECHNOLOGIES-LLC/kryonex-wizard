@@ -33,6 +33,7 @@ export default function AdminModeToggle({ align = "right", onModeChange }) {
   const setAdminMode = (next) => {
     window.localStorage.setItem("kryonex_admin_mode", next);
     setMode(next);
+    window.dispatchEvent(new Event("kryonex-admin-mode"));
     if (onModeChange) {
       onModeChange(next);
     }
@@ -60,7 +61,7 @@ export default function AdminModeToggle({ align = "right", onModeChange }) {
         className="button-primary"
         onClick={() => {
           setAdminMode("user");
-          navigate("/dashboard");
+          navigate("/wizard");
         }}
       >
         USER VIEW

@@ -52,7 +52,8 @@ export default function BillingPage() {
         .eq("user_id", user.id)
         .maybeSingle();
       if (mounted && sub?.plan_type) {
-        setPlanTier(sub.plan_type.toLowerCase());
+        const normalized = sub.plan_type.toLowerCase();
+        setPlanTier(normalized === "white_glove" ? "scale" : normalized);
       }
       const usageRes = await getUsageStatus();
       if (mounted) setUsage(usageRes.data || null);
@@ -224,31 +225,31 @@ export default function BillingPage() {
           >
             <button
               className="button-primary"
-              onClick={() => handleTopup("calls_300")}
-              disabled={topupLoading === "calls_300"}
+              onClick={() => handleTopup("call_300")}
+              disabled={topupLoading === "call_300"}
             >
-              {topupLoading === "calls_300" ? "LOADING..." : "300 MINS ($79)"}
+              {topupLoading === "call_300" ? "LOADING..." : "300 MINS ($99)"}
             </button>
             <button
               className="button-primary"
-              onClick={() => handleTopup("calls_800")}
-              disabled={topupLoading === "calls_800"}
+              onClick={() => handleTopup("call_800")}
+              disabled={topupLoading === "call_800"}
             >
-              {topupLoading === "calls_800" ? "LOADING..." : "800 MINS ($199)"}
+              {topupLoading === "call_800" ? "LOADING..." : "800 MINS ($265)"}
             </button>
             <button
               className="button-primary"
               onClick={() => handleTopup("sms_500")}
               disabled={topupLoading === "sms_500"}
             >
-              {topupLoading === "sms_500" ? "LOADING..." : "500 SMS ($25)"}
+              {topupLoading === "sms_500" ? "LOADING..." : "500 SMS ($40)"}
             </button>
             <button
               className="button-primary"
               onClick={() => handleTopup("sms_1000")}
               disabled={topupLoading === "sms_1000"}
             >
-              {topupLoading === "sms_1000" ? "LOADING..." : "1000 SMS ($45)"}
+              {topupLoading === "sms_1000" ? "LOADING..." : "1000 SMS ($80)"}
             </button>
           </div>
         </div>

@@ -13,6 +13,7 @@ import {
   Calendar,
   Mic,
   DollarSign,
+  MapPin,
 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -26,6 +27,8 @@ import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
 import TimeSelect from "../components/TimeSelect.jsx";
 import { AGENT_TONES, INDUSTRIES } from "../lib/wizardConstants";
+import { getSavedState, saveState } from "../lib/persistence.js";
+import { normalizePhone } from "../lib/phone.js";
 
 const stepMeta = [
   {
@@ -90,12 +93,19 @@ const defaultFormState = {
   standardFee: "89",
   emergencyFee: "189",
   transferNumber: "",
+    calComLink: "",
   paymentId: "",
   cardName: "",
   cardNumber: "",
   cardExpiry: "",
   cardCvc: "",
+  dispatchBaseLocation: "",
+  travelLimitValue: "30",
+  travelLimitMode: "minutes",
 };
+
+const WIZARD_FORM_KEY = "wizard.form";
+const WIZARD_STEP_KEY = "wizard.step";
 
 const terminalLines = [
   "Securing uplink...",
@@ -109,12 +119,16 @@ const terminalLines = [
 
 
 export default function WizardPage() {
-  const [step, setStep] = useState(() => {
-    const stored = Number(window.localStorage.getItem("kryonex_wizard_step"));
-    return Number.isFinite(stored) && stored >= 1 && stored <= 6 ? stored : 1;
-  });
+  const getInitialStep = () => {
+    const stored = Number(getSavedState(WIZARD_STEP_KEY));
+    if (Number.isFinite(stored) && stored >= 1 && stored <= 6) return stored;
+    const fallback = Number(window.localStorage.getItem("kryonex_wizard_step"));
+    if (Number.isFinite(fallback) && fallback >= 1 && fallback <= 6) return fallback;
+    return 1;
+  };
+  const [step, setStep] = useState(getInitialStep);
   const navigate = useNavigate();
-  const [form, setForm] = useState(defaultFormState);
+  const [form, setForm] = useState(() => getSavedState(WIZARD_FORM_KEY) || defaultFormState);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployError, setDeployError] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -136,6 +150,26 @@ export default function WizardPage() {
     window.localStorage.getItem("kryonex_core_offer") === "1";
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
 
+  const persistStep = (value) => {
+    setStep(value);
+    window.localStorage.setItem("kryonex_wizard_step", value);
+    saveState(WIZARD_STEP_KEY, value);
+  };
+
+  const updateStep = (updater) => {
+    setStep((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      window.localStorage.setItem("kryonex_wizard_step", next);
+      saveState(WIZARD_STEP_KEY, next);
+      return next;
+    });
+  };
+
+  const persistForm = (next) => {
+    setForm(next);
+    saveState(WIZARD_FORM_KEY, next);
+  };
+
   const currentStep = stepMeta[step - 1];
   const StepIcon = currentStep.icon;
 
@@ -148,7 +182,11 @@ export default function WizardPage() {
   const canContinuePayment = paymentVerified;
 
   const updateField = (field, value) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => {
+      const next = { ...prev, [field]: value };
+      saveState(WIZARD_FORM_KEY, next);
+      return next;
+    });
   };
 
   const playKeyTone = () => {
@@ -236,7 +274,7 @@ export default function WizardPage() {
         .then((res) => {
           updateField("paymentId", sessionId);
           setPaymentVerified(true);
-          if (step < 5) setStep(5);
+          if (step < 5) persistStep(5);
           setCheckoutError("");
           localStorage.removeItem("kryonex_pending_checkout_session");
           navigate("/dashboard", { replace: true });
@@ -256,7 +294,7 @@ export default function WizardPage() {
           .then(() => {
             updateField("paymentId", pendingSession);
             setPaymentVerified(true);
-            if (step < 5) setStep(5);
+            if (step < 5) persistStep(5);
             setCheckoutError("");
             localStorage.removeItem("kryonex_pending_checkout_session");
             navigate("/dashboard", { replace: true });
@@ -288,7 +326,7 @@ export default function WizardPage() {
           setCheckoutError("");
           const isNewAgent = searchParams.get("new") === "1";
           if (isNewAgent) {
-            setStep((prev) => (prev < 4 ? 4 : prev));
+            updateStep((prev) => (prev < 4 ? 4 : prev));
           } else {
             navigate("/dashboard", { replace: true });
           }
@@ -344,6 +382,14 @@ export default function WizardPage() {
         if (mounted) {
           setWizardLocked(false);
           setWizardLockReason("");
+          const savedForm = getSavedState(WIZARD_FORM_KEY) || {};
+          const hasWizardProgress = Boolean(
+            savedForm.nameInput || savedForm.areaCodeInput || savedForm.industryInput
+          );
+          if (!hasWizardProgress) {
+            persistStep(1);
+            persistForm(defaultFormState);
+          }
         }
         return;
       }
@@ -356,14 +402,13 @@ export default function WizardPage() {
       }
       const subRes = await getSubscriptionStatus();
       const tier = String(subRes?.data?.plan_type || "").toLowerCase();
-      const eligible =
-        tier.includes("elite") || tier.includes("white") || tier.includes("glove");
+      const eligible = tier.includes("elite") || tier.includes("scale");
       if (mounted) {
         setWizardLocked(!eligible);
         setWizardLockReason(
           eligible
             ? ""
-            : "New agent creation is available on Elite/White-Glove plans only."
+            : "New agent creation is available on Elite/Scale plans only."
         );
       }
     };
@@ -390,6 +435,27 @@ export default function WizardPage() {
     return summary;
   };
 
+  const baseInputValue = form.dispatchBaseLocation.trim();
+  const isZipBase = /^\d{5}$/.test(baseInputValue);
+  const baseDescriptor = baseInputValue
+    ? isZipBase
+      ? `Zip Code ${baseInputValue}`
+      : baseInputValue
+    : null;
+  const travelLimitValue = Math.max(0, Number(form.travelLimitValue) || 0);
+  const travelLimitMode = form.travelLimitMode || "minutes";
+  const travelInstruction =
+    baseInputValue && travelLimitValue > 0
+      ? `Your Dispatch Base is ${isZipBase ? `the center of Zip Code ${baseInputValue}` : baseInputValue}. The client's strict travel limit is ${travelLimitValue} ${travelLimitMode}. Estimate the travel effort from that ${
+          isZipBase ? "Zip Code center" : "location"
+        }. If the customer is too far, decline.`
+      : "";
+  const dispatchHint = baseInputValue
+    ? isZipBase
+      ? `Using Zip Code ${baseInputValue} as the dispatch anchor.`
+      : `Using exact address: ${baseInputValue}.`
+    : "Type a 5-digit Zip or full address to anchor your dispatch radius.";
+
   const payloadPreview = useMemo(
     () => ({
       business_name: form.nameInput,
@@ -402,13 +468,27 @@ export default function WizardPage() {
       standard_fee: form.standardFee,
       emergency_fee: form.emergencyFee,
       transfer_number: form.transferNumber,
+      dispatch_base_location: baseInputValue || null,
+      dispatch_base_zip: isZipBase ? baseInputValue : null,
+      travel_limit_value: travelLimitValue,
+      travel_limit_mode: travelLimitMode,
     }),
-    [form, planTier]
+    [form, planTier, baseInputValue, isZipBase, travelLimitValue, travelLimitMode]
   );
 
   const handleDeploy = async () => {
     setDeployError("");
     setIsDeploying(true);
+    if (!baseInputValue) {
+      setDeployError("Enter a Dispatch Base Location before deploying.");
+      setIsDeploying(false);
+      return;
+    }
+    if (travelLimitValue <= 0) {
+      setDeployError("Set a travel limit value greater than zero.");
+      setIsDeploying(false);
+      return;
+    }
     try {
       const response = await deployAgent({
         businessName: form.nameInput,
@@ -420,10 +500,14 @@ export default function WizardPage() {
         emergencyFee: form.emergencyFee,
         paymentId: form.paymentId,
         transferNumber: form.transferNumber,
+        calComLink: form.calComLink,
         planTier,
+        dispatchBaseLocation: baseInputValue,
+        travelLimitValue,
+        travelLimitMode,
       });
       setPhoneNumber(response?.data?.phone_number || "");
-      setStep(6);
+      persistStep(6);
     } catch (error) {
       setDeployError("Deployment failed. Neural uplink refused.");
     } finally {
@@ -435,7 +519,7 @@ export default function WizardPage() {
     setCheckoutError("");
     setCheckoutLoading(true);
     try {
-      const planTierPayload = planTier || "pro";
+      const planTierPayload = planTier === "scale" ? "scale" : planTier || "pro";
       const successUrl = `${window.location.origin}/wizard?success=true&session_id={CHECKOUT_SESSION_ID}`;
       const cancelUrl = `${window.location.origin}/wizard?canceled=true`;
       const response = await createCheckoutSession({
@@ -969,7 +1053,26 @@ export default function WizardPage() {
                           onChange={(e) =>
                             updateField("transferNumber", e.target.value)
                           }
+                          onBlur={(e) => {
+                            const normalized = normalizePhone(e.target.value);
+                            if (normalized) {
+                              updateField("transferNumber", normalized);
+                            }
+                          }}
                           placeholder="+1 800 555 0123"
+                        />
+                      </div>
+                      <div className="space-y-2 mb-6">
+                        <label className="text-xs uppercase tracking-wider text-white/50">
+                          Cal.com Scheduling Link
+                        </label>
+                        <input
+                          className="glass-input w-full font-mono text-neon-cyan"
+                          value={form.calComLink}
+                          onChange={(e) =>
+                            updateField("calComLink", e.target.value)
+                          }
+                          placeholder="https://cal.com/your-team/book"
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-6">
@@ -1014,6 +1117,70 @@ export default function WizardPage() {
                   </div>
                 </div>
 
+              <div className="space-y-6">
+                <div className="glass-panel p-6 rounded-3xl border border-white/10 bg-black/40 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <MapPin size={20} className="text-neon-cyan" />
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-white/40">
+                        Smart Service Radius
+                      </p>
+                      <p className="text-lg font-semibold text-white">
+                        Dispatch Base Location
+                      </p>
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <MapPin
+                      size={18}
+                      className="text-white/30 absolute left-3 top-1/2 -translate-y-1/2"
+                    />
+                    <input
+                      className="glass-input w-full pl-12 search-location-input text-sm text-white"
+                      placeholder="Enter Start Zip Code (Recommended) or Full Address"
+                      value={form.dispatchBaseLocation}
+                      onChange={(event) =>
+                        updateField("dispatchBaseLocation", event.target.value)
+                      }
+                    />
+                  </div>
+                  <p className="text-xs text-white/50">{dispatchHint}</p>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      {["miles", "minutes"].map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => updateField("travelLimitMode", mode)}
+                          className={`flex-1 text-xs uppercase tracking-[0.4em] rounded-2xl border py-2 transition-all ${
+                            travelLimitMode === mode
+                              ? "border-neon-cyan bg-neon-cyan/20 text-neon-cyan"
+                              : "border-white/20 text-white/60 hover:border-neon-cyan/50 hover:text-white"
+                          }`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        className="glass-input w-full font-mono text-lg text-white"
+                        value={String(form.travelLimitValue || "")}
+                        onChange={(event) =>
+                          updateField("travelLimitValue", event.target.value)
+                        }
+                        placeholder="30"
+                      />
+                      <span className="text-xs uppercase tracking-[0.4em] text-white/40">
+                        Range
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="glass-panel p-6 rounded-3xl bg-black/40 border border-white/10 flex flex-col gap-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-white/40">
                     Logic Preview
@@ -1029,15 +1196,20 @@ export default function WizardPage() {
                       form.transferNumber ? form.transferNumber : "NONE"
                     }\n`}
                     {`> STANDARD_FEE: $${form.standardFee}\n`}
-                    {`> EMERGENCY_FEE: $${form.emergencyFee}`}
+                    {`> EMERGENCY_FEE: $${form.emergencyFee}\n`}
+                    {baseDescriptor ? `> DISPATCH_BASE: ${baseDescriptor}\n` : ""}
+                    {travelLimitValue > 0
+                      ? `> TRAVEL_LIMIT: ${travelLimitValue} ${travelLimitMode}\n`
+                      : ""}
                   </div>
                   <p className="text-xs text-white/50 italic">
                     The AI will use this logic to accept or reject appointment
                     requests.
                   </p>
                 </div>
-              </motion.div>
-            )}
+              </div>
+            </motion.div>
+          )}
 
             {step === 4 && (
               <motion.div
@@ -1084,11 +1256,12 @@ export default function WizardPage() {
                       {[
                         { id: "pro", label: "PRO — $197/mo", desc: "Most popular" },
                         { id: "elite", label: "ELITE — $397/mo", desc: "Multi‑location + VIP" },
+                        { id: "scale", label: "SCALE — $997/mo", desc: "Enterprise scale tier" },
                         ...(coreOffer || planTier === "core"
                           ? [
                               {
                                 id: "core",
-                                label: "CORE — $97/mo",
+                                label: "CORE — $99/mo",
                                 desc: "Private access tier",
                               },
                             ]
@@ -1122,8 +1295,10 @@ export default function WizardPage() {
                       <span className="font-mono text-neon-cyan">
                         {planTier === "elite"
                           ? "$397/mo"
+                          : planTier === "scale"
+                          ? "$997/mo"
                           : planTier === "core"
-                          ? "$97/mo"
+                          ? "$99/mo"
                           : "$197/mo"}
                       </span>
                     </div>
@@ -1341,7 +1516,7 @@ export default function WizardPage() {
         {step < 6 && (
           <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
             <button
-              onClick={() => setStep((prev) => Math.max(1, prev - 1))}
+              onClick={() => updateStep((prev) => Math.max(1, prev - 1))}
               disabled={step === 1 || isDeploying}
               className="px-6 py-3 rounded-xl border border-white/10 hover:bg-white/5 hover:border-white/30 text-white/60 disabled:opacity-30 transition-all text-sm font-medium tracking-wide uppercase"
             >
@@ -1359,7 +1534,7 @@ export default function WizardPage() {
                   const ok = await saveProfile({
                     business_name: form.nameInput,
                   });
-                  if (ok) setStep(2);
+                  if (ok) persistStep(2);
                 }}
                 disabled={!canContinueIdentity || saving}
                 className="glow-button"
@@ -1369,7 +1544,7 @@ export default function WizardPage() {
             )}
             {step === 2 && (
               <button
-                onClick={() => setStep(3)}
+                onClick={() => persistStep(3)}
                 disabled={!canContinueIndustry || saving}
                 className="glow-button"
               >
@@ -1382,7 +1557,7 @@ export default function WizardPage() {
                   const ok = await saveProfile({
                     transfer_number: form.transferNumber || null,
                   });
-                  if (ok) setStep(4);
+                  if (ok) persistStep(4);
                 }}
                 disabled={!canContinueLogistics}
                 className="glow-button"
@@ -1392,7 +1567,7 @@ export default function WizardPage() {
             )}
             {step === 4 && (
               <button
-                onClick={() => setStep(5)}
+                onClick={() => persistStep(5)}
                 disabled={!canContinuePayment}
                 className="glow-button"
               >

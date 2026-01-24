@@ -48,6 +48,18 @@ export default function TopMenu() {
     };
   }, []);
 
+  React.useEffect(() => {
+    const updateMode = () => {
+      setViewMode(window.localStorage.getItem("kryonex_admin_mode") || "user");
+    };
+    window.addEventListener("storage", updateMode);
+    window.addEventListener("kryonex-admin-mode", updateMode);
+    return () => {
+      window.removeEventListener("storage", updateMode);
+      window.removeEventListener("kryonex-admin-mode", updateMode);
+    };
+  }, []);
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     window.sessionStorage.removeItem("kryonex_session_ok");
@@ -55,26 +67,33 @@ export default function TopMenu() {
     navigate("/login", { replace: true });
   };
 
-  const items = [{ to: "/dashboard", label: "Dashboard" }];
+  const adminEnabled = isAdmin && viewMode === "admin";
+  const items = [];
   if (isSeller) {
-    items.push({ to: "/console/dialer", label: "Sales Console" });
-  }
-  if (!onboardingComplete) {
-    items.push({ to: "/wizard", label: "Wizard" });
-  }
-  items.push({ to: "/billing", label: "Billing" });
-  if (isAdmin) {
-    items.push({ to: "/admin", label: "Admin" });
+    items.push({ to: "/console/dialer", label: "Call Center" });
+    items.push({ to: "/calendar", label: "Calendar" });
+    if (!onboardingComplete) {
+      items.push({ to: "/wizard", label: "Wizard" });
+    }
+  } else {
+    items.push({ to: "/dashboard", label: "Dashboard" });
+    if (!onboardingComplete || viewMode === "user") {
+      items.push({ to: "/wizard", label: "Wizard" });
+    }
+    items.push({ to: "/billing", label: "Billing" });
+    if (adminEnabled) {
+      items.push({ to: "/admin", label: "Admin" });
+    }
   }
 
   const badgeLabel =
-    isAdmin && viewMode === "admin"
+    adminEnabled
       ? "ADMIN VIEW"
       : isSeller
       ? "AGENT VIEW"
       : "USER VIEW";
   const badgeClass =
-    isAdmin && viewMode === "admin"
+    adminEnabled
       ? "view-admin"
       : isSeller
       ? "view-agent"
@@ -126,9 +145,14 @@ export default function TopMenu() {
                   : subscription.status}
               </div>
             </div>
-            <div className="top-menu-section">
-              <AdminModeToggle align="left" onModeChange={(mode) => setViewMode(mode)} />
-            </div>
+            {isAdmin ? (
+              <div className="top-menu-section">
+                <AdminModeToggle
+                  align="left"
+                  onModeChange={(mode) => setViewMode(mode)}
+                />
+              </div>
+            ) : null}
             <button className="top-menu-logout" type="button" onClick={handleLogout}>
               Log Out
             </button>
