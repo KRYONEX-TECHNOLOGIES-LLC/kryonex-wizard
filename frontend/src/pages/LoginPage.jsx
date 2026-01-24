@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import BackgroundGrid from "../components/BackgroundGrid.jsx";
 import { supabase } from "../lib/supabase";
-import { autoGrantAdmin } from "../lib/api";
+import { autoGrantAdmin, verifyAdminCode } from "../lib/api";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -14,6 +14,7 @@ export default function LoginPage() {
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const [checkingSession, setCheckingSession] = React.useState(true);
+  const [adminCode, setAdminCode] = React.useState("");
 
   React.useEffect(() => {
     let mounted = true;
@@ -25,15 +26,17 @@ export default function LoginPage() {
           setCheckingSession(false);
           return;
         }
-        try {
-          const response = await autoGrantAdmin();
-          if (response.data?.ok) {
-            window.localStorage.setItem("kryonex_admin_mode", "admin");
-            navigate("/admin");
-            return;
+        if (adminCode) {
+          try {
+            const response = await autoGrantAdmin(adminCode);
+            if (response.data?.ok) {
+              window.localStorage.setItem("kryonex_admin_mode", "admin");
+              navigate("/admin");
+              return;
+            }
+          } catch (err) {
+            // not admin
           }
-        } catch (err) {
-          // not admin
         }
         const { data: profile } = await supabase
           .from("profiles")
@@ -96,15 +99,30 @@ export default function LoginPage() {
       return;
     }
     window.sessionStorage.setItem("kryonex_session_ok", "1");
-    try {
-      const response = await autoGrantAdmin();
-      if (response.data?.ok) {
-        window.localStorage.setItem("kryonex_admin_mode", "admin");
-        navigate("/admin");
+    if (adminCode) {
+      try {
+        const response = await autoGrantAdmin(adminCode);
+        if (response.data?.ok) {
+          window.localStorage.setItem("kryonex_admin_mode", "admin");
+          navigate("/admin");
+          return;
+        }
+      } catch (adminErr) {
+        // Not an admin account, continue to role check.
+      }
+    }
+    if (adminCode) {
+      try {
+        const response = await verifyAdminCode(adminCode);
+        if (response.data?.ok) {
+          window.localStorage.setItem("kryonex_admin_mode", "admin");
+          navigate("/admin");
+          return;
+        }
+      } catch (codeErr) {
+        setError("Invalid admin access code.");
         return;
       }
-    } catch (adminErr) {
-      // Not an admin account, continue to role check.
     }
     const { data: sessionData } = await supabase.auth.getSession();
     const { data: profile } = await supabase
@@ -244,6 +262,18 @@ export default function LoginPage() {
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: "1.5rem" }}>
+            <span style={{ color: "#9ca3af" }}>
+              Admin Access Code (optional)
+            </span>
+            <input
+              className="input-field"
+              type="password"
+              value={adminCode}
+              onChange={(event) => setAdminCode(event.target.value)}
+              placeholder="Enter admin code"
             />
           </label>
           {error ? (

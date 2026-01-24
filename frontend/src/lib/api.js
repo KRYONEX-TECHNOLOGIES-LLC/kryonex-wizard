@@ -2,7 +2,7 @@ import axios from "axios";
 import { supabase } from "./supabase";
 
 const api = axios.create({
-  baseURL: "http://localhost:3000",
+  baseURL: import.meta.env.VITE_API_URL || "http://localhost:3000",
 });
 
 api.interceptors.request.use(async (config) => {
@@ -31,7 +31,8 @@ export const verifyCheckoutSession = (sessionId) =>
   api.post("/verify-checkout-session", { sessionId });
 export const verifyAdminCode = (code) => api.post("/admin/verify-code", { code });
 export const getAuditLogs = () => api.get("/admin/audit-logs");
-export const autoGrantAdmin = () => api.post("/admin/auto-grant");
+export const autoGrantAdmin = (code) =>
+  api.post("/admin/auto-grant", { code });
 export const getAdminMetrics = () => api.get("/admin/metrics");
 export const getAdminHealth = () => api.get("/admin/health");
 export const syncStripe = () => api.post("/admin/sync-stripe");
