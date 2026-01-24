@@ -131,9 +131,20 @@ CREATE TABLE IF NOT EXISTS public.appointments (
 
 ensureAppointmentsSchema();
 
+const allowedOrigins = [
+  FRONTEND_URL,
+  APP_URL,
+  process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
+  process.env.VERCEL_BRANCH_URL ? `https://${process.env.VERCEL_BRANCH_URL}` : null,
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: [FRONTEND_URL],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
   })
 );
@@ -2632,9 +2643,28 @@ app.post(
       if (!ADMIN_EMAIL) {
         return res.status(500).json({ error: "Admin email not configured" });
       }
+      if (!ADMIN_ACCESS_CODE) {
+        return res.status(500).json({ error: "Admin code not configured" });
+      }
+      const { code } = req.body || {};
+      if (!code) {
+        return res.status(400).json({ error: "code is required" });
+      }
+      if (code !== ADMIN_ACCESS_CODE) {
+        await auditLog({
+          userId: req.user.id,
+          action: "admin_code_failed",
+          entity: "admin",
+          req,
+        });
+        return res.status(401).json({ error: "Invalid admin code" });
+      }
       const adminEmails = ADMIN_EMAIL.split(",")
         .map((entry) => entry.trim().toLowerCase())
         .filter(Boolean);
+      if (!adminEmails.length) {
+        return res.status(500).json({ error: "Admin email not configured" });
+      }
       const userEmail = (req.user.email || "").trim().toLowerCase();
       if (!adminEmails.includes(userEmail)) {
         return res.status(403).json({ error: "Admin access denied" });
