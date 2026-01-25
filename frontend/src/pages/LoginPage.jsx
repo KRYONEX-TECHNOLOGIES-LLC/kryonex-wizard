@@ -21,11 +21,6 @@ export default function LoginPage() {
     const bootstrap = async () => {
       const { data } = await supabase.auth.getSession();
       if (mounted && data?.session) {
-        if (!window.sessionStorage.getItem("kryonex_session_ok")) {
-          await supabase.auth.signOut();
-          setCheckingSession(false);
-          return;
-        }
         if (adminCode) {
           try {
             const response = await autoGrantAdmin(adminCode);
@@ -114,7 +109,7 @@ export default function LoginPage() {
       setNotice("Check your email to confirm your account, then log in.");
       return;
     }
-    window.sessionStorage.setItem("kryonex_session_ok", "1");
+    window.localStorage.setItem("kryonex_session_ok", "1");
     if (adminCode) {
       try {
         const response = await autoGrantAdmin(adminCode);
@@ -308,8 +303,8 @@ export default function LoginPage() {
             {loading
               ? "VERIFYING..."
               : mode === "signup"
-              ? "AUTHORIZE PROFILE"
-              : "IDENTIFY USER"}
+              ? "CREATE PROFILE"
+              : "SIGN IN"}
           </motion.button>
           {mode === "login" ? (
             <div style={{ marginTop: "0.9rem", textAlign: "center" }}>
