@@ -31,7 +31,6 @@ export default function TopMenu() {
         .select("role, business_name, industry")
         .eq("user_id", user.id)
         .maybeSingle();
-      const subRes = await getSubscriptionStatus();
       if (mounted) {
         setIsAdmin(profile?.role === "admin");
         setIsSeller(profile?.role === "seller");
@@ -39,7 +38,16 @@ export default function TopMenu() {
         setOnboardingComplete(
           Boolean(profile?.business_name) && Boolean(profile?.industry)
         );
-        setSubscription(subRes.data || { status: "unknown", plan_type: null });
+      }
+      try {
+        const subRes = await getSubscriptionStatus();
+        if (mounted) {
+          setSubscription(subRes.data || { status: "unknown", plan_type: null });
+        }
+      } catch {
+        if (mounted) {
+          setSubscription({ status: "unknown", plan_type: null });
+        }
       }
     };
     loadProfile();
