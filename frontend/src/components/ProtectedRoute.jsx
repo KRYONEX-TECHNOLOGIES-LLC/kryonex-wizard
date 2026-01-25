@@ -30,7 +30,7 @@ export default function ProtectedRoute({ children }) {
 
   React.useEffect(() => {
     if (!session) return;
-    if (!window.sessionStorage.getItem("kryonex_session_ok")) {
+    if (!window.localStorage.getItem("kryonex_session_ok")) {
       supabase.auth.signOut();
       navigate("/login", { replace: true });
       return;

@@ -62,7 +62,7 @@ export default function TopMenu() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    window.sessionStorage.removeItem("kryonex_session_ok");
+    window.localStorage.removeItem("kryonex_session_ok");
     setOpen(false);
     navigate("/login", { replace: true });
   };
