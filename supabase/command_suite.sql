@@ -59,6 +59,58 @@ create table if not exists public.commissions (
   created_at timestamptz not null default now()
 );
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where t.typname = 'call_outcome' and n.nspname = 'public'
+  ) then
+    create type public.call_outcome as enum (
+      'No Answer',
+      'Gatekeeper',
+      'Not Interested',
+      'Hangup',
+      'Pitch Delivered',
+      'Demo Set'
+    );
+  end if;
+end
+$$;
+
+create table if not exists public.call_recordings (
+  id uuid primary key default gen_random_uuid(),
+  seller_id uuid references public.profiles(user_id) on delete set null,
+  lead_id uuid references public.leads(id) on delete set null,
+  duration integer not null default 0,
+  recording_url text,
+  outcome public.call_outcome not null default 'No Answer',
+  qa_flags jsonb default '[]'::jsonb,
+  manager_notes text,
+  flagged_for_review boolean default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.call_recordings enable row level security;
+
+drop policy if exists "admins_full_access_call_recordings" on public.call_recordings;
+create policy "admins_full_access_call_recordings"
+  on public.call_recordings
+  for all
+  using (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  );
+
 -- Enable RLS
 alter table public.profiles enable row level security;
 alter table public.leads enable row level security;
@@ -176,11 +228,63 @@ create table if not exists public.tracking_points (
 alter table public.tracking_sessions enable row level security;
 alter table public.tracking_points enable row level security;
 
+-- Appointments (Calendar)
+create table if not exists public.appointments (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  customer_name text not null,
+  customer_phone text,
+  start_time timestamptz not null,
+  end_time timestamptz not null,
+  location text,
+  notes text,
+  reminder_minutes integer not null default 0,
+  reminder_enabled boolean not null default true,
+  reminder_sent boolean not null default false,
+  reminder_last_sent_at timestamptz,
+  eta_enabled boolean not null default false,
+  eta_minutes integer not null default 10,
+  eta_link text,
+  eta_last_sent_at timestamptz,
+  status text not null default 'booked',
+  job_value numeric,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.appointments
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists customer_name text,
+  add column if not exists customer_phone text,
+  add column if not exists start_time timestamptz,
+  add column if not exists end_time timestamptz,
+  add column if not exists location text,
+  add column if not exists notes text,
+  add column if not exists reminder_minutes integer,
+  add column if not exists reminder_enabled boolean,
+  add column if not exists reminder_sent boolean,
+  add column if not exists reminder_last_sent_at timestamptz,
+  add column if not exists eta_enabled boolean,
+  add column if not exists eta_minutes integer,
+  add column if not exists eta_link text,
+  add column if not exists eta_last_sent_at timestamptz,
+  add column if not exists status text,
+  add column if not exists job_value numeric;
+
+create index if not exists appointments_user_id_idx
+  on public.appointments(user_id);
+create index if not exists appointments_start_time_idx
+  on public.appointments(start_time);
+
+alter table public.appointments enable row level security;
+
 -- Drop tracking policies after tables exist
 drop policy if exists "admins_full_access_tracking_sessions" on public.tracking_sessions;
 drop policy if exists "admins_full_access_tracking_points" on public.tracking_points;
 drop policy if exists "creator_read_tracking_sessions" on public.tracking_sessions;
 drop policy if exists "creator_read_tracking_points" on public.tracking_points;
+drop policy if exists "admins_full_access_appointments" on public.appointments;
+drop policy if exists "owner_access_appointments" on public.appointments;
 
 create policy "admins_full_access_tracking_sessions"
   on public.tracking_sessions
@@ -230,6 +334,28 @@ create policy "creator_read_tracking_points"
     )
   );
 
+create policy "admins_full_access_appointments"
+  on public.appointments
+  for all
+  using (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  );
+
+create policy "owner_access_appointments"
+  on public.appointments
+  for all
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
+
 -- Audit logs
 create table if not exists public.audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -244,6 +370,9 @@ create table if not exists public.audit_logs (
   metadata jsonb,
   created_at timestamptz not null default now()
 );
+
+alter table public.audit_logs
+  add column if not exists actor_id uuid references auth.users(id) on delete set null;
 
 alter table public.audit_logs enable row level security;
 
@@ -267,3 +396,34 @@ create policy "audit_logs_are_viewable_by_owner"
   on public.audit_logs
   for select
   using (actor_id = auth.uid());
+
+-- Dialer queue
+create table if not exists public.dialer_queue (
+  id uuid primary key default gen_random_uuid(),
+  lead_id uuid references public.leads(id) on delete cascade,
+  created_by uuid references public.profiles(user_id) on delete set null,
+  status text not null default 'queued',
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists dialer_queue_lead_id_key
+  on public.dialer_queue(lead_id);
+
+alter table public.dialer_queue enable row level security;
+
+drop policy if exists "admins_full_access_dialer_queue" on public.dialer_queue;
+create policy "admins_full_access_dialer_queue"
+  on public.dialer_queue
+  for all
+  using (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  );
