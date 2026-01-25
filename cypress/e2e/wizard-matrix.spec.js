@@ -48,7 +48,7 @@ const login = () => {
       cy.visit("/", {
         onBeforeLoad(win) {
           setSupabaseSession(supabaseUrl, session);
-          win.sessionStorage.setItem("kryonex_session_ok", "1");
+          win.localStorage.setItem("kryonex_session_ok", "1");
         },
       });
     });
@@ -58,7 +58,7 @@ const login = () => {
   cy.visit("/login");
   cy.get('input[type="email"]').clear().type(email);
   cy.get('input[type="password"]').clear().type(password);
-  cy.contains("IDENTIFY USER").click();
+  cy.contains("SIGN IN").click();
   cy.url().should("not.include", "/login");
 };
 
@@ -92,7 +92,7 @@ const visitAuthed = (path, options = {}) => {
       cy.visit(path, {
         onBeforeLoad(win) {
           setSupabaseSession(supabaseUrl, session);
-          win.sessionStorage.setItem("kryonex_session_ok", "1");
+          win.localStorage.setItem("kryonex_session_ok", "1");
           if (options.admin) {
             win.localStorage.setItem("kryonex_admin_mode", "admin");
           }
@@ -104,7 +104,7 @@ const visitAuthed = (path, options = {}) => {
 
   cy.visit(path, {
     onBeforeLoad(win) {
-      win.sessionStorage.setItem("kryonex_session_ok", "1");
+      win.localStorage.setItem("kryonex_session_ok", "1");
       if (options.admin) {
         win.localStorage.setItem("kryonex_admin_mode", "admin");
       }
@@ -375,7 +375,7 @@ describe("Wizard matrix sweep", () => {
       });
 
       if (config.coreOffer) {
-        cy.contains("CORE — $97/mo").click();
+        cy.contains("CORE — $99/mo").click();
       } else {
         cy.contains("PRO — $197/mo").click();
       }

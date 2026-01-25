@@ -6,3 +6,6 @@ database.sqlite
 .restore_tmp/
 .DS_Store
 *.log
+cypress/screenshots/
+cypress/videos/
+cypress/downloads/
