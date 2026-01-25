@@ -5,6 +5,7 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   cypress:
@@ -16,6 +17,7 @@ jobs:
       CYPRESS_TEST_PASSWORD: ${{ secrets.CYPRESS_TEST_PASSWORD }}
       CYPRESS_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       CYPRESS_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       VITE_API_URL: ${{ secrets.VITE_API_URL }}
@@ -37,6 +39,14 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
+
+      - name: Ensure Cypress test user exists
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_USER_EMAIL: ${{ secrets.CYPRESS_TEST_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.CYPRESS_TEST_PASSWORD }}
+        run: node scripts/create-test-user.js
 
       - name: Run Cypress regression suite
         run: |
