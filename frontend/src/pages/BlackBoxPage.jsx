@@ -90,6 +90,10 @@ export default function BlackBoxPage() {
           setRecords(response.data.recordings || []);
           setLastUpdated(new Date());
         }
+      } catch (error) {
+        if (mounted) {
+          setRecords([]);
+        }
       } finally {
         if (mounted && isInitial) setLoading(false);
       }
