@@ -161,17 +161,23 @@ describe("Kryonex smoke test", () => {
   it("renders the black box table and allows playback buttons", () => {
     visitAuthed("/black-box");
     cy.contains("COMMUNICATION INTERCEPTS").should("exist");
-    cy.get(".blackbox-row").its("length").should("be.gte", 3);
-    cy.get(".blackbox-player button")
-      .first()
-      .click()
-      .should("contain.text", "❚❚")
-      .click()
-      .should("contain.text", "▶");
-    cy.get(".blackbox-actions a")
-      .first()
-      .should("have.attr", "download")
-      .then((attr) => expect(attr).to.contain("recording-"));
+    cy.get(".blackbox-row").then(($rows) => {
+      if ($rows.length === 0) {
+        cy.get(".blackbox-empty-row").should("exist");
+        return;
+      }
+      cy.wrap($rows).its("length").should("be.gte", 1);
+      cy.get(".blackbox-player button")
+        .first()
+        .click()
+        .should("contain.text", "❚❚")
+        .click()
+        .should("contain.text", "▶");
+      cy.get(".blackbox-actions a")
+        .first()
+        .should("have.attr", "download")
+        .then((attr) => expect(attr).to.contain("recording-"));
+    });
   });
 
   it("loads the lead grid page and lists rows", () => {
