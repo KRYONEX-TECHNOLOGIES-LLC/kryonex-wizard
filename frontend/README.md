@@ -14,6 +14,16 @@ VITE_SUPABASE_ANON_KEY=...
 VITE_API_URL=http://localhost:3000
 ```
 
+## Routes
+- `/` landing, `/login` auth, `/wizard` onboarding
+- `/dashboard` user ops, `/calendar` manifest, `/black-box` logs
+- `/billing` billing status and upgrades
+- `/admin/*` admin suite (dashboard, leads, logs, financials, users, call center)
+
+## State + Persistence
+- Wizard state is persisted via `localStorage` keys with `kryonex:` prefix.
+- Admin mode toggles by writing `kryonex_admin_mode=admin`.
+
 ## Retell + Webhooks (Backend)
 Retell webhooks must point to your public backend URL (Railway, etc).
 Set this in the backend `.env`:

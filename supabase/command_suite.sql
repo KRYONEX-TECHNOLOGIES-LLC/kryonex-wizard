@@ -15,6 +15,20 @@ alter table public.profiles
   add column if not exists cal_team_slug text,
   add column if not exists cal_organization_slug text;
 
+-- Integrations (OAuth tokens, encrypted by app)
+create table if not exists public.integrations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  provider text not null,
+  access_token text,
+  refresh_token text,
+  expires_at timestamptz,
+  is_active boolean default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, provider)
+);
+
 -- Leads (Sales CRM)
 create table if not exists public.leads (
   id uuid primary key default gen_random_uuid(),
@@ -123,6 +137,7 @@ alter table public.profiles enable row level security;
 alter table public.leads enable row level security;
 alter table public.deals enable row level security;
 alter table public.commissions enable row level security;
+alter table public.integrations enable row level security;
 
 -- Helper policy check
 -- Drop policies to make script re-runnable
@@ -131,8 +146,13 @@ drop policy if exists "admins_full_access_leads" on public.leads;
 drop policy if exists "admins_full_access_deals" on public.deals;
 drop policy if exists "admins_full_access_commissions" on public.commissions;
 drop policy if exists "admins_full_access_audit_logs" on public.audit_logs;
+drop policy if exists "audit_logs_are_viewable_by_owner" on public.audit_logs;
+drop policy if exists "admins_full_access_integrations" on public.integrations;
+drop policy if exists "admins_full_access_black_box_logs" on public.black_box_logs;
 drop policy if exists "self_profile_access" on public.profiles;
 drop policy if exists "self_profile_update" on public.profiles;
+drop policy if exists "self_integrations_access" on public.integrations;
+drop policy if exists "self_integrations_update" on public.integrations;
 drop policy if exists "seller_read_leads" on public.leads;
 drop policy if exists "seller_insert_leads" on public.leads;
 
@@ -185,6 +205,22 @@ create policy "admins_full_access_commissions"
     )
   );
 
+create policy "admins_full_access_integrations"
+  on public.integrations
+  for all
+  using (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  );
+
 -- Users can read/update their own profile (keeps existing flows working)
 create policy "self_profile_access"
   on public.profiles
@@ -193,6 +229,17 @@ create policy "self_profile_access"
 
 create policy "self_profile_update"
   on public.profiles
+  for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy "self_integrations_access"
+  on public.integrations
+  for select
+  using (auth.uid() = user_id);
+
+create policy "self_integrations_update"
+  on public.integrations
   for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);

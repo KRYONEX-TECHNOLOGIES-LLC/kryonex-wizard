@@ -35,6 +35,9 @@ const {
   RETELL_DEMO_AGENT_ID,
   RETELL_DEMO_FROM_NUMBER,
   RETELL_SMS_SANDBOX,
+  CALCOM_CLIENT_ID,
+  CALCOM_CLIENT_SECRET,
+  CALCOM_ENCRYPTION_KEY,
   ADMIN_IP_ALLOWLIST,
   ADMIN_ACCESS_CODE,
   ADMIN_EMAIL,
@@ -67,6 +70,85 @@ const stripe = Stripe(STRIPE_SECRET_KEY);
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 const appBaseUrl = APP_URL || FRONTEND_URL || "https://app.kryonextech.com";
 const serverBaseUrl = SERVER_URL || APP_URL || FRONTEND_URL || appBaseUrl;
+const calcomRedirectUri = `${serverBaseUrl}/api/calcom/callback`;
+
+const getCalcomKey = () => {
+  if (!CALCOM_ENCRYPTION_KEY) return null;
+  const raw = Buffer.from(CALCOM_ENCRYPTION_KEY, "utf8");
+  if (raw.length === 32) return raw;
+  return crypto.createHash("sha256").update(raw).digest();
+};
+
+const encryptCalcomToken = (value) => {
+  if (!value) return null;
+  const key = getCalcomKey();
+  if (!key) {
+    throw new Error("Missing CALCOM_ENCRYPTION_KEY");
+  }
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(String(value), "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString(
+    "base64"
+  )}`;
+};
+
+const decryptCalcomToken = (value) => {
+  if (!value) return null;
+  if (!String(value).startsWith("v1:")) return value;
+  const key = getCalcomKey();
+  if (!key) {
+    throw new Error("Missing CALCOM_ENCRYPTION_KEY");
+  }
+  const [, ivBase64, tagBase64, dataBase64] = String(value).split(":");
+  const iv = Buffer.from(ivBase64, "base64");
+  const tag = Buffer.from(tagBase64, "base64");
+  const encrypted = Buffer.from(dataBase64, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([
+    decipher.update(encrypted),
+    decipher.final(),
+  ]);
+  return decrypted.toString("utf8");
+};
+
+const signCalcomState = (payload) => {
+  if (!CALCOM_CLIENT_SECRET) {
+    throw new Error("Missing CALCOM_CLIENT_SECRET");
+  }
+  const raw = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", CALCOM_CLIENT_SECRET)
+    .update(raw)
+    .digest("base64url");
+  return `${raw}.${sig}`;
+};
+
+const verifyCalcomState = (state) => {
+  if (!state || !CALCOM_CLIENT_SECRET) return null;
+  const [raw, sig] = String(state).split(".");
+  if (!raw || !sig) return null;
+  const expected = crypto
+    .createHmac("sha256", CALCOM_CLIENT_SECRET)
+    .update(raw)
+    .digest("base64url");
+  if (sig.length !== expected.length) {
+    return null;
+  }
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+};
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -1147,16 +1229,38 @@ const CAL_API_VERSION_SLOTS = "2024-09-04";
 const CAL_API_VERSION_BOOKINGS = "2024-08-13";
 const calClient = axios.create({ baseURL: "https://api.cal.com/v2" });
 
-const getCalConfig = async (userId) => {
+const getCalIntegration = async (userId) => {
   const { data } = await supabaseAdmin
-    .from("profiles")
-    .select(
-      "cal_api_key, cal_event_type_id, cal_time_zone, cal_event_type_slug, cal_username, cal_team_slug, cal_organization_slug"
-    )
+    .from("integrations")
+    .select("access_token, refresh_token, expires_at, is_active")
     .eq("user_id", userId)
+    .eq("provider", "calcom")
     .maybeSingle();
-  if (!data?.cal_api_key) return null;
-  return data;
+  if (!data?.is_active || !data?.access_token) return null;
+  return {
+    ...data,
+    access_token: decryptCalcomToken(data.access_token),
+    refresh_token: decryptCalcomToken(data.refresh_token),
+  };
+};
+
+const getCalConfig = async (userId) => {
+  const [{ data: profile }, integration] = await Promise.all([
+    supabaseAdmin
+      .from("profiles")
+      .select(
+        "cal_api_key, cal_event_type_id, cal_time_zone, cal_event_type_slug, cal_username, cal_team_slug, cal_organization_slug"
+      )
+      .eq("user_id", userId)
+      .maybeSingle(),
+    getCalIntegration(userId),
+  ]);
+  const hasToken = Boolean(integration?.access_token || profile?.cal_api_key);
+  if (!hasToken) return null;
+  return {
+    ...profile,
+    cal_access_token: integration?.access_token || null,
+  };
 };
 
 const fetchCalSlots = async ({ config, start, end, durationMinutes }) => {
@@ -1185,7 +1289,7 @@ const fetchCalSlots = async ({ config, start, end, durationMinutes }) => {
   const response = await calClient.get("/slots", {
     params,
     headers: {
-      Authorization: `Bearer ${config.cal_api_key}`,
+      Authorization: `Bearer ${config.cal_access_token || config.cal_api_key}`,
       "cal-api-version": CAL_API_VERSION_SLOTS,
     },
   });
@@ -1218,7 +1322,7 @@ const createCalBooking = async ({ config, start, args }) => {
 
   const response = await calClient.post("/bookings", body, {
     headers: {
-      Authorization: `Bearer ${config.cal_api_key}`,
+      Authorization: `Bearer ${config.cal_access_token || config.cal_api_key}`,
       "cal-api-version": CAL_API_VERSION_BOOKINGS,
       "Content-Type": "application/json",
     },
@@ -1404,6 +1508,87 @@ const extractLead = (transcript) => {
 
 app.get("/", (req, res) => {
   res.json({ status: "Online" });
+});
+
+app.get("/api/calcom/authorize", requireAuth, (req, res) => {
+  if (!CALCOM_CLIENT_ID) {
+    return res.status(500).json({ error: "Missing CALCOM_CLIENT_ID" });
+  }
+  const state = signCalcomState({
+    userId: req.user.id,
+    ts: Date.now(),
+  });
+  const params = new URLSearchParams({
+    client_id: CALCOM_CLIENT_ID,
+    redirect_uri: calcomRedirectUri,
+    response_type: "code",
+    state,
+  });
+  return res.redirect(
+    `https://app.cal.com/auth/oauth2/authorize?${params.toString()}`
+  );
+});
+
+app.get("/api/calcom/callback", async (req, res) => {
+  const code = req.query.code;
+  const state = req.query.state;
+  if (!code) {
+    return res.status(400).send("Missing code");
+  }
+  if (!CALCOM_CLIENT_ID || !CALCOM_CLIENT_SECRET) {
+    return res.status(500).send("Missing Cal.com OAuth credentials");
+  }
+  if (!CALCOM_ENCRYPTION_KEY) {
+    return res.status(500).send("Missing CALCOM_ENCRYPTION_KEY");
+  }
+  const stateData = verifyCalcomState(state);
+  if (!stateData?.userId) {
+    return res.status(400).send("Invalid state");
+  }
+  try {
+    const tokenResponse = await axios.post(
+      "https://app.cal.com/api/auth/oauth/token",
+      {
+        code,
+        client_id: CALCOM_CLIENT_ID,
+        client_secret: CALCOM_CLIENT_SECRET,
+        grant_type: "authorization_code",
+        redirect_uri: calcomRedirectUri,
+      }
+    );
+    const accessToken = tokenResponse.data?.access_token;
+    const refreshToken = tokenResponse.data?.refresh_token;
+    if (!accessToken) {
+      throw new Error("Missing access token");
+    }
+    await supabaseAdmin.from("integrations").upsert(
+      {
+        user_id: stateData.userId,
+        provider: "calcom",
+        access_token: encryptCalcomToken(accessToken),
+        refresh_token: refreshToken
+          ? encryptCalcomToken(refreshToken)
+          : null,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,provider" }
+    );
+    return res.redirect(`${FRONTEND_URL}/wizard?cal_status=success`);
+  } catch (err) {
+    return res.redirect(`${FRONTEND_URL}/wizard?cal_status=error`);
+  }
+});
+
+app.get("/api/calcom/status", requireAuth, async (req, res) => {
+  const { data } = await supabaseAdmin
+    .from("integrations")
+    .select("is_active, access_token")
+    .eq("user_id", req.user.id)
+    .eq("provider", "calcom")
+    .maybeSingle();
+  const connected = Boolean(data?.is_active && data?.access_token);
+  return res.json({ connected });
 });
 
 const retellWebhookHandler = async (req, res) => {

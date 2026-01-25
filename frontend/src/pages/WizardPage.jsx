@@ -20,6 +20,7 @@ import {
   acceptConsent,
   createCheckoutSession,
   deployAgent,
+  getCalcomStatus,
   getSubscriptionStatus,
   verifyCheckoutSession,
 } from "../lib/api";
@@ -145,10 +146,46 @@ export default function WizardPage() {
   const [wizardLocked, setWizardLocked] = useState(false);
   const [wizardLockReason, setWizardLockReason] = useState("");
   const [searchParams] = useSearchParams();
+  const [calConnected, setCalConnected] = useState(false);
+  const [calStatusLoading, setCalStatusLoading] = useState(true);
+  const [calStatusError, setCalStatusError] = useState("");
   const coreOffer =
     searchParams.get("core") === "1" ||
     window.localStorage.getItem("kryonex_core_offer") === "1";
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
+
+  useEffect(() => {
+    let active = true;
+    const status = searchParams.get("cal_status");
+    if (status === "success") {
+      setCalConnected(true);
+    }
+    if (status === "error") {
+      setCalStatusError("Calendar connection failed. Please try again.");
+    }
+    const loadStatus = async () => {
+      try {
+        const res = await getCalcomStatus();
+        if (!active) return;
+        setCalConnected(Boolean(res.data?.connected));
+      } catch (err) {
+        if (!active) return;
+        setCalStatusError("Calendar connection status unavailable.");
+        setCalConnected(false);
+      } finally {
+        if (active) setCalStatusLoading(false);
+      }
+    };
+    loadStatus();
+    return () => {
+      active = false;
+    };
+  }, [searchParams]);
+
+  const handleCalcomConnect = () => {
+    const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
+    window.location.href = `${baseUrl}/api/calcom/authorize`;
+  };
 
   const persistStep = (value) => {
     setStep(value);
@@ -1074,6 +1111,41 @@ export default function WizardPage() {
                           }
                           placeholder="https://cal.com/your-team/book"
                         />
+                      </div>
+                      <div className="space-y-2 mb-6">
+                        <label className="text-xs uppercase tracking-wider text-white/50">
+                          Calendar Connection
+                        </label>
+                        {calConnected ? (
+                          <div className="inline-flex items-center gap-2 rounded-full border border-neon-green/40 bg-neon-green/10 px-4 py-2 text-sm text-neon-green">
+                            ✓ Calendar Connected
+                          </div>
+                        ) : (
+                          <button
+                            className="button-primary w-full"
+                            type="button"
+                            onClick={handleCalcomConnect}
+                            disabled={calStatusLoading}
+                          >
+                            {calStatusLoading
+                              ? "Checking Calendar..."
+                              : "Connect Cal.com Account"}
+                          </button>
+                        )}
+                        {calStatusError ? (
+                          <div className="text-xs text-neon-pink/80">
+                            {calStatusError}
+                          </div>
+                        ) : null}
+                        {!calConnected ? (
+                          <div className="text-xs text-white/50 leading-relaxed">
+                            <strong className="text-white/70">IMPORTANT:</strong>{" "}
+                            If you do not connect a calendar, the AI{" "}
+                            <em>cannot</em> book appointments automatically.
+                            You will only receive Deep Link email alerts for
+                            manual booking.
+                          </div>
+                        ) : null}
                       </div>
                       <div className="grid grid-cols-2 gap-6">
                         <div className="space-y-2">

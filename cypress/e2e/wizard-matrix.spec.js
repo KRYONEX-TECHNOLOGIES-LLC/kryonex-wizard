@@ -112,6 +112,36 @@ const visitAuthed = (path, options = {}) => {
   });
 };
 
+const hashSeed = (value) => {
+  const str = String(value || "seed");
+  let hash = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return hash || 1;
+};
+
+const mulberry32 = (seed) => {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6d2b79f5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const shuffleMatrix = (matrix, seedValue) => {
+  const seed = hashSeed(seedValue);
+  const rand = mulberry32(seed);
+  const copy = [...matrix];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rand() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+};
+
 const buildMatrix = () => {
   const dimensions = [
     {
@@ -265,7 +295,9 @@ const selectIndustry = (industry) => {
 };
 
 describe("Wizard matrix sweep", () => {
-  const matrix = buildMatrix();
+  const baseMatrix = buildMatrix();
+  const seed = Cypress.env("MATRIX_SEED");
+  const matrix = seed ? shuffleMatrix(baseMatrix, seed) : baseMatrix;
   const limit = Number(Cypress.env("MATRIX_LIMIT"));
   const cases =
     Number.isFinite(limit) && limit > 0 ? matrix.slice(0, limit) : matrix;
