@@ -63,6 +63,22 @@ export default function LoginPage() {
     };
   }, [navigate]);
 
+  React.useEffect(() => {
+    const handleKey = (event) => {
+      if (event.ctrlKey && event.shiftKey && event.code === "KeyA") {
+        event.preventDefault();
+        const code = window.prompt("Admin Access Code");
+        if (code) {
+          setAdminCode(code);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, []);
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError("");
@@ -262,18 +278,6 @@ export default function LoginPage() {
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
-          <label style={{ display: "block", marginBottom: "1.5rem" }}>
-            <span style={{ color: "#9ca3af" }}>
-              Admin Access Code (optional)
-            </span>
-            <input
-              className="input-field"
-              type="password"
-              value={adminCode}
-              onChange={(event) => setAdminCode(event.target.value)}
-              placeholder="Enter admin code"
             />
           </label>
           {error ? (
