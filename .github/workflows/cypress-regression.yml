@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 30
     env:
       FRONTEND_BASE_URL: http://localhost:5173
+      CYPRESS_SPEC_PATTERN: cypress/e2e/critical.spec.js
       CYPRESS_TEST_EMAIL: ${{ secrets.CYPRESS_TEST_EMAIL }}
       CYPRESS_TEST_PASSWORD: ${{ secrets.CYPRESS_TEST_PASSWORD }}
       CYPRESS_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
