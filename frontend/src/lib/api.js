@@ -45,6 +45,7 @@ export const createClientDeployment = (data) =>
   api.post("/admin/create-client", data);
 export const acceptConsent = () => api.post("/consent");
 export const getUsageStatus = () => api.get("/usage/status");
+export const getCalcomStatus = () => api.get("/api/calcom/status");
 export const sendSms = (data) => api.post("/send-sms", data);
 export const createTrackingSession = (data) => api.post("/tracking/create", data);
 export const createAppointment = (data) => api.post("/appointments", data);
