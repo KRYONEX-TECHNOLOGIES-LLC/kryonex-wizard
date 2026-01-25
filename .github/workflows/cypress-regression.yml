@@ -22,6 +22,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+          lfs: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,5 +41,8 @@ jobs:
       - name: Run Cypress regression suite
         run: |
           npm --prefix frontend run dev -- --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1 &
-          npx wait-on http://localhost:5173
+          for i in {1..60}; do
+            curl -s http://localhost:5173 >/dev/null && break
+            sleep 1
+          done
           npm run test:e2e
