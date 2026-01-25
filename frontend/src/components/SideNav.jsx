@@ -1,6 +1,5 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import AdminModeToggle from "./AdminModeToggle.jsx";
 
 export default function SideNav({
   eligibleNewAgent,
@@ -46,11 +45,6 @@ export default function SideNav({
         <div className="side-nav-title">Kryonex Command</div>
         <div className="side-nav-sub">War Room</div>
       </div>
-      {isAdmin && !isSeller ? (
-        <div className="side-nav-admin-toggle-wrap">
-          <AdminModeToggle align="left" onModeChange={(mode) => setViewMode(mode)} />
-        </div>
-      ) : null}
 
       <div className="side-nav-actions">
         {eligibleNewAgent ? (
