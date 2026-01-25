@@ -136,7 +136,7 @@ describe("Kryonex smoke test", () => {
     }).as("createAppointment");
 
     visitAuthed("/calendar");
-    cy.get(".calendar-day").first().click();
+    cy.get(".calendar-day:not(.placeholder)").first().click();
     cy.contains("Manifest").should("exist");
     cy.contains("+ Add New Job").click();
     cy.get('input[placeholder="Jane Smith"]').clear().type("Cypress Test Lead");

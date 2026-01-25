@@ -23,6 +23,10 @@ export default function LeadsPage() {
           setLeads(leadsRes.data.leads || []);
           setLastUpdated(new Date());
         }
+      } catch (error) {
+        if (mounted) {
+          setLeads([]);
+        }
       } finally {
         if (mounted && isInitial) setLoading(false);
       }
