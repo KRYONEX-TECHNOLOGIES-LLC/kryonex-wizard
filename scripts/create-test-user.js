@@ -45,7 +45,7 @@ const run = async () => {
     });
 
   if (userError) {
-    if (/already exists/i.test(userError.message || "")) {
+    if (/already exists|already been registered|already registered/i.test(userError.message || "")) {
       userId = await findUserIdByEmail(email);
     } else {
       console.error("Create user failed:", userError.message);
