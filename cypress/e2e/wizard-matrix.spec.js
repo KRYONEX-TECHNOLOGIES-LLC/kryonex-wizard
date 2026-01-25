@@ -220,12 +220,12 @@ const setupWizardIntercepts = (config) => {
     body: {},
   }).as("profileUpsert");
 
-  cy.intercept("POST", "/consent", {
+  cy.intercept("POST", "**/consent", {
     statusCode: 200,
     body: { ok: true },
   }).as("acceptConsent");
 
-  cy.intercept("POST", "/create-checkout-session", (req) => {
+  cy.intercept("POST", "**/create-checkout-session", (req) => {
     expect(req.body.planTier).to.be.a("string").and.not.be.empty;
     req.reply({
       statusCode: 200,
@@ -236,7 +236,7 @@ const setupWizardIntercepts = (config) => {
     });
   }).as("stripeCheckout");
 
-  cy.intercept("POST", "/deploy-agent", {
+  cy.intercept("POST", "**/deploy-agent", {
     statusCode: 200,
     body: { phone_number: "+1 (800) 555-0199" },
   }).as("deployAgent");
