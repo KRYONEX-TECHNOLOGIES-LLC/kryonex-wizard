@@ -35,6 +35,9 @@ export const autoGrantAdmin = (code) =>
   api.post("/admin/auto-grant", { code });
 export const getAdminMetrics = () => api.get("/admin/metrics");
 export const getAdminHealth = () => api.get("/admin/health");
+export const getAdminUsers = () => api.get("/admin/users");
+export const getAdminUserProfile = (userId) =>
+  api.get(`/admin/users/${userId}`);
 export const syncStripe = () => api.post("/admin/sync-stripe");
 export const getAdminTimeseries = (days = 14) =>
   api.get("/admin/timeseries", { params: { days } });

@@ -3285,6 +3285,164 @@ app.get(
   }
 );
 
+app.get(
+  "/admin/users",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { data: authUsers, error: authError } =
+        await supabaseAdmin.auth.admin.listUsers({
+          page: 1,
+          perPage: 1000,
+        });
+      if (authError) {
+        return res.status(500).json({ error: authError.message });
+      }
+      const usersList = authUsers?.users || [];
+      const userIds = usersList.map((user) => user.id);
+      if (!userIds.length) {
+        return res.json({ users: [] });
+      }
+
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id, business_name, role")
+        .in("user_id", userIds);
+      const { data: subscriptions } = await supabaseAdmin
+        .from("subscriptions")
+        .select("user_id, status, plan_type")
+        .in("user_id", userIds);
+      const { data: usageLimits } = await supabaseAdmin
+        .from("usage_limits")
+        .select(
+          "user_id, call_used_seconds, call_cap_seconds, call_credit_seconds, rollover_seconds"
+        )
+        .in("user_id", userIds);
+      const { data: agents } = await supabaseAdmin
+        .from("agents")
+        .select("user_id, agent_id, phone_number, created_at")
+        .in("user_id", userIds)
+        .order("created_at", { ascending: false });
+
+      const profileMap = new Map(
+        (profiles || []).map((profile) => [profile.user_id, profile])
+      );
+      const subscriptionMap = new Map(
+        (subscriptions || []).map((sub) => [sub.user_id, sub])
+      );
+      const usageMap = new Map(
+        (usageLimits || []).map((usage) => [usage.user_id, usage])
+      );
+      const agentMap = new Map();
+      (agents || []).forEach((agent) => {
+        if (!agentMap.has(agent.user_id)) {
+          agentMap.set(agent.user_id, agent);
+        }
+      });
+
+      const rows = usersList.map((user) => {
+        const profile = profileMap.get(user.id) || {};
+        const subscription = subscriptionMap.get(user.id) || {};
+        const usage = usageMap.get(user.id) || {};
+        const agent = agentMap.get(user.id) || {};
+        const totalSeconds =
+          (usage.call_cap_seconds || 0) +
+          (usage.call_credit_seconds || 0) +
+          (usage.rollover_seconds || 0);
+        const usedSeconds = usage.call_used_seconds || 0;
+        const usagePercent =
+          totalSeconds > 0
+            ? Math.min(100, Math.round((usedSeconds / totalSeconds) * 100))
+            : 0;
+
+        return {
+          id: user.id,
+          business_name: profile.business_name || "Unassigned",
+          email: user.email || "--",
+          role: profile.role || "user",
+          plan_type: subscription.plan_type || "core",
+          status: subscription.status || "inactive",
+          usage_percent: usagePercent,
+          usage_minutes: Math.floor(usedSeconds / 60),
+          usage_limit_minutes: Math.floor(totalSeconds / 60),
+          agent_id: agent.agent_id || null,
+          agent_phone: agent.phone_number || null,
+        };
+      });
+
+      return res.json({ users: rows });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.get(
+  "/admin/users/:userId",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      if (!userId) {
+        return res.status(400).json({ error: "userId is required" });
+      }
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id, business_name, role")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const { data: subscription } = await supabaseAdmin
+        .from("subscriptions")
+        .select("status, plan_type")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const { data: usage } = await supabaseAdmin
+        .from("usage_limits")
+        .select(
+          "call_used_seconds, call_cap_seconds, call_credit_seconds, rollover_seconds"
+        )
+        .eq("user_id", userId)
+        .maybeSingle();
+      const { data: agent } = await supabaseAdmin
+        .from("agents")
+        .select("agent_id, phone_number, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const { data: authUser } =
+        await supabaseAdmin.auth.admin.getUserById(userId);
+
+      const totalSeconds =
+        (usage?.call_cap_seconds || 0) +
+        (usage?.call_credit_seconds || 0) +
+        (usage?.rollover_seconds || 0);
+      const usedSeconds = usage?.call_used_seconds || 0;
+
+      return res.json({
+        user: {
+          id: userId,
+          business_name: profile?.business_name || "Unassigned",
+          email: authUser?.user?.email || "--",
+          role: profile?.role || "user",
+          plan_type: subscription?.plan_type || "core",
+          status: subscription?.status || "inactive",
+          usage_minutes: Math.floor(usedSeconds / 60),
+          usage_limit_minutes: Math.floor(totalSeconds / 60),
+        },
+        agent: {
+          agent_id: agent?.agent_id || null,
+          phone_number: agent?.phone_number || null,
+        },
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.post(
   "/admin/usage/force-pause",
   requireAuth,
