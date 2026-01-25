@@ -11,6 +11,7 @@ Create `frontend/.env`:
 ```
 VITE_SUPABASE_URL=https://xxxx.supabase.co
 VITE_SUPABASE_ANON_KEY=...
+VITE_API_URL=http://localhost:3000
 ```
 
 ## Retell + Webhooks (Backend)
