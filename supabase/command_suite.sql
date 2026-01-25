@@ -6,7 +6,14 @@ alter table public.profiles
   add column if not exists full_name text,
   add column if not exists status text default 'active',
   add column if not exists role text default 'owner',
-  add column if not exists referrer_id uuid references auth.users(id) on delete set null;
+  add column if not exists referrer_id uuid references auth.users(id) on delete set null,
+  add column if not exists cal_api_key text,
+  add column if not exists cal_event_type_id integer,
+  add column if not exists cal_time_zone text,
+  add column if not exists cal_event_type_slug text,
+  add column if not exists cal_username text,
+  add column if not exists cal_team_slug text,
+  add column if not exists cal_organization_slug text;
 
 -- Leads (Sales CRM)
 create table if not exists public.leads (
@@ -396,6 +403,37 @@ create policy "audit_logs_are_viewable_by_owner"
   on public.audit_logs
   for select
   using (actor_id = auth.uid());
+
+-- Black box logs (immutable forensic trail)
+create table if not exists public.black_box_logs (
+  id uuid primary key default gen_random_uuid(),
+  event_id text unique not null,
+  user_id uuid references auth.users(id) on delete set null,
+  action_type text not null,
+  timestamp timestamptz not null default now(),
+  ip_address text,
+  user_agent text,
+  meta_data jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table public.black_box_logs enable row level security;
+
+create policy "admins_full_access_black_box_logs"
+  on public.black_box_logs
+  for all
+  using (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.profiles p
+      where p.user_id = auth.uid() and p.role = 'admin'
+    )
+  );
 
 -- Dialer queue
 create table if not exists public.dialer_queue (

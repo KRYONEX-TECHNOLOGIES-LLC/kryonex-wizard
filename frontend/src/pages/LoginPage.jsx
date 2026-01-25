@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import BackgroundGrid from "../components/BackgroundGrid.jsx";
 import { supabase } from "../lib/supabase";
-import { autoGrantAdmin, verifyAdminCode } from "../lib/api";
+import { autoGrantAdmin, logBlackBoxEvent, verifyAdminCode } from "../lib/api";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -110,6 +110,11 @@ export default function LoginPage() {
       return;
     }
     window.localStorage.setItem("kryonex_session_ok", "1");
+    try {
+      await logBlackBoxEvent("LOGIN", { mode, email });
+    } catch {
+      // best-effort logging
+    }
     if (adminCode) {
       try {
         const response = await autoGrantAdmin(adminCode);

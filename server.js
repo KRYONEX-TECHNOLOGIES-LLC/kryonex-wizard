@@ -211,7 +211,37 @@ const auditLog = async ({
   }
 };
 
-const sendSmsInternal = async ({ userId, to, body, leadId, source }) => {
+const logEvent = async ({ userId, actionType, req, metaData }) => {
+  try {
+    const eventId = `evt_${generateToken(8)}`;
+    await supabaseAdmin.from("black_box_logs").insert({
+      event_id: eventId,
+      user_id: userId || null,
+      action_type: actionType,
+      timestamp: new Date().toISOString(),
+      ip_address:
+        req?.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req?.socket?.remoteAddress ||
+        null,
+      user_agent: req?.headers?.["user-agent"] || null,
+      meta_data: metaData || null,
+    });
+  } catch (err) {
+    console.error("black box log error:", err.message);
+  }
+};
+
+const lookupUserIdByCustomerId = async (customerId) => {
+  if (!customerId) return null;
+  const { data } = await supabaseAdmin
+    .from("subscriptions")
+    .select("user_id")
+    .eq("customer_id", customerId)
+    .maybeSingle();
+  return data?.user_id || null;
+};
+
+const sendSmsInternal = async ({ userId, to, body, leadId, source, req }) => {
   if (!body || !to) {
     throw new Error("body and to are required");
   }
@@ -270,6 +300,19 @@ const sendSmsInternal = async ({ userId, to, body, leadId, source }) => {
       entityId: leadId || null,
       metadata: { to, source: source || "manual" },
     });
+    await logEvent({
+      userId,
+      actionType: "SMS_SENT",
+      req,
+      metaData: {
+        direction: "outbound",
+        body,
+        to,
+        source: source || "manual",
+        cost: 0,
+        sandbox: true,
+      },
+    });
     return { sandbox: true };
   }
 
@@ -315,6 +358,18 @@ const sendSmsInternal = async ({ userId, to, body, leadId, source }) => {
     entityId: leadId || null,
     metadata: { to, source: source || "manual" },
   });
+  await logEvent({
+    userId,
+    actionType: "SMS_SENT",
+    req,
+    metaData: {
+      direction: "outbound",
+      body,
+      to,
+      source: source || "manual",
+      cost: retellResponse.data?.cost || retellResponse.data?.cost_cents || null,
+    },
+  });
 
   return retellResponse.data;
 };
@@ -346,6 +401,18 @@ const sendSmsFromAgent = async ({ agentId, to, body, userId, source }) => {
       entityId: agentId,
       metadata: { to, source: source || "agent_tool" },
     });
+    await logEvent({
+      userId: userId || agentRow.user_id,
+      actionType: "SMS_SENT",
+      metaData: {
+        direction: "outbound",
+        body,
+        to,
+        source: source || "agent_tool",
+        cost: 0,
+        sandbox: true,
+      },
+    });
     return { sandbox: true };
   }
 
@@ -368,6 +435,17 @@ const sendSmsFromAgent = async ({ agentId, to, body, userId, source }) => {
     entity: "message",
     entityId: agentId,
     metadata: { to, source: source || "agent_tool" },
+  });
+  await logEvent({
+    userId: userId || agentRow.user_id,
+    actionType: "SMS_SENT",
+    metaData: {
+      direction: "outbound",
+      body,
+      to,
+      source: source || "agent_tool",
+      cost: retellResponse.data?.cost || retellResponse.data?.cost_cents || null,
+    },
   });
 
   return retellResponse.data;
@@ -499,6 +577,17 @@ app.post(
                 req,
                 metadata: { call_seconds: callSeconds, sms_count: smsCount },
               });
+              await logEvent({
+                userId,
+                actionType: "STRIPE_CHARGE_SUCCEEDED",
+                req,
+                metaData: {
+                  transaction_id: session.id,
+                  amount: (session.amount_total || 0) / 100,
+                  status: session.status,
+                  type: "topup",
+                },
+              });
             }
             return;
           }
@@ -532,6 +621,19 @@ app.post(
                 entityId: subscription.id,
                 req,
                 metadata: { status: subscription.status },
+              });
+              await logEvent({
+                userId,
+                actionType: "PLAN_UPGRADED",
+                req,
+                metaData: {
+                  transaction_id: session.id,
+                  status: subscription.status,
+                  plan_type:
+                    session.metadata?.plan_type ||
+                    subscription.items.data?.[0]?.price?.nickname ||
+                    null,
+                },
               });
             }
           }
@@ -624,6 +726,67 @@ app.post(
               entityId: invoice.subscription || null,
               req,
               metadata: { status: "past_due" },
+            });
+            await logEvent({
+              userId: subRow.user_id,
+              actionType: "STRIPE_CHARGE_FAILED",
+              req,
+              metaData: {
+                transaction_id: invoice.id,
+                amount: (invoice.amount_due || 0) / 100,
+                status: invoice.status,
+                error_code: invoice.last_payment_error?.code || null,
+              },
+            });
+          }
+        }
+
+        if (event.type === "invoice.payment_succeeded") {
+          const invoice = event.data.object;
+          const userId = await lookupUserIdByCustomerId(invoice.customer);
+          if (userId) {
+            await logEvent({
+              userId,
+              actionType: "STRIPE_CHARGE_SUCCEEDED",
+              req,
+              metaData: {
+                transaction_id: invoice.id,
+                amount: (invoice.amount_paid || 0) / 100,
+                status: invoice.status,
+              },
+            });
+          }
+        }
+
+        if (event.type === "payment_method.attached") {
+          const paymentMethod = event.data.object;
+          const userId = await lookupUserIdByCustomerId(paymentMethod.customer);
+          if (userId) {
+            await logEvent({
+              userId,
+              actionType: "CARD_UPDATED",
+              req,
+              metaData: {
+                payment_method_id: paymentMethod.id,
+                brand: paymentMethod.card?.brand || null,
+                last4: paymentMethod.card?.last4 || null,
+              },
+            });
+          }
+        }
+
+        if (event.type === "customer.updated") {
+          const customer = event.data.object;
+          const userId = await lookupUserIdByCustomerId(customer.id);
+          if (userId && customer?.invoice_settings?.default_payment_method) {
+            await logEvent({
+              userId,
+              actionType: "CARD_UPDATED",
+              req,
+              metaData: {
+                payment_method_id:
+                  customer.invoice_settings.default_payment_method || null,
+              },
             });
           }
         }
@@ -980,6 +1143,89 @@ const resolveToolAppointmentWindow = ({ start_date, start_time, start_time_iso, 
   return { start: null, end: null };
 };
 
+const CAL_API_VERSION_SLOTS = "2024-09-04";
+const CAL_API_VERSION_BOOKINGS = "2024-08-13";
+const calClient = axios.create({ baseURL: "https://api.cal.com/v2" });
+
+const getCalConfig = async (userId) => {
+  const { data } = await supabaseAdmin
+    .from("profiles")
+    .select(
+      "cal_api_key, cal_event_type_id, cal_time_zone, cal_event_type_slug, cal_username, cal_team_slug, cal_organization_slug"
+    )
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!data?.cal_api_key) return null;
+  return data;
+};
+
+const fetchCalSlots = async ({ config, start, end, durationMinutes }) => {
+  const params = {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    timeZone: config.cal_time_zone || "UTC",
+    format: "range",
+  };
+  if (durationMinutes) params.duration = durationMinutes;
+  if (config.cal_event_type_id) {
+    params.eventTypeId = config.cal_event_type_id;
+  } else if (config.cal_event_type_slug && config.cal_username) {
+    params.eventTypeSlug = config.cal_event_type_slug;
+    params.username = config.cal_username;
+    if (config.cal_organization_slug) {
+      params.organizationSlug = config.cal_organization_slug;
+    }
+    if (config.cal_team_slug) {
+      params.teamSlug = config.cal_team_slug;
+    }
+  } else {
+    throw new Error("Cal.com event type is not configured");
+  }
+
+  const response = await calClient.get("/slots", {
+    params,
+    headers: {
+      Authorization: `Bearer ${config.cal_api_key}`,
+      "cal-api-version": CAL_API_VERSION_SLOTS,
+    },
+  });
+  return response.data?.data || {};
+};
+
+const createCalBooking = async ({ config, start, args }) => {
+  const body = {
+    start: start.toISOString(),
+    attendee: {
+      name: args.customer_name || args.name || "Customer",
+      email: args.customer_email || args.email || "unknown@kryonex.local",
+      timeZone: args.time_zone || config.cal_time_zone || "UTC",
+      phoneNumber: args.customer_phone || args.phone || null,
+    },
+    eventTypeId: config.cal_event_type_id || undefined,
+    eventTypeSlug: config.cal_event_type_slug || undefined,
+    username: config.cal_username || undefined,
+    teamSlug: config.cal_team_slug || undefined,
+    organizationSlug: config.cal_organization_slug || undefined,
+    bookingFieldsResponses: args.booking_fields || undefined,
+    metadata: {
+      source: "retell_tool",
+      lead_id: args.lead_id || null,
+    },
+    lengthInMinutes: args.duration_minutes
+      ? Number(args.duration_minutes)
+      : undefined,
+  };
+
+  const response = await calClient.post("/bookings", body, {
+    headers: {
+      Authorization: `Bearer ${config.cal_api_key}`,
+      "cal-api-version": CAL_API_VERSION_BOOKINGS,
+      "Content-Type": "application/json",
+    },
+  });
+  return response.data?.data || response.data;
+};
+
 const handleToolCall = async ({ tool, agentId, userId }) => {
   const toolName = tool?.name || tool?.tool_name || tool?.function?.name;
   const args = parseToolArgs(tool?.arguments || tool?.args || tool?.function?.arguments);
@@ -989,6 +1235,17 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     const { start, end } = resolveToolAppointmentWindow(args);
     if (!start || !end) {
       return { ok: false, error: "Missing start time" };
+    }
+    const calConfig = await getCalConfig(userId);
+    if (calConfig) {
+      const slots = await fetchCalSlots({
+        config: calConfig,
+        start,
+        end,
+        durationMinutes: args.duration_minutes,
+      });
+      const hasSlots = Object.keys(slots || {}).length > 0;
+      return { ok: true, source: "cal.com", available: hasSlots, slots };
     }
     const { data, error } = await supabaseAdmin
       .from("appointments")
@@ -1006,6 +1263,20 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     if (!start || !end) {
       return { ok: false, error: "Missing start time" };
     }
+    const calConfig = await getCalConfig(userId);
+    if (calConfig) {
+      const booking = await createCalBooking({ config: calConfig, start, args });
+      await logEvent({
+        userId,
+        actionType: "APPOINTMENT_BOOKED",
+        metaData: {
+          booking_uid: booking?.uid || booking?.id || null,
+          start: booking?.start || start.toISOString(),
+          source: "cal.com",
+        },
+      });
+      return { ok: true, source: "cal.com", booking };
+    }
     const { data, error } = await supabaseAdmin
       .from("appointments")
       .insert({
@@ -1021,6 +1292,15 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       .select("*")
       .single();
     if (error) return { ok: false, error: error.message };
+    await logEvent({
+      userId,
+      actionType: "APPOINTMENT_BOOKED",
+      metaData: {
+        appointment_id: data?.id || null,
+        start: data?.start_time || start.toISOString(),
+        source: "internal",
+      },
+    });
     return { ok: true, appointment: data };
   }
 
@@ -1036,6 +1316,55 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       source: "agent_tool",
     });
     return { ok: true, response };
+  }
+
+  if (toolName === "extract_dynamic_variable") {
+    const leadId = args.lead_id || args.leadId || null;
+    const customerPhone = args.customer_phone || args.phone || null;
+    let leadRow = null;
+    if (leadId) {
+      const { data } = await supabaseAdmin
+        .from("leads")
+        .select("id, metadata")
+        .eq("id", leadId)
+        .maybeSingle();
+      leadRow = data;
+    } else if (customerPhone) {
+      const { data } = await supabaseAdmin
+        .from("leads")
+        .select("id, metadata")
+        .eq("user_id", userId)
+        .eq("phone", customerPhone)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      leadRow = data;
+    }
+
+    if (!leadRow?.id) {
+      return { ok: false, error: "Lead not found for dynamic variables" };
+    }
+
+    const currentMeta = leadRow.metadata && typeof leadRow.metadata === "object"
+      ? leadRow.metadata
+      : {};
+    const updateMeta = {
+      ...currentMeta,
+      lead_notes: {
+        ...(currentMeta.lead_notes || {}),
+        ...args,
+      },
+    };
+    await supabaseAdmin
+      .from("leads")
+      .update({ metadata: updateMeta })
+      .eq("id", leadRow.id);
+    await logEvent({
+      userId,
+      actionType: "DYNAMIC_VARIABLES_EXTRACTED",
+      metaData: { lead_id: leadRow.id, variables: args },
+    });
+    return { ok: true, lead_id: leadRow.id };
   }
 
   if (toolName === "transfer_call") {
@@ -1077,7 +1406,7 @@ app.get("/", (req, res) => {
   res.json({ status: "Online" });
 });
 
-app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
+const retellWebhookHandler = async (req, res) => {
   try {
     lastRetellWebhookAt = new Date().toISOString();
     if (RETELL_WEBHOOK_SECRET) {
@@ -1090,6 +1419,28 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
     const eventType =
       payload.event_type || payload.event || payload.type || "unknown";
     const call = payload.call || payload.data || {};
+
+    if (eventType === "call_started" || eventType === "call_initiated") {
+      const agentId = call.agent_id || payload.agent_id;
+      const callId = call.call_id || payload.call_id || payload.id || null;
+      const { data: agentRow } = await supabaseAdmin
+        .from("agents")
+        .select("user_id")
+        .eq("agent_id", agentId)
+        .maybeSingle();
+      if (agentRow?.user_id) {
+        await logEvent({
+          userId: agentRow.user_id,
+          actionType: "OUTBOUND_CALL_INITIATED",
+          req,
+          metaData: {
+            call_id: callId,
+            from_number: call.from_number || payload.from_number || null,
+            to_number: call.to_number || payload.to_number || null,
+          },
+        });
+      }
+    }
 
     if (eventType === "call_ended") {
       const transcript = call.transcript || payload.transcript || "";
@@ -1115,6 +1466,18 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
         payload.recording_url ||
         payload.recordingUrl ||
         payload.recording?.url ||
+        null;
+      const disposition =
+        call.disposition ||
+        call.status ||
+        payload.disposition ||
+        payload.status ||
+        null;
+      const callCost =
+        call.cost ||
+        call.cost_cents ||
+        payload.cost ||
+        payload.cost_cents ||
         null;
 
       const { data: agentRow, error: agentError } = await supabaseAdmin
@@ -1153,6 +1516,18 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
         entityId: agentId,
         req,
         metadata: { sentiment: extracted.sentiment },
+      });
+      await logEvent({
+        userId: agentRow.user_id,
+        actionType: "OUTBOUND_CALL_ENDED",
+        req,
+        metaData: {
+          call_id: callId,
+          duration_seconds: durationSeconds,
+          cost: callCost,
+          recording_url: recordingUrl,
+          disposition,
+        },
       });
 
       if (durationSeconds > 0) {
@@ -1271,6 +1646,17 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
         entityId: agentId,
         req,
       });
+      await logEvent({
+        userId: agentRow.user_id,
+        actionType: "SMS_RECEIVED",
+        req,
+        metaData: {
+          direction: "inbound",
+          body,
+          from: fromNumber,
+          to: null,
+        },
+      });
 
       if (fromNumber && /^(stop|unsubscribe|cancel|end)\b/i.test(body.trim())) {
         await supabaseAdmin.from("sms_opt_outs").insert({
@@ -1319,7 +1705,7 @@ app.post("/retell-webhook", enforceIpAllowlist, async (req, res) => {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
-});
+};
 
 app.post(
   "/deploy-agent",
@@ -1806,6 +2192,7 @@ app.post(
         body,
         leadId,
         source: source || "manual",
+        req,
       });
 
       await supabaseAdmin.from("messages").insert({
@@ -1864,11 +2251,25 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
       entityId: agentRow.agent_id || null,
       metadata: { from: fromNumber, to: toNumber },
     });
+    await logEvent({
+      userId: agentRow.user_id,
+      actionType: "SMS_RECEIVED",
+      req,
+      metaData: {
+        direction: "inbound",
+        body,
+        from: fromNumber,
+        to: toNumber,
+      },
+    });
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
+
+app.post("/retell-webhook", enforceIpAllowlist, retellWebhookHandler);
+app.post("/api/retell/webhook", enforceIpAllowlist, retellWebhookHandler);
 
 app.post(
   "/retell/demo-call",
@@ -1909,6 +2310,16 @@ app.post(
         entity: "lead",
         entityId: leadId || null,
         metadata: { to, source: "admin_sniper_kit" },
+      });
+      await logEvent({
+        userId: req.user.id,
+        actionType: "OUTBOUND_CALL_INITIATED",
+        req,
+        metaData: {
+          call_id: retellResponse.data?.call_id || retellResponse.data?.id || null,
+          to_number: to,
+          source: "admin_sniper_kit",
+        },
       });
 
       return res.json({ call: retellResponse.data });
@@ -2689,6 +3100,24 @@ app.post(
   }
 );
 
+app.post("/black-box/event", requireAuth, async (req, res) => {
+  try {
+    const { action_type, meta_data } = req.body || {};
+    if (!action_type) {
+      return res.status(400).json({ error: "action_type is required" });
+    }
+    await logEvent({
+      userId: req.user.id,
+      actionType: action_type,
+      req,
+      metaData: meta_data || null,
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 const buildCommissionStats = (commissions) => {
   const map = {};
   (commissions || []).forEach((comm) => {
@@ -3361,8 +3790,8 @@ app.get(
           business_name: profile.business_name || "Unassigned",
           email: user.email || "--",
           role: profile.role || "user",
-          plan_type: subscription.plan_type || "core",
-          status: subscription.status || "inactive",
+          plan_type: subscription.plan_type || null,
+          status: subscription.status || null,
           usage_percent: usagePercent,
           usage_minutes: Math.floor(usedSeconds / 60),
           usage_limit_minutes: Math.floor(totalSeconds / 60),
@@ -3390,12 +3819,12 @@ app.get(
       }
       const { data: profile } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, business_name, role")
+        .select("user_id, business_name, role, full_name")
         .eq("user_id", userId)
         .maybeSingle();
       const { data: subscription } = await supabaseAdmin
         .from("subscriptions")
-        .select("status, plan_type")
+        .select("status, plan_type, current_period_end, customer_id")
         .eq("user_id", userId)
         .maybeSingle();
       const { data: usage } = await supabaseAdmin
@@ -3407,34 +3836,98 @@ app.get(
         .maybeSingle();
       const { data: agent } = await supabaseAdmin
         .from("agents")
-        .select("agent_id, phone_number, created_at")
+        .select("agent_id, phone_number, llm_id, created_at")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
       const { data: authUser } =
         await supabaseAdmin.auth.admin.getUserById(userId);
+      const { data: lastAudit } = await supabaseAdmin
+        .from("audit_logs")
+        .select("ip, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
       const totalSeconds =
         (usage?.call_cap_seconds || 0) +
         (usage?.call_credit_seconds || 0) +
         (usage?.rollover_seconds || 0);
       const usedSeconds = usage?.call_used_seconds || 0;
+      let billing = {
+        customer_id: subscription?.customer_id || null,
+        payment_method_last4: null,
+        payment_method_brand: null,
+        next_billing_date: subscription?.current_period_end || null,
+        lifetime_revenue_cents: 0,
+        currency: "usd",
+      };
+
+      if (STRIPE_SECRET_KEY && subscription?.customer_id) {
+        try {
+          const customer = await stripe.customers.retrieve(
+            subscription.customer_id
+          );
+          const defaultPaymentMethod =
+            customer?.invoice_settings?.default_payment_method || null;
+          const paymentMethodId =
+            typeof defaultPaymentMethod === "string"
+              ? defaultPaymentMethod
+              : defaultPaymentMethod?.id;
+          if (paymentMethodId) {
+            const paymentMethod = await stripe.paymentMethods.retrieve(
+              paymentMethodId
+            );
+            billing.payment_method_last4 =
+              paymentMethod?.card?.last4 || null;
+            billing.payment_method_brand =
+              paymentMethod?.card?.brand || null;
+          }
+          const invoices = await stripe.invoices.list({
+            customer: subscription.customer_id,
+            limit: 100,
+          });
+          const paidTotal = (invoices.data || []).reduce((sum, invoice) => {
+            if (invoice.status === "paid") {
+              return sum + (invoice.amount_paid || 0);
+            }
+            return sum;
+          }, 0);
+          billing.lifetime_revenue_cents = paidTotal;
+          billing.currency = invoices.data?.[0]?.currency || billing.currency;
+        } catch (err) {
+          billing = {
+            ...billing,
+            payment_method_last4: null,
+          };
+        }
+      }
 
       return res.json({
         user: {
           id: userId,
           business_name: profile?.business_name || "Unassigned",
+          full_name:
+            profile?.full_name ||
+            authUser?.user?.user_metadata?.full_name ||
+            null,
           email: authUser?.user?.email || "--",
+          phone: authUser?.user?.phone || null,
+          signup_date: authUser?.user?.created_at || null,
+          ip_address: lastAudit?.ip || null,
           role: profile?.role || "user",
-          plan_type: subscription?.plan_type || "core",
-          status: subscription?.status || "inactive",
+          plan_type: subscription?.plan_type || null,
+          status: subscription?.status || null,
           usage_minutes: Math.floor(usedSeconds / 60),
           usage_limit_minutes: Math.floor(totalSeconds / 60),
         },
-        agent: {
+        billing,
+        config: {
           agent_id: agent?.agent_id || null,
           phone_number: agent?.phone_number || null,
+          script_version: agent?.llm_id || null,
         },
       });
     } catch (err) {

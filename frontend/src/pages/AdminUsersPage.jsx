@@ -11,6 +11,7 @@ const statusDot = {
   past_due: "bg-neon-pink",
   canceled: "bg-white/40",
   inactive: "bg-white/30",
+  none: "bg-white/20",
 };
 
 export default function AdminUsersPage() {
@@ -20,6 +21,7 @@ export default function AdminUsersPage() {
   const [error, setError] = React.useState("");
   const [selectedUser, setSelectedUser] = React.useState(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
+  const [activeModal, setActiveModal] = React.useState(null);
 
   React.useEffect(() => {
     let mounted = true;
@@ -46,7 +48,8 @@ export default function AdminUsersPage() {
     };
   }, []);
 
-  const openUserDetail = async (userId) => {
+  const openUserDetail = async (userId, mode) => {
+    setActiveModal(mode);
     setDetailLoading(true);
     try {
       const response = await getAdminUserProfile(userId);
@@ -58,6 +61,65 @@ export default function AdminUsersPage() {
     } finally {
       setDetailLoading(false);
     }
+  };
+
+  const closeModal = () => {
+    setSelectedUser(null);
+    setActiveModal(null);
+  };
+
+  const getPlanBadge = (user) => {
+    const status = String(user.status || "").toLowerCase();
+    if (!status || status.startsWith("incomplete")) {
+      return {
+        label: "NO PLAN",
+        className: "border-white/20 text-white/60 bg-white/10",
+      };
+    }
+    if (status === "past_due") {
+      return {
+        label: "PAST DUE",
+        className: "border-neon-pink/60 text-neon-pink bg-neon-pink/10",
+      };
+    }
+    const planLabel = String(user.plan_type || "core").toUpperCase();
+    const isPro = planLabel.includes("PRO");
+    return {
+      label: planLabel,
+      className: isPro
+        ? "border-amber-300/60 text-amber-200 bg-amber-400/10"
+        : "border-neon-cyan/60 text-neon-cyan bg-neon-cyan/10",
+    };
+  };
+
+  const getStatusLabel = (user) => {
+    const status = String(user.status || "").toLowerCase();
+    if (!status || status.startsWith("incomplete")) return "NO PLAN";
+    if (status === "past_due") return "PAST DUE";
+    if (status === "active") return "ACTIVE";
+    return status.replace("_", " ").toUpperCase();
+  };
+
+  const getUsagePercent = (user) => {
+    const used = Number(user.usage_minutes || 0);
+    const limit = Number(user.usage_limit_minutes || 0);
+    if (!limit) return 0;
+    return Math.min(100, Math.round((used / limit) * 100));
+  };
+
+  const formatDate = (value) => {
+    if (!value) return "--";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "--";
+    return date.toLocaleDateString();
+  };
+
+  const formatCurrency = (cents, currency = "usd") => {
+    if (!cents) return "$0.00";
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+    }).format(cents / 100);
   };
 
   return (
@@ -127,39 +189,65 @@ export default function AdminUsersPage() {
                   </div>
                   <div className="text-xs text-slate-400">{user.email}</div>
                   <div>
-                    <span className="px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-widest border border-white/20 rounded-full bg-white/5">
-                      {String(user.plan_type || "core").toUpperCase()}
+                    <span
+                      className={`px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-widest border rounded-full ${getPlanBadge(user).className}`}
+                    >
+                      {getPlanBadge(user).label}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span
-                      className={`h-2.5 w-2.5 rounded-full ${statusDot[user.status] || "bg-white/20"}`}
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        statusDot[String(user.status || "none").toLowerCase()] ||
+                        "bg-white/20"
+                      }`}
                     />
                     <span className="text-xs uppercase tracking-[0.3em]">
-                      {String(user.status || "inactive").replace("_", " ")}
+                      {getStatusLabel(user)}
                     </span>
                   </div>
                   <div>
-                    <div className="h-2 w-full rounded-full bg-white/10">
-                      <div
-                        className="h-2 rounded-full bg-neon-cyan"
-                        style={{ width: `${user.usage_percent || 0}%` }}
-                      />
-                    </div>
-                    <div className="text-[0.6rem] text-white/40 mt-1">
-                      {user.usage_percent || 0}% usage
-                    </div>
+                    {(() => {
+                      const usagePercent = getUsagePercent(user);
+                      const usageColor =
+                        usagePercent >= 100
+                          ? "bg-neon-pink"
+                          : usagePercent >= 90
+                            ? "bg-amber-400"
+                            : "bg-neon-cyan";
+                      return (
+                        <>
+                          <div className="h-2 w-full rounded-full bg-white/10">
+                            <div
+                              className={`h-2 rounded-full ${usageColor}`}
+                              style={{ width: `${usagePercent}%` }}
+                            />
+                          </div>
+                          <div className="text-[0.6rem] text-white/40 mt-1">
+                            {usagePercent}% usage
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="flex items-center justify-end gap-2">
-                    <button className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition">
+                    <button
+                      className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition"
+                      onClick={() => openUserDetail(user.id, "dossier")}
+                      type="button"
+                    >
                       <UserCheck size={16} />
                     </button>
-                    <button className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition">
+                    <button
+                      className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition"
+                      onClick={() => openUserDetail(user.id, "billing")}
+                      type="button"
+                    >
                       <CreditCard size={16} />
                     </button>
                     <button
                       className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition"
-                      onClick={() => openUserDetail(user.id)}
+                      onClick={() => openUserDetail(user.id, "config")}
                       type="button"
                     >
                       <Settings size={16} />
@@ -174,17 +262,21 @@ export default function AdminUsersPage() {
               ) : null}
             </div>
           </motion.div>
-          {selectedUser ? (
+          {selectedUser && activeModal ? (
             <div
               className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
-              onClick={() => setSelectedUser(null)}
+              onClick={closeModal}
             >
               <div
                 className="glass-panel rounded-3xl border border-white/10 p-6 w-[min(520px,90vw)]"
                 onClick={(event) => event.stopPropagation()}
               >
                 <div className="text-xs uppercase tracking-[0.3em] text-white/40">
-                  Fleet Profile
+                  {activeModal === "dossier"
+                    ? "The Dossier"
+                    : activeModal === "billing"
+                      ? "The Financials"
+                      : "Agent Configuration"}
                 </div>
                 {detailLoading ? (
                   <div className="mt-4 text-white/60">Loading profile...</div>
@@ -192,38 +284,109 @@ export default function AdminUsersPage() {
                   <div className="mt-4 text-neon-pink">{selectedUser.error}</div>
                 ) : (
                   <div className="mt-4 space-y-3 text-sm">
-                    <div>
-                      <span className="text-white/40">Client</span>
-                      <div className="text-white font-semibold">
-                        {selectedUser.user?.business_name}
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-white/40">Email</span>
-                      <div className="text-white">
-                        {selectedUser.user?.email}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <span className="text-white/40">Agent ID</span>
-                        <div className="text-white font-mono text-xs">
-                          {selectedUser.agent?.agent_id || "--"}
+                    {activeModal === "dossier" ? (
+                      <>
+                        <div>
+                          <span className="text-white/40">Full Name</span>
+                          <div className="text-white font-semibold">
+                            {selectedUser.user?.full_name || "--"}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-white/40">Email</span>
+                          <div className="text-white">
+                            {selectedUser.user?.email}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-white/40">Phone</span>
+                          <div className="text-white">
+                            {selectedUser.user?.phone || "--"}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-white/40">Signup Date</span>
+                            <div className="text-white">
+                              {formatDate(selectedUser.user?.signup_date)}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-white/40">IP Address</span>
+                            <div className="text-white font-mono text-xs">
+                              {selectedUser.user?.ip_address || "--"}
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    ) : null}
+                    {activeModal === "billing" ? (
+                      <>
+                        <div>
+                          <span className="text-white/40">
+                            Payment Method
+                          </span>
+                          <div className="text-white">
+                            {selectedUser.billing?.payment_method_last4
+                              ? `${selectedUser.billing?.payment_method_brand || "card"} •••• ${
+                                  selectedUser.billing?.payment_method_last4
+                                }`
+                              : "--"}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-white/40">
+                              Next Billing Date
+                            </span>
+                            <div className="text-white">
+                              {formatDate(selectedUser.billing?.next_billing_date)}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-white/40">
+                              Lifetime Revenue
+                            </span>
+                            <div className="text-white">
+                              {formatCurrency(
+                                selectedUser.billing?.lifetime_revenue_cents,
+                                selectedUser.billing?.currency
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    ) : null}
+                    {activeModal === "config" ? (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <span className="text-white/40">
+                            Assigned Twilio Number
+                          </span>
+                          <div className="text-white font-mono text-xs">
+                            {selectedUser.config?.phone_number || "--"}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-white/40">Agent ID</span>
+                          <div className="text-white font-mono text-xs">
+                            {selectedUser.config?.agent_id || "--"}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-white/40">Script Version</span>
+                          <div className="text-white font-mono text-xs">
+                            {selectedUser.config?.script_version || "--"}
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <span className="text-white/40">Agent Phone</span>
-                        <div className="text-white font-mono text-xs">
-                          {selectedUser.agent?.phone_number || "--"}
-                        </div>
-                      </div>
-                    </div>
+                    ) : null}
                   </div>
                 )}
                 <button
                   className="glow-button mt-6 w-full"
                   type="button"
-                  onClick={() => setSelectedUser(null)}
+                  onClick={closeModal}
                 >
                   Close
                 </button>
