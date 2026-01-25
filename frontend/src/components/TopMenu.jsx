@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import { getSubscriptionStatus } from "../lib/api";
+import { getSubscriptionStatus, logBlackBoxEvent } from "../lib/api";
 import AdminModeToggle from "./AdminModeToggle.jsx";
 
 export default function TopMenu() {
@@ -69,6 +69,11 @@ export default function TopMenu() {
   }, []);
 
   const handleLogout = async () => {
+    try {
+      await logBlackBoxEvent("LOGOUT");
+    } catch {
+      // best-effort logging
+    }
     await supabase.auth.signOut();
     window.localStorage.removeItem("kryonex_session_ok");
     setOpen(false);

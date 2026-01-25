@@ -81,5 +81,7 @@ export const transferLeadsToDialer = (leadIds) =>
   api.post("/admin/dialer-queue", { leadIds });
 
 export const triggerDemoCall = (data) => api.post("/retell/demo-call", data);
+export const logBlackBoxEvent = (action_type, meta_data) =>
+  api.post("/black-box/event", { action_type, meta_data });
 
 export default api;
