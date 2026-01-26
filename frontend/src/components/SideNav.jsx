@@ -75,6 +75,10 @@ export default function SideNav({
           <span className="nav-icon">📍</span>
           Calendar
         </Link>
+        <Link to="/numbers" className="side-nav-link">
+          <span className="nav-icon">📞</span>
+          Numbers
+        </Link>
         <Link to={adminEnabled ? "/admin/messages" : "/messages"} className="side-nav-link">
           <span className="nav-icon">✉️</span>
           Messages

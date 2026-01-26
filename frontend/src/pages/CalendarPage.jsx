@@ -7,6 +7,8 @@ import {
   createTrackingSession,
   deleteAppointment,
   updateAppointment,
+  getCalcomStatus,
+  disconnectCalcom,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { getSavedState, saveState } from "../lib/persistence.js";
@@ -75,6 +77,9 @@ export default function CalendarPage() {
   const [manifestIndex, setManifestIndex] = React.useState(0);
   const [isSeller, setIsSeller] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
+  const [calConnected, setCalConnected] = React.useState(false);
+  const [calStatusLoading, setCalStatusLoading] = React.useState(true);
+  const [calStatusError, setCalStatusError] = React.useState("");
 
   const updateCurrentMonth = (updater) => {
     setCurrentMonth((prev) => {
@@ -165,6 +170,27 @@ export default function CalendarPage() {
     };
   }, []);
 
+  React.useEffect(() => {
+    let active = true;
+    const loadStatus = async () => {
+      try {
+        const res = await getCalcomStatus();
+        if (!active) return;
+        setCalConnected(Boolean(res.data?.connected));
+      } catch (err) {
+        if (!active) return;
+        setCalStatusError("Calendar connection status unavailable.");
+        setCalConnected(false);
+      } finally {
+        if (active) setCalStatusLoading(false);
+      }
+    };
+    loadStatus();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handleCreate = async () => {
     setMessageStatus("");
     if (!form.customer_name || !form.start_date || !form.start_time) {
@@ -198,6 +224,34 @@ export default function CalendarPage() {
     setMessageStatus("Appointment locked.");
     setCreateOpen(false);
     setViewAppointmentId(null);
+  };
+
+  const handleCalcomConnect = async () => {
+    const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
+    setCalStatusError("");
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data?.session?.access_token;
+      if (!accessToken) {
+        setCalStatusError("Please sign in again before connecting Cal.com.");
+        return;
+      }
+      window.location.href = `${baseUrl}/api/calcom/authorize?access_token=${encodeURIComponent(
+        accessToken
+      )}`;
+    } catch (err) {
+      setCalStatusError("Unable to start calendar connection. Please try again.");
+    }
+  };
+
+  const handleCalcomDisconnect = async () => {
+    setCalStatusError("");
+    try {
+      await disconnectCalcom();
+      setCalConnected(false);
+    } catch (err) {
+      setCalStatusError("Unable to disconnect calendar.");
+    }
   };
 
   const canConfirm =
@@ -443,6 +497,52 @@ export default function CalendarPage() {
               <button className="button-primary" onClick={() => navigate("/dashboard")}>
                 Back to Dashboard
               </button>
+            </div>
+          </div>
+
+          <div className="calendar-connection-panel glass-panel">
+            <div className="calendar-connection-header">
+              <div className="calendar-connection-title">Calendar Connection</div>
+              {calStatusLoading ? (
+                <span className="status-pill status-unknown">Checking</span>
+              ) : calConnected ? (
+                <span className="status-pill status-active">Connected</span>
+              ) : (
+                <span className="status-pill status-none">Not Connected</span>
+              )}
+            </div>
+            <div className="calendar-connection-body">
+              {calConnected ? (
+                <span className="calendar-connection-note">
+                  Cal.com is linked. Automated bookings are enabled.
+                </span>
+              ) : (
+                <span className="calendar-connection-note">
+                  Connect Cal.com so the AI can book appointments automatically.
+                </span>
+              )}
+              <div className="calendar-connection-actions">
+                {calConnected ? (
+                  <button
+                    type="button"
+                    className="button-primary danger"
+                    onClick={handleCalcomDisconnect}
+                  >
+                    Disconnect Calendar
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="button-primary"
+                    onClick={handleCalcomConnect}
+                  >
+                    Connect Cal.com Account
+                  </button>
+                )}
+              </div>
+              {calStatusError ? (
+                <div className="calendar-connection-error">{calStatusError}</div>
+              ) : null}
             </div>
           </div>
 

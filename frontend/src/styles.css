@@ -1686,6 +1686,38 @@ select option {
   gap: 1.5rem;
 }
 
+.war-room-subheader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.8rem;
+  margin-bottom: 1.4rem;
+}
+
+.war-room-line {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.war-room-line-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.war-room-line-value {
+  font-size: 0.85rem;
+  color: var(--neon-green);
+  font-weight: 600;
+}
+
 .kpi-hero {
   grid-column: 1 / -1;
   display: grid;
@@ -1772,6 +1804,145 @@ select option {
   grid-column: span 4;
   padding: 1.4rem;
   border-radius: 18px;
+}
+
+.calendar-connection-card {
+  grid-column: span 4;
+  padding: 1.4rem;
+  border-radius: 18px;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.calendar-connection-panel {
+  margin: 1.2rem 0;
+  padding: 1.2rem 1.4rem;
+  border-radius: 18px;
+  display: grid;
+  gap: 0.8rem;
+  border: 1px solid rgba(45, 211, 238, 0.25);
+  background: rgba(8, 12, 20, 0.6);
+}
+
+.calendar-connection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.calendar-connection-title {
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.calendar-connection-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.calendar-connection-note {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.calendar-connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.calendar-connection-error {
+  font-size: 0.75rem;
+  color: rgba(244, 63, 94, 0.9);
+}
+
+.numbers-panel {
+  padding: 1.5rem;
+  border-radius: 18px;
+  border: 1px solid rgba(45, 211, 238, 0.2);
+  background: rgba(8, 12, 20, 0.6);
+}
+
+.numbers-banner {
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.12);
+  color: rgba(236, 253, 245, 0.9);
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.numbers-status,
+.numbers-error {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.numbers-error {
+  color: rgba(244, 63, 94, 0.9);
+}
+
+.numbers-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.numbers-card {
+  padding: 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(45, 211, 238, 0.2);
+  background: rgba(6, 8, 14, 0.65);
+  display: grid;
+  gap: 0.65rem;
+}
+
+.numbers-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.numbers-card-title {
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.numbers-card-phone {
+  font-size: 1.2rem;
+  color: var(--neon-green);
+  font-weight: 600;
+}
+
+.numbers-card-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.numbers-card-mono {
+  font-family: "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+  color: rgba(34, 211, 238, 0.9);
+}
+
+.numbers-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.numbers-toast {
+  margin-top: 1rem;
+  font-size: 0.75rem;
+  color: rgba(34, 211, 238, 0.9);
 }
 
 .live-feed-header {
