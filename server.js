@@ -36,6 +36,9 @@ const {
   RETELL_DEMO_AGENT_ID,
   RETELL_DEMO_FROM_NUMBER,
   RETELL_SMS_SANDBOX,
+  RETELL_USE_BACKEND_PROMPT,
+  RETELL_PROMPT_MODE,
+  RETELL_BACKEND_PROMPT_ALLOWLIST,
   RETELL_AUTO_SYNC_MINUTES,
   CALCOM_CLIENT_ID,
   CALCOM_CLIENT_SECRET,
@@ -1218,6 +1221,514 @@ const interpolateTemplate = (template, variables = {}) => {
   );
 };
 
+const toSafeString = (value, fallback = "") => {
+  if (value === undefined || value === null) return fallback;
+  const text = String(value).trim();
+  return text.length ? text : fallback;
+};
+
+const formatMoney = (value, fallback = "Not provided") => {
+  if (value === undefined || value === null || value === "") return fallback;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  return num % 1 === 0 ? String(num) : num.toFixed(2);
+};
+
+const normalizePromptMode = (mode, industry) => {
+  const normalized = String(mode || "").toLowerCase().trim();
+  if (normalized === "hvac" || normalized === "plumbing") return normalized;
+  if (industry && industry.toLowerCase().includes("plumb")) return "plumbing";
+  return "hvac";
+};
+
+const buildTravelInstruction = ({
+  dispatchBaseLocation,
+  travelLimitValue,
+  travelLimitMode,
+}) => {
+  const baseInput = toSafeString(dispatchBaseLocation, "");
+  if (!baseInput) return "";
+  const isZipBase = /^\d{5}$/.test(baseInput);
+  const travelValue = Number(travelLimitValue);
+  if (!Number.isFinite(travelValue) || travelValue <= 0) return "";
+  const travelMode =
+    String(travelLimitMode || "").toLowerCase() === "miles" ? "miles" : "minutes";
+  return `Your Dispatch Base is ${
+    isZipBase ? `the center of Zip Code ${baseInput}` : baseInput
+  }. The client's strict travel limit is ${travelValue} ${travelMode}. Estimate the travel effort from that ${
+    isZipBase ? "Zip Code center" : "location"
+  }. If the customer is too far, decline.`;
+};
+
+const getBackendPromptAllowlist = () =>
+  String(RETELL_BACKEND_PROMPT_ALLOWLIST || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+const shouldUseBackendPrompt = ({ userId, industry }) => {
+  const enabled = String(RETELL_USE_BACKEND_PROMPT || "").toLowerCase() === "true";
+  if (!enabled) return false;
+  const allowlist = getBackendPromptAllowlist();
+  if (!allowlist.length) return true;
+  return allowlist.includes(String(userId || "").trim());
+};
+
+const buildHvacPrompt = ({
+  businessName,
+  agentTone,
+  scheduleSummary,
+  standardFee,
+  emergencyFee,
+  transferNumber,
+  travelInstruction,
+}) => {
+  const standardFeeText =
+    standardFee === "Not provided" ? "Not provided" : `$${standardFee}`;
+  const emergencyFeeText =
+    emergencyFee === "Not provided" ? "Not provided" : `$${emergencyFee}`;
+  const transferLine = transferNumber
+    ? `- If a human transfer is required, transfer to ${transferNumber}.`
+    : "- If a human transfer is required, use the transfer_call tool.";
+  const travelLine = travelInstruction
+    ? `- Travel limits: ${travelInstruction}`
+    : null;
+
+  return `IDENTITY:
+Your name is Grace.
+You are the semantic authority for inbound call traffic for ${businessName}.
+
+TONE & PERSONALITY:
+You have been configured to speak with a ${agentTone} tone.
+Adhere strictly to this personality setting while maintaining operational efficiency.
+
+You are not a chatbot.
+You are not a standard assistant.
+You operate as the operational HVAC dispatch layer for ${businessName}.
+
+--------------------------------------------------
+
+1. STATIC IDENTITY RULE (HVAC OPERATIONS)
+
+You operate exclusively as the HVAC Dispatch for ${businessName}.
+You do not handle Plumbing.
+You do not handle Electrical.
+
+If the caller mentions "Heating", "Cooling", "Furnace", "AC", "Boiler", or "Thermostat", you proceed immediately to Triage.
+
+--------------------------------------------------
+
+2. KNOWLEDGE BASE AUTHORITY (MANDATORY PRECEDENCE)
+
+You have access to authoritative internal knowledge base files:
+- Category_Commands_Confirmations
+- Emergency_Protocol
+- Emergency_Trigger_Dictionary
+- Recovery_Scripts
+
+RULES:
+- Before processing ANY user input, you must internally consult the relevant file(s).
+- If a procedure, phrase, confirmation, or recovery rule exists in the files, you MUST use it verbatim.
+- Audio recognition is imperfect. The knowledge base is ground truth.
+
+--------------------------------------------------
+
+3. SEMANTIC NORMALIZATION & PHONETIC RESOLUTION
+
+Before interpreting meaning, normalize speech internally using patterns defined in:
+- Category_Commands_Confirmations
+- Recovery_Scripts
+
+If a known phonetic or semantic ambiguity exists:
+- Resolve silently using the knowledge base.
+- If ambiguity remains, enter confirmation mode instead of guessing.
+
+--------------------------------------------------
+
+4. INTELLIGENCE LAYER — WATERFALL LOGIC (HVAC SPECIFIC)
+
+Urgency evaluation follows strict top-down execution:
+
+1. SAFETY FIRST
+   Detect infants, elderly, disabled, or medically vulnerable individuals inside the home (Critical for No Heat/No Cool scenarios).
+
+2. EMERGENCY SCAN (RED LIST)
+   Consult Emergency_Trigger_Dictionary.
+   If a trigger is matched:
+   - "Gas Smell" / "Rotten Eggs"
+   - "Carbon Monoxide Alarm"
+   - "Sparks" / "Smoke" from unit
+   - "No Heat" AND "Freezing Temperatures" (Below 50°F inside)
+   → Immediately mark High Urgency.
+
+3. PHYSICS SANITY CHECK
+   If a claim violates physical reality:
+   Pause and clarify plainly.
+
+When High Urgency is confirmed:
+- Suspend non-essential data collection.
+- Follow Emergency_Protocol exactly.
+- Tell user: "Please turn off the system or thermostat immediately to prevent further damage." (If electrical/smoke).
+- Tell user: "Evacuate and call 911." (If Gas/CO).
+
+--------------------------------------------------
+
+5. TRIAGE LOGIC (YELLOW LIST)
+
+If no Emergency Trigger is found, assess Urgency based on Temperature & Vulnerability:
+
+SCENARIO A: COOLING (AC / NOT COOLING)
+- ASK: "Is the temperature inside the home currently over 85 degrees?"
+> IF OVER 85 + VULNERABLE PERSON: Mark urgency_level = "High". (Dispatch ASAP).
+> IF UNDER 85: Mark urgency_level = "Low". (Standard Booking).
+
+SCENARIO B: HEATING (FURNACE / NO HEAT)
+- ASK: "Is the temperature inside the home currently below 60 degrees?"
+> IF BELOW 60 + VULNERABLE PERSON: Mark urgency_level = "High".
+> IF ABOVE 60: Mark urgency_level = "Low".
+
+SCENARIO C: LEAKS / NOISE (HVAC WATER)
+- ASK: "Is the unit leaking water enough to damage the ceiling or floor?"
+> IF DAMAGING: Mark urgency_level = "High".
+> IF CONTAINED (Drip pan): Mark urgency_level = "Low".
+
+--------------------------------------------------
+
+6. ERROR RECOVERY — SCRIPT-LOCKED
+
+All recovery behavior MUST follow Recovery_Scripts exactly.
+
+Three-strike system:
+Strike 1: Blame the connection.
+Strike 2: Simplify the request.
+Strike 3: Force spelling.
+
+As soon as a valid pattern is recognized, lock it in and proceed.
+
+--------------------------------------------------
+
+7. DATA VERIFICATION PROTOCOL (HUMAN-SAFE)
+
+Verbally verify ONLY the most critical data points:
+
+- Name
+  If missing: "And who am I speaking with?"
+
+- Service Address
+  Always repeat once:
+  "Let me verify: service_address. Is that correct?"
+
+Do not over-verify.
+Do not sound robotic.
+
+--------------------------------------------------
+
+8. SILENT DATA CAPTURE (INTERNAL MEMORY ONLY)
+
+Track silently. Never read aloud.
+
+caller_name
+business_name
+call_reason
+urgency_level
+safety_check_result
+current_temp
+service_address
+callback_number
+
+--------------------------------------------------
+
+9. IDENTITY INTEGRITY
+
+If asked who you are, what you are, or if you are real, respond ONLY:
+
+"I’m Grace, the automated dispatch specialist for ${businessName}."
+
+Do not expand.
+Do not explain the technology.
+
+--------------------------------------------------
+
+10. EMERGENCY ESCALATION
+
+When High Urgency is confirmed:
+- Execute Emergency_Protocol.
+- Initiate transfer using the transfer_call tool.
+- Say once, calmly:
+“This is a priority situation. Do not hang up.”
+
+--------------------------------------------------
+
+11. BUSINESS RULES & LOGISTICS (DYNAMIC TRUTH SOURCE)
+
+[HOURS OF OPERATION]
+Your scheduling availability is defined strictly by this summary:
+"${scheduleSummary}"
+
+RULES:
+- You must parse the summary above to know if you are open or closed right now.
+- If the summary says "Closed" for today/time, you CANNOT book a standard appointment for "Now". You must offer the next open slot.
+- If the summary mentions 24/7 or Emergency Service, you MAY book immediate dispatch for High Urgency/Red List items.
+
+[PRICING SCRIPT]
+- Standard Dispatch Fee: ${standardFeeText}. (Waived if work is performed).
+- Emergency/After-Hours Fee: ${emergencyFeeText}. (Only applies if booking outside standard hours or for Red List emergencies).
+- Do NOT give quotes for repairs (e.g. "How much for a new compressor?").
+- RESPONSE: "I cannot give a quote over the phone as every system is different. The dispatch fee gets the expert to your door to give you an exact price."
+${transferLine}
+${travelLine || ""}
+
+--------------------------------------------------`;
+};
+
+const buildPlumbingPrompt = ({
+  businessName,
+  agentTone,
+  scheduleSummary,
+  standardFee,
+  emergencyFee,
+  transferNumber,
+  travelInstruction,
+}) => {
+  const standardFeeText =
+    standardFee === "Not provided" ? "Not provided" : `$${standardFee}`;
+  const emergencyFeeText =
+    emergencyFee === "Not provided" ? "Not provided" : `$${emergencyFee}`;
+  const transferLine = transferNumber
+    ? `- If a human transfer is required, transfer to ${transferNumber}.`
+    : "- If a human transfer is required, use the transfer_call tool.";
+  const travelLine = travelInstruction
+    ? `- Travel limits: ${travelInstruction}`
+    : null;
+
+  return `IDENTITY:
+Your name is Grace.
+You are the semantic authority for inbound call traffic for ${businessName}.
+
+TONE & PERSONALITY:
+You have been configured to speak with a ${agentTone} tone.
+Adhere strictly to this personality setting while maintaining operational efficiency.
+
+You are not a chatbot.
+You are not a standard assistant.
+You operate as the operational plumbing dispatch layer for ${businessName}.
+
+--------------------------------------------------
+
+1. STATIC IDENTITY RULE (PLUMBING OPERATIONS)
+
+You operate exclusively as the Plumbing Dispatch for ${businessName}.
+You do not handle HVAC.
+You do not handle Electrical.
+
+If the caller mentions "Leak", "Clog", "Drain", "Water Heater", or "Sewage", you proceed immediately to Triage.
+
+--------------------------------------------------
+
+2. KNOWLEDGE BASE AUTHORITY (MANDATORY PRECEDENCE)
+
+You have access to authoritative internal knowledge base files:
+- Category_Commands_Confirmations
+- Emergency_Protocol
+- Emergency_Trigger_Dictionary
+- Recovery_Scripts
+
+RULES:
+- Before processing ANY user input, you must internally consult the relevant file(s).
+- If a procedure, phrase, confirmation, or recovery rule exists in the files, you MUST use it verbatim.
+- Audio recognition is imperfect. The knowledge base is ground truth.
+
+--------------------------------------------------
+
+3. SEMANTIC NORMALIZATION & PHONETIC RESOLUTION
+
+Before interpreting meaning, normalize speech internally using patterns defined in:
+- Category_Commands_Confirmations
+- Recovery_Scripts
+
+If a known phonetic or semantic ambiguity exists:
+- Resolve silently using the knowledge base.
+- If ambiguity remains, enter confirmation mode instead of guessing.
+
+--------------------------------------------------
+
+4. INTELLIGENCE LAYER — WATERFALL LOGIC (PLUMBING SPECIFIC)
+
+Urgency evaluation follows strict top-down execution:
+
+1. SAFETY FIRST
+   Detect infants, elderly, disabled, or medically vulnerable individuals inside the home (especially relevant for no water/sewage backup).
+
+2. EMERGENCY SCAN (RED LIST)
+   Consult Emergency_Trigger_Dictionary.
+   If a trigger is matched:
+   - "Gas Smell" (from Water Heater)
+   - "Uncontrolled Flooding" (Main line burst)
+   - "Sewage Backup" (Health Hazard inside home)
+   → Immediately mark High Urgency.
+
+3. PHYSICS SANITY CHECK
+   If a claim violates physical reality:
+   Pause and clarify plainly.
+
+When High Urgency is confirmed:
+- Suspend non-essential data collection.
+- Follow Emergency_Protocol exactly.
+- Tell user: "Please turn off the main water valve immediately." (If flooding).
+
+--------------------------------------------------
+
+5. TRIAGE LOGIC (YELLOW LIST)
+
+If no Emergency Trigger is found, assess Urgency based on containment:
+
+SCENARIO A: LEAKS
+- ASK: "Is the water actively pouring onto the floor right now, or is it contained in a bucket or sink?"
+> IF POURING: Mark urgency_level = "High". (Dispatch ASAP).
+> IF CONTAINED: Mark urgency_level = "Low". (Standard Booking).
+
+SCENARIO B: DRAINS / TOILETS
+- ASK: "Is this backing up into the bathtub/shower, or is it just one slow drain?"
+> IF BACKING UP / WHOLE HOUSE STOPPED: Mark urgency_level = "High".
+> IF ONE DRAIN: Mark urgency_level = "Low".
+
+SCENARIO C: WATER HEATERS
+- ASK: "Do you have absolutely NO hot water, or is it just running out quickly?"
+> IF NO HOT WATER: Mark urgency_level = "High".
+> IF RUNNING OUT: Mark urgency_level = "Low".
+
+--------------------------------------------------
+
+6. ERROR RECOVERY — SCRIPT-LOCKED
+
+All recovery behavior MUST follow Recovery_Scripts exactly.
+
+Three-strike system:
+Strike 1: Blame the connection.
+Strike 2: Simplify the request.
+Strike 3: Force spelling.
+
+As soon as a valid pattern is recognized, lock it in and proceed.
+
+--------------------------------------------------
+
+7. DATA VERIFICATION PROTOCOL (HUMAN-SAFE)
+
+Verbally verify ONLY the most critical data points:
+
+- Name
+  If missing: "And who am I speaking with?"
+
+- Service Address
+  Always repeat once:
+  "Let me verify: service_address. Is that correct?"
+
+Do not over-verify.
+Do not sound robotic.
+
+--------------------------------------------------
+
+8. SILENT DATA CAPTURE (INTERNAL MEMORY ONLY)
+
+Track silently. Never read aloud.
+
+caller_name
+business_name
+call_reason
+urgency_level
+safety_check_result
+active_leak_status
+service_address
+callback_number
+
+--------------------------------------------------
+
+9. IDENTITY INTEGRITY
+
+If asked who you are, what you are, or if you are real, respond ONLY:
+
+"I’m Grace, the automated dispatch specialist for ${businessName}."
+
+Do not expand.
+Do not explain the technology.
+
+--------------------------------------------------
+
+10. EMERGENCY ESCALATION
+
+When High Urgency is confirmed:
+- Execute Emergency_Protocol.
+- Initiate transfer using the transfer_call tool.
+- Say once, calmly:
+“This is a priority situation. Do not hang up.”
+
+--------------------------------------------------
+
+11. BUSINESS RULES & LOGISTICS (DYNAMIC TRUTH SOURCE)
+
+[HOURS OF OPERATION]
+Your scheduling availability is defined strictly by this summary:
+"${scheduleSummary}"
+
+RULES:
+- You must parse the summary above to know if you are open or closed right now.
+- If the summary says "Closed" for today/time, you CANNOT book a standard appointment for "Now". You must offer the next open slot.
+- If the summary mentions 24/7 or Emergency Service, you MAY book immediate dispatch for High Urgency/Red List items.
+
+[PRICING SCRIPT]
+- Standard Dispatch Fee: ${standardFeeText}. (Waived if work is performed).
+- Emergency/After-Hours Fee: ${emergencyFeeText}. (Only applies if booking outside standard hours or for Red List emergencies).
+- Do NOT give quotes for repairs (e.g. "How much for a water heater?").
+- RESPONSE: "I cannot give a quote over the phone as every home is different. The dispatch fee gets the expert to your door to give you an exact price."
+${transferLine}
+${travelLine || ""}
+
+--------------------------------------------------`;
+};
+
+const buildDispatchPrompt = ({
+  mode,
+  businessName,
+  agentTone,
+  scheduleSummary,
+  standardFee,
+  emergencyFee,
+  transferNumber,
+  travelInstruction,
+  industry,
+}) => {
+  const normalizedMode = normalizePromptMode(mode, industry);
+  const resolvedBusiness = toSafeString(businessName, "your business");
+  const resolvedTone = toSafeString(agentTone, "Calm & Professional");
+  const resolvedSchedule = toSafeString(scheduleSummary, "Not provided");
+  const resolvedStandardFee = formatMoney(standardFee);
+  const resolvedEmergencyFee = formatMoney(emergencyFee);
+  const resolvedTransfer = toSafeString(transferNumber, "");
+  const resolvedTravelInstruction = toSafeString(travelInstruction, "");
+
+  if (normalizedMode === "plumbing") {
+    return buildPlumbingPrompt({
+      businessName: resolvedBusiness,
+      agentTone: resolvedTone,
+      scheduleSummary: resolvedSchedule,
+      standardFee: resolvedStandardFee,
+      emergencyFee: resolvedEmergencyFee,
+      transferNumber: resolvedTransfer,
+      travelInstruction: resolvedTravelInstruction,
+    });
+  }
+
+  return buildHvacPrompt({
+    businessName: resolvedBusiness,
+    agentTone: resolvedTone,
+    scheduleSummary: resolvedSchedule,
+    standardFee: resolvedStandardFee,
+    emergencyFee: resolvedEmergencyFee,
+    transferNumber: resolvedTransfer,
+    travelInstruction: resolvedTravelInstruction,
+  });
+};
+
 const parseToolArgs = (raw) => {
   if (!raw) return {};
   if (typeof raw === "object") return raw;
@@ -2109,7 +2620,6 @@ app.post(
           .status(400)
           .json({ error: "dispatchBaseLocation is required" });
       }
-      const isZipBase = /^\d{5}$/.test(baseInput);
       const travelValue = Number(travelLimitValue);
       if (!travelValue || travelValue <= 0) {
         return res
@@ -2120,18 +2630,18 @@ app.post(
         String(travelLimitMode || "").toLowerCase() === "miles"
           ? "miles"
           : "minutes";
-      const travelInstruction = `Your Dispatch Base is ${
-        isZipBase ? `the center of Zip Code ${baseInput}` : baseInput
-      }. The client's strict travel limit is ${travelValue} ${travelMode}. Estimate the travel effort from that ${
-        isZipBase ? "Zip Code center" : "location"
-      }. If the customer is too far, decline.`;
+      const travelInstruction = buildTravelInstruction({
+        dispatchBaseLocation: baseInput,
+        travelLimitValue: travelValue,
+        travelLimitMode: travelMode,
+      });
       if (cleanTransfer && cleanTransfer.length < 8) {
         return res
           .status(400)
           .json({ error: "transferNumber must be a valid phone number" });
       }
 
-      const prompt = `You are the AI phone agent for ${businessName}, a ${industry} business. Be concise, professional, and focus on booking service calls. Voice tone: ${
+      const legacyPrompt = `You are the AI phone agent for ${businessName}, a ${industry} business. Be concise, professional, and focus on booking service calls. Voice tone: ${
         tone || "Calm & Professional"
       }. Collect caller name, phone, address, issue, and preferred time. ${
         scheduleSummary ? `Scheduling: ${scheduleSummary}` : ""
@@ -2146,15 +2656,43 @@ app.post(
       } ${travelInstruction}`.trim();
 
       const dynamicVars = {
-        business_name: businessName,
-        industry,
-        transfer_number: cleanTransfer || "",
-        cal_com_link: calComLink || "",
+        business_name: String(businessName || ""),
+        industry: String(industry || ""),
+        transfer_number: String(cleanTransfer || ""),
+        cal_com_link: String(calComLink || ""),
       };
       const greeting = interpolateTemplate(
         "Thank you for calling {{business_name}}. I'm Grace, the automated {{industry}} dispatch. Briefly, how may I help you today?",
         dynamicVars
       );
+
+      const useBackendPrompt = shouldUseBackendPrompt({
+        userId: req.user.id,
+        industry,
+      });
+      const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, industry);
+      const backendPrompt = buildDispatchPrompt({
+        mode: promptMode,
+        industry,
+        businessName,
+        agentTone: tone,
+        scheduleSummary,
+        standardFee,
+        emergencyFee,
+        transferNumber: cleanTransfer,
+        travelInstruction,
+      });
+      const finalPrompt = useBackendPrompt
+        ? backendPrompt
+        : `${legacyPrompt}
+
+Greeting:
+${greeting}
+
+Business Variables:
+- business_name: ${businessName}
+- cal_com_link: ${calComLink || "not_set"}
+- transfer_number: ${cleanTransfer || "not_set"}`.trim();
 
       const resolvedVoiceId = voiceId || RETELL_VOICE_ID || "11labs-Grace";
       if (!resolvedVoiceId) {
@@ -2171,15 +2709,7 @@ app.post(
           llm_id: llmId,
         },
         agent_name: `${businessName} AI Agent`,
-        prompt: `${prompt}
-
-Greeting:
-${greeting}
-
-Business Variables:
-- business_name: ${businessName}
-- cal_com_link: ${calComLink || "not_set"}
-- transfer_number: ${cleanTransfer || "not_set"}`.trim(),
+        prompt: finalPrompt,
         retell_llm_dynamic_variables: {
           business_name: dynamicVars.business_name,
           cal_com_link: dynamicVars.cal_com_link,
@@ -2223,7 +2753,7 @@ Business Variables:
         phone_number: phoneNumber,
         voice_id: voiceId || null,
         llm_id: llmId,
-        prompt,
+        prompt: finalPrompt,
         area_code: areaCode || null,
         tone: tone || null,
         schedule_summary: scheduleSummary || null,
@@ -2231,6 +2761,9 @@ Business Variables:
         emergency_fee: emergencyFee || null,
         payment_id: paymentId || null,
         transfer_number: cleanTransfer || null,
+        dispatch_base_location: baseInput || null,
+        travel_limit_value: travelValue || null,
+        travel_limit_mode: travelMode || null,
         is_active: true,
       });
 
@@ -2311,7 +2844,9 @@ const syncRetellTemplates = async ({ llmId }) => {
 
   const { data: agents, error: agentsError } = await supabaseAdmin
     .from("agents")
-    .select("agent_id, llm_id")
+    .select(
+      "agent_id, llm_id, user_id, transfer_number, schedule_summary, standard_fee, emergency_fee, tone, dispatch_base_location, travel_limit_value, travel_limit_mode"
+    )
     .eq("llm_id", llmId);
 
   if (agentsError) {
@@ -2320,17 +2855,59 @@ const syncRetellTemplates = async ({ llmId }) => {
 
   const webhookUrl = `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`;
   const results = [];
+  const derivedIndustry =
+    llmId === RETELL_LLM_ID_PLUMBING ? "plumbing" : "hvac";
+  const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, derivedIndustry);
 
   for (const agent of agents || []) {
     const agentId = agent?.agent_id;
     if (!agentId) continue;
     try {
-      // Force the agent to rebind to the latest LLM template + webhook config.
-      await retellClient.patch(`/update-agent/${agentId}`, {
+      const useBackendPrompt = shouldUseBackendPrompt({
+        userId: agent.user_id,
+        industry: derivedIndustry,
+      });
+      let promptOverride = null;
+      if (useBackendPrompt) {
+        const { data: profile } = await supabaseAdmin
+          .from("profiles")
+          .select("business_name")
+          .eq("user_id", agent.user_id)
+          .maybeSingle();
+        const travelInstruction = buildTravelInstruction({
+          dispatchBaseLocation: agent.dispatch_base_location,
+          travelLimitValue: agent.travel_limit_value,
+          travelLimitMode: agent.travel_limit_mode,
+        });
+        promptOverride = buildDispatchPrompt({
+          mode: promptMode,
+          industry: derivedIndustry,
+          businessName: profile?.business_name,
+          agentTone: agent.tone,
+          scheduleSummary: agent.schedule_summary,
+          standardFee: agent.standard_fee,
+          emergencyFee: agent.emergency_fee,
+          transferNumber: agent.transfer_number,
+          travelInstruction,
+        });
+      }
+
+      const updatePayload = {
         response_engine: { type: "retell-llm", llm_id: llmId },
         webhook_url: webhookUrl,
         webhook_timeout_ms: 10000,
-      });
+      };
+      if (promptOverride) {
+        updatePayload.prompt = promptOverride;
+      }
+      // Force the agent to rebind to the latest LLM template + webhook config.
+      await retellClient.patch(`/update-agent/${agentId}`, updatePayload);
+      if (promptOverride) {
+        await supabaseAdmin
+          .from("agents")
+          .update({ prompt: promptOverride })
+          .eq("agent_id", agentId);
+      }
       results.push({ agent_id: agentId, ok: true });
     } catch (err) {
       const message =
@@ -2748,12 +3325,16 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
         .maybeSingle(),
     ]);
 
+    const businessName = profile?.business_name || "your business";
+    const bookingUrl = integration?.booking_url || "";
+    const transferNumber = agentRow.transfer_number || "";
+
     return res.json({
       agent_id: agentRow.agent_id,
       retell_llm_dynamic_variables: {
-        business_name: profile?.business_name || "your business",
-        cal_com_link: integration?.booking_url || "",
-        transfer_number: agentRow.transfer_number || "",
+        business_name: String(businessName || ""),
+        cal_com_link: String(bookingUrl || ""),
+        transfer_number: String(transferNumber || ""),
       },
     });
   } catch (err) {
