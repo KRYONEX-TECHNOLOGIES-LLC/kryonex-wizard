@@ -573,7 +573,20 @@ export default function WizardPage() {
       persistStep(6);
       navigate("/numbers?new=1");
     } catch (error) {
-      setDeployError("Deployment failed. Neural uplink refused.");
+      const status = error.response?.status;
+      const serverError = error.response?.data?.error;
+      const details =
+        typeof error.response?.data?.details === "string"
+          ? error.response.data.details
+          : null;
+      const message =
+        serverError ||
+        details ||
+        error.message ||
+        "Deployment failed. Neural uplink refused.";
+      setDeployError(
+        status ? `${message} (Code ${status})` : message
+      );
     } finally {
       setIsDeploying(false);
     }
