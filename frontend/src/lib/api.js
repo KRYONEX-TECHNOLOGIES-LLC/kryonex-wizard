@@ -39,6 +39,8 @@ export const getAdminUsers = () => api.get("/admin/users");
 export const getAdminUserProfile = (userId) =>
   api.get(`/admin/users/${userId}`);
 export const syncStripe = () => api.post("/admin/sync-stripe");
+export const syncRetellTemplates = (data) =>
+  api.post("/admin/retell/sync-templates", data);
 export const getAdminTimeseries = (days = 14) =>
   api.get("/admin/timeseries", { params: { days } });
 export const createClientDeployment = (data) =>

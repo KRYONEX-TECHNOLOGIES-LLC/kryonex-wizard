@@ -36,6 +36,7 @@ const {
   RETELL_DEMO_AGENT_ID,
   RETELL_DEMO_FROM_NUMBER,
   RETELL_SMS_SANDBOX,
+  RETELL_AUTO_SYNC_MINUTES,
   CALCOM_CLIENT_ID,
   CALCOM_CLIENT_SECRET,
   CALCOM_ENCRYPTION_KEY,
@@ -2303,6 +2304,54 @@ app.post("/update-agent", requireAuth, async (req, res) => {
   }
 });
 
+const syncRetellTemplates = async ({ llmId }) => {
+  if (!llmId) {
+    throw new Error("llmId is required to sync templates.");
+  }
+
+  const { data: agents, error: agentsError } = await supabaseAdmin
+    .from("agents")
+    .select("agent_id, llm_id")
+    .eq("llm_id", llmId);
+
+  if (agentsError) {
+    throw new Error(agentsError.message);
+  }
+
+  const webhookUrl = `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`;
+  const results = [];
+
+  for (const agent of agents || []) {
+    const agentId = agent?.agent_id;
+    if (!agentId) continue;
+    try {
+      // Force the agent to rebind to the latest LLM template + webhook config.
+      await retellClient.patch(`/update-agent/${agentId}`, {
+        response_engine: { type: "retell-llm", llm_id: llmId },
+        webhook_url: webhookUrl,
+        webhook_timeout_ms: 10000,
+      });
+      results.push({ agent_id: agentId, ok: true });
+    } catch (err) {
+      const message =
+        err.response?.data?.error ||
+        err.response?.data?.error_message ||
+        err.message;
+      results.push({ agent_id: agentId, ok: false, error: message });
+    }
+  }
+
+  const successCount = results.filter((item) => item.ok).length;
+  const failureCount = results.length - successCount;
+  return {
+    llm_id: llmId,
+    total: results.length,
+    success: successCount,
+    failed: failureCount,
+    results,
+  };
+};
+
 app.post(
   "/admin/retell/sync-templates",
   requireAuth,
@@ -2316,49 +2365,8 @@ app.post(
           error: "Provide llmId or industry to sync templates.",
         });
       }
-
-      const { data: agents, error: agentsError } = await supabaseAdmin
-        .from("agents")
-        .select("agent_id, llm_id")
-        .eq("llm_id", targetLlmId);
-
-      if (agentsError) {
-        return res.status(500).json({ error: agentsError.message });
-      }
-
-      const webhookUrl = `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`;
-      const results = [];
-
-      for (const agent of agents || []) {
-        const agentId = agent?.agent_id;
-        if (!agentId) continue;
-        try {
-          // Force the agent to rebind to the latest LLM template + webhook config.
-          await retellClient.patch(`/update-agent/${agentId}`, {
-            response_engine: { type: "retell-llm", llm_id: targetLlmId },
-            webhook_url: webhookUrl,
-            webhook_timeout_ms: 10000,
-          });
-          results.push({ agent_id: agentId, ok: true });
-        } catch (err) {
-          const message =
-            err.response?.data?.error ||
-            err.response?.data?.error_message ||
-            err.message;
-          results.push({ agent_id: agentId, ok: false, error: message });
-        }
-      }
-
-      const successCount = results.filter((item) => item.ok).length;
-      const failureCount = results.length - successCount;
-      return res.json({
-        ok: true,
-        llm_id: targetLlmId,
-        total: results.length,
-        success: successCount,
-        failed: failureCount,
-        results,
-      });
+      const syncResult = await syncRetellTemplates({ llmId: targetLlmId });
+      return res.json({ ok: true, ...syncResult });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -4783,3 +4791,31 @@ app.listen(PORT, () => {
 });
 
 scheduleAppointmentReminders();
+
+const scheduleRetellTemplateSync = () => {
+  const intervalMinutes = Number(RETELL_AUTO_SYNC_MINUTES || 0);
+  if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+    return;
+  }
+  const intervalMs = Math.max(5, intervalMinutes) * 60_000;
+  const runSync = async () => {
+    for (const llmId of [RETELL_LLM_ID_PLUMBING, RETELL_LLM_ID_HVAC]) {
+      if (!llmId) continue;
+      try {
+        const result = await syncRetellTemplates({ llmId });
+        console.log(
+          `Retell template sync: ${llmId} ok=${result.success} failed=${result.failed}`
+        );
+      } catch (err) {
+        console.error(
+          `Retell template sync failed for ${llmId}: ${err.message}`
+        );
+      }
+    }
+  };
+
+  setTimeout(runSync, 15_000);
+  setInterval(runSync, intervalMs);
+};
+
+scheduleRetellTemplateSync();

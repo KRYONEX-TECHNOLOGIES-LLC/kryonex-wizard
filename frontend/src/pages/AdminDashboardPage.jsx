@@ -13,6 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
+import { syncRetellTemplates } from "../lib/api";
 
 const TICKER_EVENTS = [
   "Coaching Flag: John Doe - Off Script",
@@ -104,6 +105,8 @@ export default function AdminDashboardPage() {
   const [tiles, setTiles] = React.useState(widgetSeed);
   const [dragId, setDragId] = React.useState(null);
   const [panic, setPanic] = React.useState(false);
+  const [syncing, setSyncing] = React.useState(false);
+  const [syncNote, setSyncNote] = React.useState("");
 
   const moveTile = (targetId) => {
     if (!dragId || dragId === targetId) return;
@@ -114,6 +117,25 @@ export default function AdminDashboardPage() {
     const [moved] = updated.splice(currentIdx, 1);
     updated.splice(targetIdx, 0, moved);
     setTiles(updated);
+  };
+
+  const handleSyncTemplates = async (industry) => {
+    try {
+      setSyncing(true);
+      setSyncNote("");
+      const { data } = await syncRetellTemplates({ industry });
+      setSyncNote(
+        `Synced ${industry} templates: ${data?.success ?? 0} ok, ${
+          data?.failed ?? 0
+        } failed.`
+      );
+    } catch (err) {
+      const message =
+        err?.response?.data?.error || err?.message || "Sync failed.";
+      setSyncNote(message);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   return (
@@ -170,12 +192,33 @@ export default function AdminDashboardPage() {
                     </div>
                   ))}
                 </div>
-                <button
-                  className={`panic-button ${panic ? "active" : ""}`}
-                  onClick={() => setPanic((prev) => !prev)}
-                >
-                  <Power size={14} /> PAUSE OUTBOUND SCRIPTS
-                </button>
+                <div className="flex flex-col items-end gap-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="px-3 py-2 text-xs uppercase tracking-[0.2em] border border-white/20 rounded-full hover:border-white/40 transition"
+                      onClick={() => handleSyncTemplates("plumbing")}
+                      disabled={syncing}
+                    >
+                      {syncing ? "Syncing..." : "Sync Plumbing"}
+                    </button>
+                    <button
+                      className="px-3 py-2 text-xs uppercase tracking-[0.2em] border border-white/20 rounded-full hover:border-white/40 transition"
+                      onClick={() => handleSyncTemplates("hvac")}
+                      disabled={syncing}
+                    >
+                      {syncing ? "Syncing..." : "Sync HVAC"}
+                    </button>
+                    <button
+                      className={`panic-button ${panic ? "active" : ""}`}
+                      onClick={() => setPanic((prev) => !prev)}
+                    >
+                      <Power size={14} /> PAUSE OUTBOUND SCRIPTS
+                    </button>
+                  </div>
+                  {syncNote ? (
+                    <div className="text-xs text-white/60">{syncNote}</div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </motion.div>
