@@ -6,6 +6,8 @@ import {
   getSubscriptionStatus,
   getUsageStatus,
   createTopupSession,
+  getCalcomStatus,
+  disconnectCalcom,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
@@ -35,6 +37,9 @@ export default function DashboardPage() {
   const [isSeller, setIsSeller] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [userLabel, setUserLabel] = React.useState("Operator");
+  const [calConnected, setCalConnected] = React.useState(false);
+  const [calStatusLoading, setCalStatusLoading] = React.useState(true);
+  const [calStatusError, setCalStatusError] = React.useState("");
 
   React.useEffect(() => {
     let mounted = true;
@@ -97,6 +102,27 @@ export default function DashboardPage() {
     };
   }, []);
 
+  React.useEffect(() => {
+    let active = true;
+    const loadStatus = async () => {
+      try {
+        const res = await getCalcomStatus();
+        if (!active) return;
+        setCalConnected(Boolean(res.data?.connected));
+      } catch (err) {
+        if (!active) return;
+        setCalStatusError("Calendar connection status unavailable.");
+        setCalConnected(false);
+      } finally {
+        if (active) setCalStatusLoading(false);
+      }
+    };
+    loadStatus();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handleBilling = () => {
     navigate("/billing");
   };
@@ -146,6 +172,34 @@ export default function DashboardPage() {
     }
   };
 
+  const handleCalcomConnect = async () => {
+    const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
+    setCalStatusError("");
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data?.session?.access_token;
+      if (!accessToken) {
+        setCalStatusError("Please sign in again before connecting Cal.com.");
+        return;
+      }
+      window.location.href = `${baseUrl}/api/calcom/authorize?access_token=${encodeURIComponent(
+        accessToken
+      )}`;
+    } catch (err) {
+      setCalStatusError("Unable to start calendar connection. Please try again.");
+    }
+  };
+
+  const handleCalcomDisconnect = async () => {
+    setCalStatusError("");
+    try {
+      await disconnectCalcom();
+      setCalConnected(false);
+    } catch (err) {
+      setCalStatusError("Unable to disconnect calendar.");
+    }
+  };
+
   const activityFeed = leads.slice(0, 3).map((lead) => ({
     id: lead.id,
     time: lead.created_at
@@ -189,6 +243,21 @@ export default function DashboardPage() {
               {userLabel} · {subscription.plan_type || "Core"} Tier
             </div>
           </div>
+          <div className="war-room-subheader">
+            <div className="war-room-line">
+              <span className="war-room-line-label">Primary Line</span>
+              <span className="war-room-line-value">
+                {agentProfile.phone_number || "No number yet"}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="button-primary muted"
+              onClick={() => navigate("/numbers")}
+            >
+              View Numbers
+            </button>
+          </div>
 
           <div className="war-room-grid">
             <div className="kpi-hero glass-panel">
@@ -223,6 +292,52 @@ export default function DashboardPage() {
                   <button className="btn-glow-red" onClick={handleTopup}>
                     ⚡ SYSTEM LOW: TOP UP NOW
                   </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="calendar-connection-card glass-panel">
+              <div className="calendar-connection-header">
+                <div className="calendar-connection-title">Calendar Sync</div>
+                {calStatusLoading ? (
+                  <span className="status-pill status-unknown">Checking</span>
+                ) : calConnected ? (
+                  <span className="status-pill status-active">Connected</span>
+                ) : (
+                  <span className="status-pill status-none">Not Connected</span>
+                )}
+              </div>
+              <div className="calendar-connection-body">
+                {calConnected ? (
+                  <span className="calendar-connection-note">
+                    Cal.com is linked. The AI can book appointments automatically.
+                  </span>
+                ) : (
+                  <span className="calendar-connection-note">
+                    Connect a calendar so the AI can check availability and book.
+                  </span>
+                )}
+                <div className="calendar-connection-actions">
+                  {calConnected ? (
+                    <button
+                      type="button"
+                      className="button-primary danger"
+                      onClick={handleCalcomDisconnect}
+                    >
+                      Disconnect Calendar
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={handleCalcomConnect}
+                    >
+                      Connect Cal.com Account
+                    </button>
+                  )}
+                </div>
+                {calStatusError ? (
+                  <div className="calendar-connection-error">{calStatusError}</div>
                 ) : null}
               </div>
             </div>

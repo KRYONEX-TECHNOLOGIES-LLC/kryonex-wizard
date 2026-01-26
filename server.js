@@ -1657,6 +1657,43 @@ app.get("/api/calcom/status", requireAuth, async (req, res) => {
   return res.json({ connected });
 });
 
+app.post("/api/calcom/disconnect", requireAuth, async (req, res) => {
+  try {
+    const resetPayload = {
+      is_active: false,
+      access_token: null,
+      refresh_token: null,
+      booking_url: null,
+      event_type_id: null,
+      event_type_slug: null,
+      cal_username: null,
+      cal_team_slug: null,
+      cal_organization_slug: null,
+      cal_time_zone: null,
+      updated_at: new Date().toISOString(),
+    };
+    await supabaseAdmin
+      .from("integrations")
+      .update(resetPayload)
+      .eq("user_id", req.user.id)
+      .eq("provider", "calcom");
+    await supabaseAdmin
+      .from("profiles")
+      .update({
+        cal_event_type_id: null,
+        cal_event_type_slug: null,
+        cal_username: null,
+        cal_team_slug: null,
+        cal_organization_slug: null,
+        cal_time_zone: null,
+      })
+      .eq("user_id", req.user.id);
+    return res.json({ connected: false });
+  } catch (err) {
+    return res.status(500).json({ error: "Unable to disconnect calendar" });
+  }
+});
+
 const retellWebhookHandler = async (req, res) => {
   try {
     lastRetellWebhookAt = new Date().toISOString();

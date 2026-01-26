@@ -8,6 +8,7 @@ import CalendarPage from "./pages/CalendarPage.jsx";
 import BillingPage from "./pages/BillingPage.jsx";
 import BlackBoxPage from "./pages/BlackBoxPage.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
+import NumbersPage from "./pages/NumbersPage.jsx";
 import AdminDashboardPage from "./pages/AdminDashboardPage.jsx";
 import AdminCallCenterPage from "./pages/AdminCallCenterPage.jsx";
 import AdminClientWizardPage from "./pages/AdminClientWizardPage.jsx";
@@ -96,6 +97,16 @@ export default function App() {
           <ProtectedRoute>
             <RequireOnboarding>
               <CalendarPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/numbers"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <NumbersPage />
             </RequireOnboarding>
           </ProtectedRoute>
         }

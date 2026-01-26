@@ -326,7 +326,6 @@ export default function WizardPage() {
           if (step < 5) persistStep(5);
           setCheckoutError("");
           localStorage.removeItem("kryonex_pending_checkout_session");
-          navigate("/dashboard", { replace: true });
         })
         .catch((error) => {
           setCheckoutError(
@@ -346,7 +345,6 @@ export default function WizardPage() {
             if (step < 5) persistStep(5);
             setCheckoutError("");
             localStorage.removeItem("kryonex_pending_checkout_session");
-            navigate("/dashboard", { replace: true });
           })
           .catch(() => {
             // keep pending id for another retry on next load
@@ -377,7 +375,16 @@ export default function WizardPage() {
           if (isNewAgent) {
             updateStep((prev) => (prev < 4 ? 4 : prev));
           } else {
-            navigate("/dashboard", { replace: true });
+            const savedForm = getSavedState(WIZARD_FORM_KEY) || {};
+            const hasWizardProgress = Boolean(
+              savedForm.nameInput ||
+                savedForm.areaCodeInput ||
+                savedForm.industryInput ||
+                Number(getSavedState(WIZARD_STEP_KEY) || 1) > 1
+            );
+            if (!hasWizardProgress) {
+              navigate("/dashboard", { replace: true });
+            }
           }
         }
       } catch (err) {
@@ -557,6 +564,7 @@ export default function WizardPage() {
       });
       setPhoneNumber(response?.data?.phone_number || "");
       persistStep(6);
+      navigate("/numbers?new=1");
     } catch (error) {
       setDeployError("Deployment failed. Neural uplink refused.");
     } finally {
