@@ -1205,6 +1205,18 @@ const normalizeToolPayload = (payload) => {
   return null;
 };
 
+const interpolateTemplate = (template, variables = {}) => {
+  if (!template) return "";
+  return String(template).replace(
+    /\{\{\s*([\w.]+)\s*\}\}|\{([\w.]+)\}/g,
+    (match, group1, group2) => {
+      const key = group1 || group2;
+      const value = variables[key];
+      return value === undefined || value === null ? match : String(value);
+    }
+  );
+};
+
 const parseToolArgs = (raw) => {
   if (!raw) return {};
   if (typeof raw === "object") return raw;
@@ -2132,6 +2144,17 @@ app.post(
           : ""
       } ${travelInstruction}`.trim();
 
+      const dynamicVars = {
+        business_name: businessName,
+        industry,
+        transfer_number: cleanTransfer || "",
+        cal_com_link: calComLink || "",
+      };
+      const greeting = interpolateTemplate(
+        "Thank you for calling {{business_name}}. I'm Grace, the automated {{industry}} dispatch. Briefly, how may I help you today?",
+        dynamicVars
+      );
+
       const resolvedVoiceId = voiceId || RETELL_VOICE_ID || "11labs-Grace";
       if (!resolvedVoiceId) {
         return res.status(500).json({
@@ -2149,14 +2172,17 @@ app.post(
         agent_name: `${businessName} AI Agent`,
         prompt: `${prompt}
 
+Greeting:
+${greeting}
+
 Business Variables:
 - business_name: ${businessName}
 - cal_com_link: ${calComLink || "not_set"}
 - transfer_number: ${cleanTransfer || "not_set"}`.trim(),
         retell_llm_dynamic_variables: {
-          business_name: businessName,
-          cal_com_link: calComLink || "",
-          transfer_number: cleanTransfer || "",
+          business_name: dynamicVars.business_name,
+          cal_com_link: dynamicVars.cal_com_link,
+          transfer_number: dynamicVars.transfer_number,
         },
       };
       agentPayload.voice_id = resolvedVoiceId;
