@@ -2029,13 +2029,16 @@ app.post(
         return res.status(400).json({ error: "areaCode must be 3 digits" });
       }
 
-      const { data: profile } = await supabaseAdmin
+      const { data: profileRows, error: profileError } = await supabaseAdmin
         .from("profiles")
         .select("consent_accepted_at, consent_version, role")
         .eq("user_id", req.user.id)
         .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(1);
+      if (profileError) {
+        return res.status(500).json({ error: profileError.message });
+      }
+      const profile = profileRows?.[0] || null;
 
       if (
         !profile?.consent_accepted_at ||
@@ -2045,18 +2048,18 @@ app.post(
       }
 
       if (profile?.role !== "admin") {
-        const { data: subscription, error: subError } = await supabaseAdmin
+        const { data: subscriptionRows, error: subError } = await supabaseAdmin
           .from("subscriptions")
           .select("status, current_period_end")
           .eq("user_id", req.user.id)
           .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+          .limit(1);
 
         if (subError) {
           return res.status(500).json({ error: subError.message });
         }
 
+        const subscription = subscriptionRows?.[0] || null;
         if (!isSubscriptionActive(subscription)) {
           return res.status(402).json({ error: "Active subscription required" });
         }
