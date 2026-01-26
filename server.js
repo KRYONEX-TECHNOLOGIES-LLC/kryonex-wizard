@@ -3178,16 +3178,18 @@ app.get("/subscription-status", requireAuth, async (req, res) => {
       .from("subscriptions")
       .select("status, plan_type, current_period_end")
       .eq("user_id", req.user.id)
-      .maybeSingle();
+      .order("created_at", { ascending: false })
+      .limit(1);
 
     if (error) {
       return res.status(500).json({ error: error.message });
     }
 
+    const row = data?.[0] || null;
     return res.json({
-      status: data?.status || "none",
-      plan_type: data?.plan_type || null,
-      current_period_end: data?.current_period_end || null,
+      status: row?.status || "none",
+      plan_type: row?.plan_type || null,
+      current_period_end: row?.current_period_end || null,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
