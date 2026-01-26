@@ -2033,6 +2033,8 @@ app.post(
         .from("profiles")
         .select("consent_accepted_at, consent_version, role")
         .eq("user_id", req.user.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
 
       if (
@@ -2047,6 +2049,8 @@ app.post(
           .from("subscriptions")
           .select("status, current_period_end")
           .eq("user_id", req.user.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
           .maybeSingle();
 
         if (subError) {
