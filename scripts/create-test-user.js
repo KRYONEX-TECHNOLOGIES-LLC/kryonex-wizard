@@ -1,3 +1,4 @@
+require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -57,6 +58,20 @@ const run = async () => {
   if (!userId) {
     console.error("Could not resolve user id for profile upsert.");
     process.exit(1);
+  }
+
+  if (password) {
+    const { error: updateError } = await supabase.auth.admin.updateUserById(
+      userId,
+      {
+        password,
+        email_confirm: true,
+      }
+    );
+    if (updateError) {
+      console.error("Update user password failed:", updateError.message);
+      process.exit(1);
+    }
   }
 
   const { error: profileError } = await supabase.from("profiles").upsert({

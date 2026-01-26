@@ -68,6 +68,7 @@ describe("Critical path", () => {
     cy.session([Cypress.env("TEST_EMAIL"), Cypress.env("TEST_PASSWORD")], () => {
       login();
     });
+    cy.visit("/dashboard");
     cy.contains("Kryonex Command Deck").should("exist");
   });
 });
