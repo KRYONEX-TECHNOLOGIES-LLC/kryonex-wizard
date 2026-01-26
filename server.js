@@ -882,7 +882,7 @@ app.post(
 app.use(express.json({ limit: "1mb" }));
 
 const retellClient = axios.create({
-  baseURL: "https://api.retellai.com/v2",
+  baseURL: "https://api.retellai.com",
   headers: {
     Authorization: `Bearer ${RETELL_API_KEY}`,
     "Content-Type": "application/json",
@@ -2124,7 +2124,7 @@ Business Variables:
         agentPayload.voice_id = voiceId;
       }
 
-      const agentResponse = await retellClient.post("/agents", agentPayload);
+      const agentResponse = await retellClient.post("/create-agent", agentPayload);
 
       const agentId = agentResponse.data.agent_id || agentResponse.data.id;
       if (!agentId) {
@@ -2132,12 +2132,21 @@ Business Variables:
       }
 
       const phonePayload = {
-        agent_id: agentId,
-        area_code: areaCode && String(areaCode).length === 3 ? areaCode : "auto",
+        inbound_agent_id: agentId,
+        outbound_agent_id: agentId,
+        area_code:
+          areaCode && String(areaCode).length === 3
+            ? Number(areaCode)
+            : undefined,
+        country_code: "US",
+        nickname: `${businessName} Line`,
+        inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/sms-inbound`,
         inbound_sms_enabled: true,
-        inbound_sms_webhook: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/sms-inbound`,
       };
-      const phoneResponse = await retellClient.post("/phone-numbers", phonePayload);
+      const phoneResponse = await retellClient.post(
+        "/create-phone-number",
+        phonePayload
+      );
 
       const phoneNumber =
         phoneResponse.data.phone_number || phoneResponse.data.number;
@@ -2199,7 +2208,10 @@ app.post("/update-agent", requireAuth, async (req, res) => {
     if (prompt) payload.prompt = prompt;
     if (voiceId) payload.voice_id = voiceId;
 
-    const updateResponse = await retellClient.patch(`/agents/${agentId}`, payload);
+    const updateResponse = await retellClient.patch(
+      `/update-agent/${agentId}`,
+      payload
+    );
 
     const { error: updateError } = await supabaseAdmin
       .from("agents")
