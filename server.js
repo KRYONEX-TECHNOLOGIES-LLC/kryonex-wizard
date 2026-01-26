@@ -12,6 +12,7 @@ const { Resend } = require("resend");
 const {
   PORT = 3000,
   RETELL_API_KEY,
+  RETELL_VOICE_ID,
   RETELL_LLM_ID_HVAC,
   RETELL_LLM_ID_PLUMBING,
   SUPABASE_URL,
@@ -2110,6 +2111,15 @@ app.post(
           : ""
       } ${travelInstruction}`.trim();
 
+      const resolvedVoiceId = voiceId || RETELL_VOICE_ID;
+      if (!resolvedVoiceId) {
+        return res.status(500).json({
+          error: "Missing voice_id",
+          details:
+            "Set RETELL_VOICE_ID in the backend environment or pass voiceId.",
+        });
+      }
+
       const agentPayload = {
         response_engine: {
           type: "retell-llm",
@@ -2123,9 +2133,7 @@ Business Variables:
 - cal_com_link: ${calComLink || "not_set"}
 - transfer_number: ${cleanTransfer || "not_set"}`.trim(),
       };
-      if (voiceId) {
-        agentPayload.voice_id = voiceId;
-      }
+      agentPayload.voice_id = resolvedVoiceId;
 
       const agentResponse = await retellClient.post("/create-agent", agentPayload);
 
