@@ -456,15 +456,22 @@ export default function WizardPage() {
         }
         return;
       }
+      const { data: existingAgents } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", user.id)
+        .limit(1);
+      const hasAgent = Boolean(existingAgents && existingAgents.length);
       const subRes = await getSubscriptionStatus();
       const tier = String(subRes?.data?.plan_type || "").toLowerCase();
-      const eligible = tier.includes("elite") || tier.includes("scale");
+      const eligible =
+        tier.includes("elite") || tier.includes("scale") || !hasAgent;
       if (mounted) {
         setWizardLocked(!eligible);
         setWizardLockReason(
           eligible
             ? ""
-            : "New agent creation is available on Elite/Scale plans only."
+            : "Additional agents are available on Elite/Scale plans."
         );
       }
     };

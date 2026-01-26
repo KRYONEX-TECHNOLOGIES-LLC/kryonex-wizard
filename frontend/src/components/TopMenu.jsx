@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import { getSubscriptionStatus, logBlackBoxEvent } from "../lib/api";
+import { autoGrantAdmin, getSubscriptionStatus, logBlackBoxEvent } from "../lib/api";
 import AdminModeToggle from "./AdminModeToggle.jsx";
 
 export default function TopMenu() {
@@ -16,6 +16,7 @@ export default function TopMenu() {
     status: "unknown",
     plan_type: null,
   });
+  const [adminError, setAdminError] = React.useState("");
   const [viewMode, setViewMode] = React.useState(
     () => window.localStorage.getItem("kryonex_admin_mode") || "user"
   );
@@ -94,8 +95,8 @@ export default function TopMenu() {
       items.push({ to: "/wizard", label: "Wizard" });
     }
     items.push({ to: "/billing", label: "Billing" });
-    if (adminEnabled) {
-      items.push({ to: "/admin", label: "Admin" });
+    if (isAdmin) {
+      items.push({ to: "/admin", label: "Admin Command" });
     }
   }
 
@@ -111,6 +112,36 @@ export default function TopMenu() {
       : isSeller
       ? "view-agent"
       : "view-user";
+
+  const handleAdminUnlock = async () => {
+    const code = window.prompt("Admin Access Code");
+    if (!code) return;
+    setAdminError("");
+    try {
+      const response = await autoGrantAdmin(code);
+      if (response.data?.ok) {
+        window.localStorage.setItem("kryonex_admin_mode", "admin");
+        window.dispatchEvent(new Event("kryonex-admin-mode"));
+        setViewMode("admin");
+        setOpen(false);
+        navigate("/admin");
+        return;
+      }
+      setAdminError("Admin access denied.");
+    } catch (err) {
+      setAdminError(
+        err.response?.data?.error || "Unable to unlock admin access."
+      );
+    }
+  };
+
+  const handleSwitchToAdmin = () => {
+    window.localStorage.setItem("kryonex_admin_mode", "admin");
+    window.dispatchEvent(new Event("kryonex-admin-mode"));
+    setViewMode("admin");
+    setOpen(false);
+    navigate("/admin");
+  };
 
   return (
     <>
@@ -164,8 +195,33 @@ export default function TopMenu() {
                   align="left"
                   onModeChange={(mode) => setViewMode(mode)}
                 />
+                {viewMode !== "admin" ? (
+                  <button
+                    type="button"
+                    className="top-menu-logout"
+                    style={{ marginTop: "0.75rem" }}
+                    onClick={handleSwitchToAdmin}
+                  >
+                    Switch to Admin View
+                  </button>
+                ) : null}
               </div>
-            ) : null}
+            ) : (
+              <div className="top-menu-section">
+                <button
+                  type="button"
+                  className="top-menu-logout"
+                  onClick={handleAdminUnlock}
+                >
+                  Unlock Admin Access
+                </button>
+                {adminError ? (
+                  <div style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "#f472b6" }}>
+                    {adminError}
+                  </div>
+                ) : null}
+              </div>
+            )}
             <button className="top-menu-logout" type="button" onClick={handleLogout}>
               Log Out
             </button>
