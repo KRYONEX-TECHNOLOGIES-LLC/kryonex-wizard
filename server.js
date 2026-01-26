@@ -2177,7 +2177,7 @@ Business Variables:
             : undefined,
         country_code: "US",
         nickname: `${businessName} Line`,
-        inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/sms-inbound`,
+        inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
         inbound_sms_enabled: true,
       };
       const phoneResponse = await retellClient.post(
@@ -2611,6 +2611,53 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
       },
     });
     return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/webhooks/retell-inbound", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const toNumber =
+      payload.to_number ||
+      payload.to ||
+      payload.called_number ||
+      payload.phone_number;
+    if (!toNumber) {
+      return res.status(400).json({ error: "to_number required" });
+    }
+    const { data: agentRow } = await supabaseAdmin
+      .from("agents")
+      .select("user_id, agent_id, transfer_number")
+      .eq("phone_number", toNumber)
+      .maybeSingle();
+    if (!agentRow?.user_id) {
+      return res.status(404).json({ error: "Agent not found for number" });
+    }
+
+    const [{ data: profile }, { data: integration }] = await Promise.all([
+      supabaseAdmin
+        .from("profiles")
+        .select("business_name")
+        .eq("user_id", agentRow.user_id)
+        .maybeSingle(),
+      supabaseAdmin
+        .from("integrations")
+        .select("booking_url")
+        .eq("user_id", agentRow.user_id)
+        .eq("provider", "calcom")
+        .maybeSingle(),
+    ]);
+
+    return res.json({
+      agent_id: agentRow.agent_id,
+      retell_llm_dynamic_variables: {
+        business_name: profile?.business_name || "your business",
+        cal_com_link: integration?.booking_url || "",
+        transfer_number: agentRow.transfer_number || "",
+      },
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
