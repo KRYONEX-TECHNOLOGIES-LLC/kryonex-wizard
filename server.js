@@ -1161,9 +1161,16 @@ const requireAdmin = async (req, res, next) => {
 const requireAuth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ")
+    const bearerToken = authHeader.startsWith("Bearer ")
       ? authHeader.slice(7)
       : null;
+    const queryToken =
+      typeof req.query.access_token === "string"
+        ? req.query.access_token
+        : typeof req.query.accessToken === "string"
+        ? req.query.accessToken
+        : null;
+    const token = bearerToken || queryToken;
 
     if (!token) {
       return res.status(401).json({ error: "Missing auth token" });
@@ -1227,6 +1234,7 @@ const resolveToolAppointmentWindow = ({ start_date, start_time, start_time_iso, 
 
 const CAL_API_VERSION_SLOTS = "2024-09-04";
 const CAL_API_VERSION_BOOKINGS = "2024-08-13";
+const CAL_API_VERSION_EVENT_TYPES = "2024-08-13";
 const calClient = axios.create({ baseURL: "https://api.cal.com/v2" });
 
 const getCalIntegration = async (userId) => {
@@ -1561,6 +1569,51 @@ app.get("/api/calcom/callback", async (req, res) => {
     if (!accessToken) {
       throw new Error("Missing access token");
     }
+    let eventType = null;
+    let bookingUrl = null;
+    try {
+      const eventTypesResponse = await calClient.get("/event-types", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "cal-api-version": CAL_API_VERSION_EVENT_TYPES,
+        },
+      });
+      const eventTypes =
+        eventTypesResponse.data?.data?.eventTypes ||
+        eventTypesResponse.data?.eventTypes ||
+        eventTypesResponse.data?.data ||
+        [];
+      eventType =
+        eventTypes.find((item) => item?.isDefault || item?.default) ||
+        eventTypes[0] ||
+        null;
+      if (eventType) {
+        const username =
+          eventType?.profile?.username ||
+          eventType?.owner?.username ||
+          eventType?.users?.[0]?.username ||
+          null;
+        const slug = eventType?.slug || null;
+        bookingUrl =
+          eventType?.schedulingUrl ||
+          eventType?.bookingUrl ||
+          (username && slug ? `https://cal.com/${username}/${slug}` : null);
+        await supabaseAdmin
+          .from("profiles")
+          .update({
+            cal_event_type_id: eventType?.id || null,
+            cal_event_type_slug: slug,
+            cal_username: username,
+            cal_team_slug: eventType?.team?.slug || null,
+            cal_organization_slug: eventType?.organization?.slug || null,
+            cal_time_zone: eventType?.timeZone || null,
+          })
+          .eq("user_id", stateData.userId);
+      }
+    } catch (err) {
+      bookingUrl = null;
+    }
+
     await supabaseAdmin.from("integrations").upsert(
       {
         user_id: stateData.userId,
@@ -1570,13 +1623,26 @@ app.get("/api/calcom/callback", async (req, res) => {
           ? encryptCalcomToken(refreshToken)
           : null,
         is_active: true,
+        booking_url: bookingUrl,
+        event_type_id: eventType?.id || null,
+        event_type_slug: eventType?.slug || null,
+        cal_username:
+          eventType?.profile?.username ||
+          eventType?.owner?.username ||
+          eventType?.users?.[0]?.username ||
+          null,
+        cal_team_slug: eventType?.team?.slug || null,
+        cal_organization_slug: eventType?.organization?.slug || null,
+        cal_time_zone: eventType?.timeZone || null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id,provider" }
     );
-    return res.redirect(`${FRONTEND_URL}/wizard?cal_status=success`);
+    return res.redirect(
+      `${FRONTEND_URL}/wizard?cal_status=success&status=success`
+    );
   } catch (err) {
-    return res.redirect(`${FRONTEND_URL}/wizard?cal_status=error`);
+    return res.redirect(`${FRONTEND_URL}/wizard?cal_status=error&status=error`);
   }
 });
 

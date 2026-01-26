@@ -182,9 +182,21 @@ export default function WizardPage() {
     };
   }, [searchParams]);
 
-  const handleCalcomConnect = () => {
+  const handleCalcomConnect = async () => {
     const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
-    window.location.href = `${baseUrl}/api/calcom/authorize`;
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data?.session?.access_token;
+      if (!accessToken) {
+        setCalStatusError("Please sign in again before connecting Cal.com.");
+        return;
+      }
+      window.location.href = `${baseUrl}/api/calcom/authorize?access_token=${encodeURIComponent(
+        accessToken
+      )}`;
+    } catch (err) {
+      setCalStatusError("Unable to start calendar connection. Please try again.");
+    }
   };
 
   const persistStep = (value) => {

@@ -24,6 +24,13 @@ create table if not exists public.integrations (
   refresh_token text,
   expires_at timestamptz,
   is_active boolean default false,
+  booking_url text,
+  event_type_id integer,
+  event_type_slug text,
+  cal_username text,
+  cal_team_slug text,
+  cal_organization_slug text,
+  cal_time_zone text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (user_id, provider)
