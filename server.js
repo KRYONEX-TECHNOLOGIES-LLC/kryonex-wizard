@@ -2051,7 +2051,7 @@ app.post(
       if (profile?.role !== "admin") {
         const { data: subscriptionRows, error: subError } = await supabaseAdmin
           .from("subscriptions")
-          .select("status, current_period_end")
+          .select("status, plan_type, current_period_end")
           .eq("user_id", req.user.id)
           .order("created_at", { ascending: false })
           .limit(1);
@@ -2063,6 +2063,27 @@ app.post(
         const subscription = subscriptionRows?.[0] || null;
         if (!isSubscriptionActive(subscription)) {
           return res.status(402).json({ error: "Active subscription required" });
+        }
+
+        const planTier = String(subscription?.plan_type || "").toLowerCase();
+        const allowMultiple =
+          planTier.includes("elite") || planTier.includes("scale");
+        if (!allowMultiple) {
+          const { data: existingAgents, error: agentCheckError } =
+            await supabaseAdmin
+              .from("agents")
+              .select("id")
+              .eq("user_id", req.user.id)
+              .limit(1);
+          if (agentCheckError) {
+            return res.status(500).json({ error: agentCheckError.message });
+          }
+          if (existingAgents && existingAgents.length > 0) {
+            return res.status(403).json({
+              error:
+                "Additional agents are available on Elite/Scale plans only.",
+            });
+          }
         }
       }
 
@@ -2132,6 +2153,11 @@ Business Variables:
 - business_name: ${businessName}
 - cal_com_link: ${calComLink || "not_set"}
 - transfer_number: ${cleanTransfer || "not_set"}`.trim(),
+        retell_llm_dynamic_variables: {
+          business_name: businessName,
+          cal_com_link: calComLink || "",
+          transfer_number: cleanTransfer || "",
+        },
       };
       agentPayload.voice_id = resolvedVoiceId;
 
