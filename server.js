@@ -2111,7 +2111,10 @@ app.post(
       } ${travelInstruction}`.trim();
 
       const agentPayload = {
-        llm_id: llmId,
+        response_engine: {
+          type: "retell-llm",
+          llm_id: llmId,
+        },
         agent_name: `${businessName} AI Agent`,
         prompt: `${prompt}
 
