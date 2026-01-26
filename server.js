@@ -2111,7 +2111,7 @@ app.post(
           : ""
       } ${travelInstruction}`.trim();
 
-      const resolvedVoiceId = voiceId || RETELL_VOICE_ID;
+      const resolvedVoiceId = voiceId || RETELL_VOICE_ID || "11labs-Grace";
       if (!resolvedVoiceId) {
         return res.status(500).json({
           error: "Missing voice_id",
@@ -2201,9 +2201,13 @@ Business Variables:
       return res.json({ agent_id: agentId, phone_number: phoneNumber });
     } catch (err) {
       const details = err.response?.data || null;
-      const message = err.response?.data?.error || err.message;
+      const message =
+        err.response?.data?.error_message ||
+        err.response?.data?.error ||
+        err.message;
+      const status = err.response?.status || 500;
       console.error("deploy-agent error:", message, details);
-      return res.status(500).json({ error: message, details });
+      return res.status(status).json({ error: message, details });
     }
   }
 );
