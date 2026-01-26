@@ -1475,6 +1475,68 @@ export default function WizardPage() {
                       Final review before neural injection.
                     </p>
                   </div>
+                  <div className="glass-panel p-6 rounded-3xl border border-white/10 bg-black/40 space-y-4">
+                    <div className="flex items-center gap-3">
+                      <MapPin size={20} className="text-neon-cyan" />
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.3em] text-white/40">
+                          Dispatch Base
+                        </p>
+                        <p className="text-lg font-semibold text-white">
+                          Service Radius Rules
+                        </p>
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <MapPin
+                        size={18}
+                        className="text-white/30 absolute left-3 top-1/2 -translate-y-1/2"
+                      />
+                      <input
+                        className="glass-input w-full pl-12 search-location-input text-sm text-white"
+                        placeholder="Enter Start Zip Code (Recommended) or Full Address"
+                        value={form.dispatchBaseLocation}
+                        onChange={(event) =>
+                          updateField("dispatchBaseLocation", event.target.value)
+                        }
+                      />
+                    </div>
+                    <p className="text-xs text-white/50">{dispatchHint}</p>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        {["miles", "minutes"].map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => updateField("travelLimitMode", mode)}
+                            className={`flex-1 text-xs uppercase tracking-[0.4em] rounded-2xl border py-2 transition-all ${
+                              travelLimitMode === mode
+                                ? "border-neon-cyan bg-neon-cyan/20 text-neon-cyan"
+                                : "border-white/20 text-white/60 hover:border-neon-cyan/50 hover:text-white"
+                            }`}
+                          >
+                            {mode}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          className="glass-input w-full font-mono text-lg text-white"
+                          value={String(form.travelLimitValue || "")}
+                          onChange={(event) =>
+                            updateField("travelLimitValue", event.target.value)
+                          }
+                          placeholder="30"
+                        />
+                        <span className="text-xs uppercase tracking-[0.4em] text-white/40">
+                          Range
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                   <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
                     <div className="flex justify-between items-center py-2 border-b border-white/5">
                       <span className="text-white/50 text-sm">
