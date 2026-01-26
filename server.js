@@ -2184,6 +2184,8 @@ Business Variables:
           cal_com_link: dynamicVars.cal_com_link,
           transfer_number: dynamicVars.transfer_number,
         },
+        webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
+        webhook_timeout_ms: 10000,
       };
       agentPayload.voice_id = resolvedVoiceId;
 
@@ -2300,6 +2302,68 @@ app.post("/update-agent", requireAuth, async (req, res) => {
     return res.status(500).json({ error: message });
   }
 });
+
+app.post(
+  "/admin/retell/sync-templates",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { industry, llmId } = req.body || {};
+      const targetLlmId = llmId || (industry ? pickLlmId(industry) : null);
+      if (!targetLlmId) {
+        return res.status(400).json({
+          error: "Provide llmId or industry to sync templates.",
+        });
+      }
+
+      const { data: agents, error: agentsError } = await supabaseAdmin
+        .from("agents")
+        .select("agent_id, llm_id")
+        .eq("llm_id", targetLlmId);
+
+      if (agentsError) {
+        return res.status(500).json({ error: agentsError.message });
+      }
+
+      const webhookUrl = `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`;
+      const results = [];
+
+      for (const agent of agents || []) {
+        const agentId = agent?.agent_id;
+        if (!agentId) continue;
+        try {
+          // Force the agent to rebind to the latest LLM template + webhook config.
+          await retellClient.patch(`/update-agent/${agentId}`, {
+            response_engine: { type: "retell-llm", llm_id: targetLlmId },
+            webhook_url: webhookUrl,
+            webhook_timeout_ms: 10000,
+          });
+          results.push({ agent_id: agentId, ok: true });
+        } catch (err) {
+          const message =
+            err.response?.data?.error ||
+            err.response?.data?.error_message ||
+            err.message;
+          results.push({ agent_id: agentId, ok: false, error: message });
+        }
+      }
+
+      const successCount = results.filter((item) => item.ok).length;
+      const failureCount = results.length - successCount;
+      return res.json({
+        ok: true,
+        llm_id: targetLlmId,
+        total: results.length,
+        success: successCount,
+        failed: failureCount,
+        results,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
 
 app.get("/dashboard-stats", requireAuth, async (req, res) => {
   try {
