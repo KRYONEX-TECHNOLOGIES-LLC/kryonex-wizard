@@ -1222,7 +1222,7 @@ const normalizeRetellAgent = (payload) =>
 
 const applyMasterAgentTools = async ({ industry, agentId }) => {
   const masterAgentId = pickMasterAgentId(industry);
-  if (!masterAgentId) return;
+  if (!masterAgentId) return { masterAgentId: null, toolCount: 0 };
   try {
     const masterResponse = await retellClient.get(
       `/get-agent/${masterAgentId}`
@@ -1235,13 +1235,18 @@ const applyMasterAgentTools = async ({ industry, agentId }) => {
     if (master?.post_call_analysis) {
       toolPayload.post_call_analysis = master.post_call_analysis;
     }
-    if (!Object.keys(toolPayload).length) return;
+    const toolCount = Array.isArray(master?.tools) ? master.tools.length : 0;
+    if (!Object.keys(toolPayload).length) {
+      return { masterAgentId, toolCount };
+    }
     await retellClient.patch(`/update-agent/${agentId}`, toolPayload);
+    return { masterAgentId, toolCount };
   } catch (err) {
     console.warn(
       "[retell] unable to copy master tools",
       err.response?.data || err.message
     );
+    return { masterAgentId, toolCount: 0, error: err.message };
   }
 };
 
@@ -2773,7 +2778,14 @@ Business Variables:
       if (!agentId) {
         return res.status(500).json({ error: "Retell agent_id missing" });
       }
-      await applyMasterAgentTools({ industry, agentId });
+      const toolCopy = await applyMasterAgentTools({ industry, agentId });
+      console.info("[retell] agent created", {
+        agent_id: agentId,
+        llm_id: llmId,
+        llm_version: llmVersion || null,
+        master_agent_id: toolCopy?.masterAgentId || null,
+        tool_count_after_copy: toolCopy?.toolCount || 0,
+      });
 
       const phonePayload = {
         inbound_agent_id: agentId,
