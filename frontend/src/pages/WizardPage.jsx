@@ -22,6 +22,7 @@ import {
   deployAgent,
   getCalcomStatus,
   getSubscriptionStatus,
+  verifyAdminCode,
   verifyCheckoutSession,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
@@ -145,6 +146,7 @@ export default function WizardPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [wizardLocked, setWizardLocked] = useState(false);
   const [wizardLockReason, setWizardLockReason] = useState("");
+  const [adminUnlockError, setAdminUnlockError] = useState("");
   const [searchParams] = useSearchParams();
   const [calConnected, setCalConnected] = useState(false);
   const [calStatusLoading, setCalStatusLoading] = useState(true);
@@ -620,6 +622,28 @@ export default function WizardPage() {
     }
   };
 
+  const handleAdminUnlock = async () => {
+    const code = window.prompt("Admin Access Code");
+    if (!code) return;
+    setAdminUnlockError("");
+    try {
+      const response = await verifyAdminCode(code);
+      if (response.data?.ok) {
+        setIsAdmin(true);
+        setWizardLocked(false);
+        setWizardLockReason("");
+        window.localStorage.setItem("kryonex_admin_mode", "admin");
+        window.dispatchEvent(new Event("kryonex-admin-mode"));
+        return;
+      }
+      setAdminUnlockError("Admin access denied.");
+    } catch (err) {
+      setAdminUnlockError(
+        err.response?.data?.error || "Unable to unlock admin access."
+      );
+    }
+  };
+
   if (wizardLocked) {
     return (
       <div className="min-h-screen bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30">
@@ -639,6 +663,9 @@ export default function WizardPage() {
               <button className="glow-button" onClick={() => navigate("/billing")}>
                 Upgrade Plan
               </button>
+              <button className="button-primary" onClick={handleAdminUnlock}>
+                Unlock Admin Access
+              </button>
               <a
                 className="button-primary"
                 href="mailto:support@kryonextech.com?subject=New%20Agent%20Request"
@@ -649,6 +676,9 @@ export default function WizardPage() {
                 Back to Dashboard
               </button>
             </div>
+            {adminUnlockError ? (
+              <div className="mt-4 text-sm text-neon-pink">{adminUnlockError}</div>
+            ) : null}
           </div>
         </div>
       </div>
