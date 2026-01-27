@@ -1290,7 +1290,7 @@ const buildHvacPrompt = ({
     emergencyFee === "Not provided" ? "Not provided" : `$${emergencyFee}`;
   const transferLine = transferNumber
     ? `- If a human transfer is required, transfer to ${transferNumber}.`
-    : "- If a human transfer is required, use the transfer_call tool.";
+    : null;
   const travelLine = travelInstruction
     ? `- Travel limits: ${travelInstruction}`
     : null;
@@ -1454,7 +1454,6 @@ Do not explain the technology.
 
 When High Urgency is confirmed:
 - Execute Emergency_Protocol.
-- Initiate transfer using the transfer_call tool.
 - Say once, calmly:
 “This is a priority situation. Do not hang up.”
 
@@ -1476,7 +1475,7 @@ RULES:
 - Emergency/After-Hours Fee: ${emergencyFeeText}. (Only applies if booking outside standard hours or for Red List emergencies).
 - Do NOT give quotes for repairs (e.g. "How much for a new compressor?").
 - RESPONSE: "I cannot give a quote over the phone as every system is different. The dispatch fee gets the expert to your door to give you an exact price."
-${transferLine}
+${transferLine || ""}
 ${travelLine || ""}
 
 --------------------------------------------------`;
@@ -1497,7 +1496,7 @@ const buildPlumbingPrompt = ({
     emergencyFee === "Not provided" ? "Not provided" : `$${emergencyFee}`;
   const transferLine = transferNumber
     ? `- If a human transfer is required, transfer to ${transferNumber}.`
-    : "- If a human transfer is required, use the transfer_call tool.";
+    : null;
   const travelLine = travelInstruction
     ? `- Travel limits: ${travelInstruction}`
     : null;
@@ -1659,7 +1658,6 @@ Do not explain the technology.
 
 When High Urgency is confirmed:
 - Execute Emergency_Protocol.
-- Initiate transfer using the transfer_call tool.
 - Say once, calmly:
 “This is a priority situation. Do not hang up.”
 
@@ -1681,7 +1679,7 @@ RULES:
 - Emergency/After-Hours Fee: ${emergencyFeeText}. (Only applies if booking outside standard hours or for Red List emergencies).
 - Do NOT give quotes for repairs (e.g. "How much for a water heater?").
 - RESPONSE: "I cannot give a quote over the phone as every home is different. The dispatch fee gets the expert to your door to give you an exact price."
-${transferLine}
+${transferLine || ""}
 ${travelLine || ""}
 
 --------------------------------------------------`;
@@ -1942,20 +1940,6 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     return { ok: true, appointment: data };
   }
 
-  if (toolName === "send_sms") {
-    const to = args.to || args.phone || args.customer_phone;
-    const body = args.body || args.message;
-    if (!to || !body) return { ok: false, error: "Missing to/body" };
-    const response = await sendSmsFromAgent({
-      agentId,
-      to,
-      body,
-      userId,
-      source: "agent_tool",
-    });
-    return { ok: true, response };
-  }
-
   if (toolName === "extract_dynamic_variable") {
     const leadId = args.lead_id || args.leadId || null;
     const customerPhone = args.customer_phone || args.phone || null;
@@ -1983,9 +1967,10 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       return { ok: false, error: "Lead not found for dynamic variables" };
     }
 
-    const currentMeta = leadRow.metadata && typeof leadRow.metadata === "object"
-      ? leadRow.metadata
-      : {};
+    const currentMeta =
+      leadRow.metadata && typeof leadRow.metadata === "object"
+        ? leadRow.metadata
+        : {};
     const updateMeta = {
       ...currentMeta,
       lead_notes: {
@@ -2003,14 +1988,6 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       metaData: { lead_id: leadRow.id, variables: args },
     });
     return { ok: true, lead_id: leadRow.id };
-  }
-
-  if (toolName === "transfer_call") {
-    return { ok: true, transfer_number: args.transfer_number || args.number || null };
-  }
-
-  if (toolName === "end_call") {
-    return { ok: true, ended: true };
   }
 
   return { ok: false, error: "Unknown tool" };
@@ -2661,6 +2638,19 @@ app.post(
         industry: String(industry || ""),
         transfer_number: String(cleanTransfer || ""),
         cal_com_link: String(calComLink || ""),
+        agent_tone: String(tone || "Calm & Professional"),
+        schedule_summary: String(scheduleSummary || ""),
+        standard_fee: String(standardFee || ""),
+        emergency_fee: String(emergencyFee || ""),
+        caller_name: "",
+        call_reason: "",
+        safety_check_result: "",
+        current_temp: "",
+        service_address: "",
+        callback_number: "",
+        urgency_level: "",
+        vulnerable_flag: "",
+        issue_type: "",
       };
       const greeting = interpolateTemplate(
         "Thank you for calling {{business_name}}. I'm Grace, the automated {{industry}} dispatch. Briefly, how may I help you today?",
