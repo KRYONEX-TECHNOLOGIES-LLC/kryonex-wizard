@@ -2834,9 +2834,6 @@ Business Variables:
         type: "retell-llm",
         llm_id: llmId,
       };
-      if (llmVersionNumber !== null) {
-        responseEngine.version = llmVersionNumber;
-      }
       const agentPayload = {
         response_engine: responseEngine,
         agent_name: `${businessName} AI Agent`,
@@ -2859,6 +2856,25 @@ Business Variables:
       if (!agentId) {
         return res.status(500).json({ error: "Retell agent_id missing" });
       }
+      if (llmVersionNumber !== null && llmVersionNumber > 0) {
+        try {
+          await retellClient.patch(`/update-agent/${agentId}`, {
+            response_engine: {
+              type: "retell-llm",
+              llm_id: llmId,
+              version: llmVersionNumber,
+            },
+          });
+        } catch (err) {
+          console.warn("[retell] unable to set agent llm version", {
+            agent_id: agentId,
+            llm_id: llmId,
+            llm_version: llmVersionNumber,
+            error: err.response?.data || err.message,
+          });
+        }
+      }
+
       const toolCopy = await applyMasterAgentTools({
         industry,
         agentId,
