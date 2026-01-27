@@ -15,6 +15,9 @@ const {
   RETELL_VOICE_ID,
   RETELL_LLM_ID_HVAC,
   RETELL_LLM_ID_PLUMBING,
+  RETELL_LLM_VERSION_HVAC,
+  RETELL_LLM_VERSION_PLUMBING,
+  RETELL_MASTER_AGENT_ID_HVAC,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
   STRIPE_SECRET_KEY,
@@ -1198,6 +1201,48 @@ const pickLlmId = (industry) => {
     return RETELL_LLM_ID_PLUMBING;
   }
   return RETELL_LLM_ID_HVAC;
+};
+
+const pickLlmVersion = (industry) => {
+  if (industry && industry.toLowerCase().includes("plumb")) {
+    return RETELL_LLM_VERSION_PLUMBING;
+  }
+  return RETELL_LLM_VERSION_HVAC;
+};
+
+const pickMasterAgentId = (industry) => {
+  if (industry && industry.toLowerCase().includes("plumb")) {
+    return null;
+  }
+  return RETELL_MASTER_AGENT_ID_HVAC;
+};
+
+const normalizeRetellAgent = (payload) =>
+  payload?.agent || payload?.data?.agent || payload?.data || payload;
+
+const applyMasterAgentTools = async ({ industry, agentId }) => {
+  const masterAgentId = pickMasterAgentId(industry);
+  if (!masterAgentId) return;
+  try {
+    const masterResponse = await retellClient.get(
+      `/get-agent/${masterAgentId}`
+    );
+    const master = normalizeRetellAgent(masterResponse.data);
+    const toolPayload = {};
+    if (Array.isArray(master?.tools)) {
+      toolPayload.tools = master.tools;
+    }
+    if (master?.post_call_analysis) {
+      toolPayload.post_call_analysis = master.post_call_analysis;
+    }
+    if (!Object.keys(toolPayload).length) return;
+    await retellClient.patch(`/update-agent/${agentId}`, toolPayload);
+  } catch (err) {
+    console.warn(
+      "[retell] unable to copy master tools",
+      err.response?.data || err.message
+    );
+  }
 };
 
 const normalizeToolPayload = (payload) => {
@@ -2590,6 +2635,7 @@ app.post(
       }
 
       const llmId = pickLlmId(industry);
+      const llmVersion = pickLlmVersion(industry);
       const cleanTransfer =
         transferNumber && String(transferNumber).replace(/[^\d+]/g, "");
       const baseInput = String(dispatchBaseLocation || "").trim();
@@ -2698,11 +2744,15 @@ Business Variables:
         });
       }
 
+      const responseEngine = {
+        type: "retell-llm",
+        llm_id: llmId,
+      };
+      if (llmVersion) {
+        responseEngine.llm_version = llmVersion;
+      }
       const agentPayload = {
-        response_engine: {
-          type: "retell-llm",
-          llm_id: llmId,
-        },
+        response_engine: responseEngine,
         agent_name: `${businessName} AI Agent`,
         retell_llm_dynamic_variables: {
           business_name: dynamicVars.business_name,
@@ -2723,6 +2773,7 @@ Business Variables:
       if (!agentId) {
         return res.status(500).json({ error: "Retell agent_id missing" });
       }
+      await applyMasterAgentTools({ industry, agentId });
 
       const phonePayload = {
         inbound_agent_id: agentId,
@@ -2854,6 +2905,7 @@ const syncRetellTemplates = async ({ llmId }) => {
   const results = [];
   const derivedIndustry =
     llmId === RETELL_LLM_ID_PLUMBING ? "plumbing" : "hvac";
+  const llmVersion = pickLlmVersion(derivedIndustry);
     const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, derivedIndustry);
 
   for (const agent of agents || []) {
@@ -2891,8 +2943,12 @@ const syncRetellTemplates = async ({ llmId }) => {
         });
       }
 
+      const responseEngine = { type: "retell-llm", llm_id: llmId };
+      if (llmVersion) {
+        responseEngine.llm_version = llmVersion;
+      }
       const updatePayload = {
-        response_engine: { type: "retell-llm", llm_id: llmId },
+        response_engine: responseEngine,
         webhook_url: webhookUrl,
         webhook_timeout_ms: 10000,
       };
