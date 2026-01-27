@@ -18,6 +18,7 @@ const {
   RETELL_LLM_VERSION_HVAC,
   RETELL_LLM_VERSION_PLUMBING,
   RETELL_MASTER_AGENT_ID_HVAC,
+  RETELL_MASTER_AGENT_ID_PLUMBING,
   WIZARD_MAINTENANCE_MODE,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
@@ -1223,7 +1224,7 @@ const parseRetellVersionNumber = (value) => {
 
 const pickMasterAgentId = (industry) => {
   if (industry && industry.toLowerCase().includes("plumb")) {
-    return null;
+    return RETELL_MASTER_AGENT_ID_PLUMBING || null;
   }
   return RETELL_MASTER_AGENT_ID_HVAC;
 };
@@ -2842,64 +2843,46 @@ Business Variables:
         });
       }
 
-      const responseEngine = {
-        type: "retell-llm",
-        llm_id: llmId,
-      };
-      const agentPayload = {
-        response_engine: responseEngine,
-        agent_name: `${businessName} AI Agent`,
-        retell_llm_dynamic_variables: {
-          business_name: dynamicVars.business_name,
-          cal_com_link: dynamicVars.cal_com_link,
-          transfer_number: dynamicVars.transfer_number,
-        },
-        webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
-        webhook_timeout_ms: 10000,
-      };
-      if (finalPrompt) {
-        agentPayload.prompt = finalPrompt;
+      const sourceAgentId = pickMasterAgentId(industry);
+      if (!sourceAgentId) {
+        return res.status(500).json({
+          error: "Missing master agent id for industry",
+          details: industry?.toLowerCase()?.includes("plumb")
+            ? "Set RETELL_MASTER_AGENT_ID_PLUMBING in the backend environment."
+            : "Set RETELL_MASTER_AGENT_ID_HVAC in the backend environment.",
+        });
       }
-      agentPayload.voice_id = resolvedVoiceId;
 
-      const agentResponse = await retellClient.post("/create-agent", agentPayload);
-
-      const agentId = agentResponse.data.agent_id || agentResponse.data.id;
+      const copyResponse = await retellClient.post(
+        `/copy-agent/${encodeURIComponent(sourceAgentId)}`,
+        {}
+      );
+      const copiedAgent = normalizeRetellAgent(copyResponse.data);
+      const agentId =
+        copiedAgent?.agent_id ||
+        copiedAgent?.id ||
+        copyResponse.data?.agent_id ||
+        copyResponse.data?.id;
       if (!agentId) {
         return res.status(500).json({ error: "Retell agent_id missing" });
       }
-      if (llmVersionNumber !== null && llmVersionNumber > 0) {
-        try {
-          await retellClient.patch(`/update-agent/${agentId}`, {
-            response_engine: {
-              type: "retell-llm",
-              llm_id: llmId,
-              version: llmVersionNumber,
-            },
-          });
-        } catch (err) {
-          console.warn("[retell] unable to set agent llm version", {
-            agent_id: agentId,
-            llm_id: llmId,
-            llm_version: llmVersionNumber,
-            error: err.response?.data || err.message,
-          });
-        }
+      const updatePayload = {
+        agent_name: `${businessName} AI Agent`,
+        retell_llm_dynamic_variables: dynamicVars,
+        webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
+        webhook_timeout_ms: 10000,
+        voice_id: resolvedVoiceId,
+      };
+      if (finalPrompt) {
+        updatePayload.prompt = finalPrompt;
       }
+      await retellClient.patch(`/update-agent/${agentId}`, updatePayload);
 
-      const toolCopy = await applyMasterAgentTools({
-        industry,
-        agentId,
-        llmId,
-        llmVersion: llmVersionNumber,
-      });
-      console.info("[retell] agent created", {
+      console.info("[retell] agent copied", {
         agent_id: agentId,
         llm_id: llmId,
         llm_version: llmVersionNumber,
-        master_agent_id: toolCopy?.masterAgentId || null,
-        tool_count_after_copy: toolCopy?.toolCount || 0,
-        tools_source: toolCopy?.toolCount ? "master_agent" : "none",
+        source_agent_id: sourceAgentId,
       });
 
       const phonePayload = {
