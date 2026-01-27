@@ -12,6 +12,8 @@ import AdminModeToggle from "./AdminModeToggle.jsx";
 export default function TopMenu() {
   const location = useLocation();
   const navigate = useNavigate();
+  const wizardMaintenance =
+    String(import.meta.env.VITE_WIZARD_MAINTENANCE || "").toLowerCase() === "true";
   const [open, setOpen] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [isSeller, setIsSeller] = React.useState(false);
@@ -91,12 +93,12 @@ export default function TopMenu() {
   if (isSeller) {
     items.push({ to: "/console/dialer", label: "Call Center" });
     items.push({ to: "/calendar", label: "Calendar" });
-    if (!onboardingComplete) {
+    if (!onboardingComplete && (!wizardMaintenance || isAdmin)) {
       items.push({ to: "/wizard", label: "Wizard" });
     }
   } else {
     items.push({ to: "/dashboard", label: "Dashboard" });
-    if (!onboardingComplete || viewMode === "user") {
+    if ((!onboardingComplete || viewMode === "user") && (!wizardMaintenance || isAdmin)) {
       items.push({ to: "/wizard", label: "Wizard" });
     }
     items.push({ to: "/billing", label: "Billing" });

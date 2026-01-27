@@ -154,6 +154,8 @@ export default function WizardPage() {
   const coreOffer =
     searchParams.get("core") === "1" ||
     window.localStorage.getItem("kryonex_core_offer") === "1";
+  const wizardMaintenance =
+    String(import.meta.env.VITE_WIZARD_MAINTENANCE || "").toLowerCase() === "true";
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
 
   useEffect(() => {
@@ -436,6 +438,15 @@ export default function WizardPage() {
         .maybeSingle();
       const isOnboarded =
         Boolean(profile?.business_name) && Boolean(profile?.industry);
+      if (wizardMaintenance && profile?.role !== "admin") {
+        if (mounted) {
+          setWizardLocked(true);
+          setWizardLockReason(
+            "Wizard temporarily disabled. Please contact support."
+          );
+        }
+        return;
+      }
       if (!isOnboarded) {
         if (mounted) {
           setWizardLocked(false);
