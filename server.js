@@ -18,6 +18,7 @@ const {
   RETELL_LLM_VERSION_HVAC,
   RETELL_LLM_VERSION_PLUMBING,
   RETELL_MASTER_AGENT_ID_HVAC,
+  WIZARD_MAINTENANCE_MODE,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
   STRIPE_SECRET_KEY,
@@ -2681,6 +2682,14 @@ app.post(
         profile?.consent_version !== currentConsentVersion
       ) {
         return res.status(403).json({ error: "Consent required" });
+      }
+
+      const wizardMaintenance =
+        String(WIZARD_MAINTENANCE_MODE || "").toLowerCase() === "true";
+      if (wizardMaintenance && profile?.role !== "admin") {
+        return res.status(503).json({
+          error: "Wizard temporarily disabled. Please contact support.",
+        });
       }
 
       if (profile?.role !== "admin") {
