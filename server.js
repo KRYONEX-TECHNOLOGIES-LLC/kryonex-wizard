@@ -1210,6 +1210,16 @@ const pickLlmVersion = (industry) => {
   return RETELL_LLM_VERSION_HVAC;
 };
 
+const parseRetellVersionNumber = (value) => {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const match = text.match(/\d+/);
+  if (!match) return null;
+  const parsed = parseInt(match[0], 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const pickMasterAgentId = (industry) => {
   if (industry && industry.toLowerCase().includes("plumb")) {
     return null;
@@ -2711,6 +2721,7 @@ app.post(
 
       const llmId = pickLlmId(industry);
       const llmVersion = pickLlmVersion(industry);
+      const llmVersionNumber = parseRetellVersionNumber(llmVersion);
       const cleanTransfer =
         transferNumber && String(transferNumber).replace(/[^\d+]/g, "");
       const baseInput = String(dispatchBaseLocation || "").trim();
@@ -2823,8 +2834,8 @@ Business Variables:
         type: "retell-llm",
         llm_id: llmId,
       };
-      if (llmVersion) {
-        responseEngine.llm_version = llmVersion;
+      if (llmVersionNumber !== null) {
+        responseEngine.version = llmVersionNumber;
       }
       const agentPayload = {
         response_engine: responseEngine,
@@ -2852,12 +2863,12 @@ Business Variables:
         industry,
         agentId,
         llmId,
-        llmVersion,
+        llmVersion: llmVersionNumber,
       });
       console.info("[retell] agent created", {
         agent_id: agentId,
         llm_id: llmId,
-        llm_version: llmVersion || null,
+        llm_version: llmVersionNumber,
         master_agent_id: toolCopy?.masterAgentId || null,
         tool_count_after_copy: toolCopy?.toolCount || 0,
         tools_source: toolCopy?.toolCount ? "master_agent" : "none",
@@ -2993,7 +3004,7 @@ const syncRetellTemplates = async ({ llmId }) => {
   const results = [];
   const derivedIndustry =
     llmId === RETELL_LLM_ID_PLUMBING ? "plumbing" : "hvac";
-  const llmVersion = pickLlmVersion(derivedIndustry);
+  const llmVersion = parseRetellVersionNumber(pickLlmVersion(derivedIndustry));
     const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, derivedIndustry);
 
   for (const agent of agents || []) {
@@ -3032,8 +3043,8 @@ const syncRetellTemplates = async ({ llmId }) => {
       }
 
       const responseEngine = { type: "retell-llm", llm_id: llmId };
-      if (llmVersion) {
-        responseEngine.llm_version = llmVersion;
+      if (llmVersion !== null) {
+        responseEngine.version = llmVersion;
       }
       const updatePayload = {
         response_engine: responseEngine,
