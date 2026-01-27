@@ -23,6 +23,8 @@ export const updateLeadStatus = (leadId, status) =>
 export const getMessages = () => api.get("/messages");
 export const createCheckoutSession = (data) =>
   api.post("/create-checkout-session", data);
+export const saveOnboardingIdentity = (data) =>
+  api.post("/onboarding/identity", data);
 export const manageBilling = () => api.post("/create-portal-session");
 export const createTopupSession = (data) =>
   api.post("/create-topup-session", data);

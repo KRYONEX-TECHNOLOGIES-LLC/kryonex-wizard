@@ -1,31 +1,35 @@
 export const TIERS = [
   {
+    id: "core",
+    title: "CORE",
+    description: "24/7 AI Receptionist, Live Bookings, and Basic Routing.",
+    accent: "#f59e0b",
+    price: "$149/mo",
+    minutes: 150,
+  },
+  {
     id: "pro",
     title: "PRO",
-    description: "AI receptionist + recordings + advanced routing.",
+    description: "Emergency Transfers, Call Recordings, and Priority Logic.",
     accent: "#22d3ee",
-    price: "$197/mo",
+    price: "$297/mo",
+    minutes: 500,
   },
   {
     id: "elite",
     title: "ELITE",
-    description: "Multi-location + VIP onboarding + SLA support.",
+    description: "Multi-Location Support, VIP Onboarding, and SLA Guarantees.",
     accent: "#7c3aed",
-    price: "$397/mo",
-  },
-  {
-    id: "core",
-    title: "CORE",
-    description: "Private launch tier with limited access.",
-    accent: "#f59e0b",
-    price: "$99/mo",
+    price: "$497/mo",
+    minutes: 1200,
   },
   {
     id: "scale",
     title: "KRYONEX SCALE",
-    description: "Scale tier with premium onboarding and dedicated support.",
+    description: "Enterprise Minutes, Dedicated Admin, and White-Glove Setup.",
     accent: "#ec4899",
     price: "$997/mo",
+    minutes: 3000,
   },
 ];
 

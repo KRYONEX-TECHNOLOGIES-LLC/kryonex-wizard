@@ -21,7 +21,7 @@ export default function RequireOnboarding({ children }) {
 
       const { data: profile, error } = await supabase
         .from("profiles")
-        .select("business_name, industry, role")
+        .select("business_name, area_code, role")
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -35,8 +35,8 @@ export default function RequireOnboarding({ children }) {
             return;
           }
           const hasBusiness = Boolean(profile.business_name);
-          const hasIndustry = Boolean(profile.industry);
-          setIsComplete(hasBusiness && hasIndustry);
+          const hasAreaCode = Boolean(profile.area_code);
+          setIsComplete(hasBusiness && hasAreaCode);
         }
         setChecking(false);
       }

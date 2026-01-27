@@ -1,17 +1,16 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Settings, UserCheck, CreditCard } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
 import { getAdminUsers, getAdminUserProfile } from "../lib/api.js";
 
 const statusDot = {
-  active: "bg-neon-green",
-  past_due: "bg-neon-pink",
-  canceled: "bg-white/40",
-  inactive: "bg-white/30",
-  none: "bg-white/20",
+  "pending setup": "bg-amber-400",
+  live: "bg-neon-green",
+  "payment failed": "bg-neon-pink",
+  "low minutes": "bg-orange-400",
+  unknown: "bg-white/30",
 };
 
 export default function AdminUsersPage() {
@@ -21,7 +20,9 @@ export default function AdminUsersPage() {
   const [error, setError] = React.useState("");
   const [selectedUser, setSelectedUser] = React.useState(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
-  const [activeModal, setActiveModal] = React.useState(null);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [searchTerm, setSearchTerm] = React.useState("");
+  const [copyNotice, setCopyNotice] = React.useState("");
 
   React.useEffect(() => {
     let mounted = true;
@@ -48,9 +49,10 @@ export default function AdminUsersPage() {
     };
   }, []);
 
-  const openUserDetail = async (userId, mode) => {
-    setActiveModal(mode);
+  const openUserDetail = async (userId) => {
+    setDrawerOpen(true);
     setDetailLoading(true);
+    setSelectedUser(null);
     try {
       const response = await getAdminUserProfile(userId);
       setSelectedUser(response.data || null);
@@ -63,13 +65,26 @@ export default function AdminUsersPage() {
     }
   };
 
-  const closeModal = () => {
+  const closeDrawer = () => {
     setSelectedUser(null);
-    setActiveModal(null);
+    setDrawerOpen(false);
+    setCopyNotice("");
+  };
+
+  const handleCopy = async (value, label) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNotice(`${label} copied`);
+      setTimeout(() => setCopyNotice(""), 1800);
+    } catch (err) {
+      setCopyNotice("Copy failed");
+      setTimeout(() => setCopyNotice(""), 1800);
+    }
   };
 
   const getPlanBadge = (user) => {
-    const status = String(user.status || "").toLowerCase();
+    const status = String(user.subscription_status || "").toLowerCase();
     if (!status || status.startsWith("incomplete")) {
       return {
         label: "NO PLAN",
@@ -93,16 +108,16 @@ export default function AdminUsersPage() {
   };
 
   const getStatusLabel = (user) => {
-    const status = String(user.status || "").toLowerCase();
-    if (!status || status.startsWith("incomplete")) return "NO PLAN";
-    if (status === "past_due") return "PAST DUE";
-    if (status === "active") return "ACTIVE";
+    const status = String(user.fleet_status || "").toLowerCase();
+    if (!status) return "UNKNOWN";
     return status.replace("_", " ").toUpperCase();
   };
 
   const getUsagePercent = (user) => {
-    const used = Number(user.usage_minutes || 0);
-    const limit = Number(user.usage_limit_minutes || 0);
+    const total = Number(user.usage_limit_minutes || 0);
+    const remaining = Number(user.usage_minutes_remaining || 0);
+    const used = Math.max(0, total - remaining);
+    const limit = total;
     if (!limit) return 0;
     return Math.min(100, Math.round((used / limit) * 100));
   };
@@ -114,13 +129,30 @@ export default function AdminUsersPage() {
     return date.toLocaleDateString();
   };
 
-  const formatCurrency = (cents, currency = "usd") => {
-    if (!cents) return "$0.00";
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: currency.toUpperCase(),
-    }).format(cents / 100);
+  const getDaysActive = (value) => {
+    if (!value) return "--";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "--";
+    const diffMs = Date.now() - date.getTime();
+    return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
   };
+
+  const getDaysRemaining = (value) => {
+    if (!value) return "--";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "--";
+    const diffMs = date.getTime() - Date.now();
+    return Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  };
+
+  const filteredUsers = fleetUsers.filter((user) => {
+    if (!searchTerm) return true;
+    const term = searchTerm.toLowerCase();
+    return (
+      String(user.business_name || "").toLowerCase().includes(term) ||
+      String(user.email || "").toLowerCase().includes(term)
+    );
+  });
 
   return (
     <div className="min-h-screen w-full bg-void-black text-white relative overflow-hidden font-sans">
@@ -159,6 +191,14 @@ export default function AdminUsersPage() {
             {error ? (
               <p className="mt-3 text-sm text-neon-pink">{error}</p>
             ) : null}
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              <input
+                className="glass-input w-full max-w-sm text-sm"
+                placeholder="Search by business or email"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+              />
+            </div>
           </motion.div>
 
           <motion.div
@@ -176,10 +216,16 @@ export default function AdminUsersPage() {
               <div>Actions</div>
             </div>
             <div className="mt-3 space-y-2">
-              {fleetUsers.map((user) => (
+              {filteredUsers.map((user) => (
                 <div
                   key={user.id}
-                  className="grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 hover:border-neon-cyan/40 transition"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openUserDetail(user.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") openUserDetail(user.id);
+                  }}
+                  className="grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 hover:border-neon-cyan/40 transition cursor-pointer"
                 >
                   <div>
                     <div className="text-sm font-semibold">
@@ -198,8 +244,9 @@ export default function AdminUsersPage() {
                   <div className="flex items-center gap-2">
                     <span
                       className={`h-2.5 w-2.5 rounded-full ${
-                        statusDot[String(user.status || "none").toLowerCase()] ||
-                        "bg-white/20"
+                        statusDot[
+                          String(user.fleet_status || "unknown").toLowerCase()
+                        ] || "bg-white/20"
                       }`}
                     />
                     <span className="text-xs uppercase tracking-[0.3em]">
@@ -232,167 +279,179 @@ export default function AdminUsersPage() {
                   </div>
                   <div className="flex items-center justify-end gap-2">
                     <button
-                      className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition"
-                      onClick={() => openUserDetail(user.id, "dossier")}
+                      className="glow-button text-xs px-3 py-2"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openUserDetail(user.id);
+                      }}
                       type="button"
                     >
-                      <UserCheck size={16} />
-                    </button>
-                    <button
-                      className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition"
-                      onClick={() => openUserDetail(user.id, "billing")}
-                      type="button"
-                    >
-                      <CreditCard size={16} />
-                    </button>
-                    <button
-                      className="p-2 rounded-full border border-white/10 hover:border-neon-cyan/60 transition"
-                      onClick={() => openUserDetail(user.id, "config")}
-                      type="button"
-                    >
-                      <Settings size={16} />
+                      View
                     </button>
                   </div>
                 </div>
               ))}
-              {!fleetUsers.length && !loading ? (
+              {!filteredUsers.length && !loading ? (
                 <div className="text-sm text-white/50 px-4 py-6">
                   No users captured yet.
                 </div>
               ) : null}
             </div>
           </motion.div>
-          {selectedUser && activeModal ? (
+          {drawerOpen ? (
             <div
-              className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
-              onClick={closeModal}
-            >
-              <div
-                className="glass-panel rounded-3xl border border-white/10 p-6 w-[min(520px,90vw)]"
-                onClick={(event) => event.stopPropagation()}
-              >
+              role="presentation"
+              className="fleet-drawer-backdrop"
+              onClick={closeDrawer}
+            />
+          ) : null}
+          <div className={`fleet-drawer ${drawerOpen ? "open" : ""}`}>
+            <div className="fleet-drawer-header">
+              <div>
                 <div className="text-xs uppercase tracking-[0.3em] text-white/40">
-                  {activeModal === "dossier"
-                    ? "The Dossier"
-                    : activeModal === "billing"
-                      ? "The Financials"
-                      : "Agent Configuration"}
+                  Fleet Registry
                 </div>
-                {detailLoading ? (
-                  <div className="mt-4 text-white/60">Loading profile...</div>
-                ) : selectedUser.error ? (
-                  <div className="mt-4 text-neon-pink">{selectedUser.error}</div>
-                ) : (
-                  <div className="mt-4 space-y-3 text-sm">
-                    {activeModal === "dossier" ? (
-                      <>
-                        <div>
-                          <span className="text-white/40">Full Name</span>
-                          <div className="text-white font-semibold">
-                            {selectedUser.user?.full_name || "--"}
-                          </div>
-                        </div>
-                        <div>
-                          <span className="text-white/40">Email</span>
-                          <div className="text-white">
-                            {selectedUser.user?.email}
-                          </div>
-                        </div>
-                        <div>
-                          <span className="text-white/40">Phone</span>
-                          <div className="text-white">
-                            {selectedUser.user?.phone || "--"}
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <span className="text-white/40">Signup Date</span>
-                            <div className="text-white">
-                              {formatDate(selectedUser.user?.signup_date)}
-                            </div>
-                          </div>
-                          <div>
-                            <span className="text-white/40">IP Address</span>
-                            <div className="text-white font-mono text-xs">
-                              {selectedUser.user?.ip_address || "--"}
-                            </div>
-                          </div>
-                        </div>
-                      </>
-                    ) : null}
-                    {activeModal === "billing" ? (
-                      <>
-                        <div>
-                          <span className="text-white/40">
-                            Payment Method
-                          </span>
-                          <div className="text-white">
-                            {selectedUser.billing?.payment_method_last4
-                              ? `${selectedUser.billing?.payment_method_brand || "card"} •••• ${
-                                  selectedUser.billing?.payment_method_last4
-                                }`
-                              : "--"}
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <span className="text-white/40">
-                              Next Billing Date
-                            </span>
-                            <div className="text-white">
-                              {formatDate(selectedUser.billing?.next_billing_date)}
-                            </div>
-                          </div>
-                          <div>
-                            <span className="text-white/40">
-                              Lifetime Revenue
-                            </span>
-                            <div className="text-white">
-                              {formatCurrency(
-                                selectedUser.billing?.lifetime_revenue_cents,
-                                selectedUser.billing?.currency
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </>
-                    ) : null}
-                    {activeModal === "config" ? (
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <span className="text-white/40">
-                            Assigned Twilio Number
-                          </span>
-                          <div className="text-white font-mono text-xs">
-                            {selectedUser.config?.phone_number || "--"}
-                          </div>
-                        </div>
-                        <div>
-                          <span className="text-white/40">Agent ID</span>
-                          <div className="text-white font-mono text-xs">
-                            {selectedUser.config?.agent_id || "--"}
-                          </div>
-                        </div>
-                        <div>
-                          <span className="text-white/40">Script Version</span>
-                          <div className="text-white font-mono text-xs">
-                            {selectedUser.config?.script_version || "--"}
-                          </div>
+                <div className="text-xl font-semibold">
+                  {selectedUser?.user?.business_name || "Select a client"}
+                </div>
+                <div className="text-xs text-white/50">
+                  {selectedUser?.user?.email || ""}
+                </div>
+              </div>
+              <button className="button-primary" onClick={closeDrawer}>
+                Close
+              </button>
+            </div>
+
+            {copyNotice ? (
+              <div className="text-xs text-neon-green">{copyNotice}</div>
+            ) : null}
+
+            {detailLoading ? (
+              <div className="text-white/60">Loading profile...</div>
+            ) : selectedUser?.error ? (
+              <div className="text-neon-pink">{selectedUser.error}</div>
+            ) : selectedUser ? (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-[0.4em] text-white/40">
+                    Copy-Ready Data
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs text-white/40">Business Name</div>
+                        <div className="text-white font-semibold">
+                          {selectedUser.user?.business_name || "--"}
                         </div>
                       </div>
-                    ) : null}
+                      <button
+                        className="button-primary"
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            selectedUser.user?.business_name,
+                            "Business name"
+                          )
+                        }
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs text-white/40">Cal.com URL</div>
+                        <div className="text-white text-sm break-all">
+                          {selectedUser.user?.cal_com_url || "--"}
+                        </div>
+                      </div>
+                      <button
+                        className="button-primary"
+                        type="button"
+                        onClick={() =>
+                          handleCopy(
+                            selectedUser.user?.cal_com_url,
+                            "Cal.com URL"
+                          )
+                        }
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs text-white/40">Area Code</div>
+                        <div className="text-white font-mono text-sm">
+                          {selectedUser.user?.area_code || "--"}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                )}
-                <button
-                  className="glow-button mt-6 w-full"
-                  type="button"
-                  onClick={closeModal}
-                >
-                  Close
-                </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-[0.4em] text-white/40">
+                    Tracking & Stats
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-4 grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <div className="text-white/40 text-xs">Account ID</div>
+                      <div className="text-white font-mono text-xs">
+                        {selectedUser.user?.id}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Tier Plan</div>
+                      <div className="text-white">
+                        {selectedUser.user?.plan_type || "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Minutes Remaining</div>
+                      <div className="text-white">
+                        {selectedUser.user?.usage_minutes_remaining ?? "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Texts Remaining</div>
+                      <div className="text-white">
+                        {selectedUser.user?.sms_remaining ?? "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Sign-up Date</div>
+                      <div className="text-white">
+                        {formatDate(selectedUser.user?.signup_date)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Days Active</div>
+                      <div className="text-white">
+                        {getDaysActive(selectedUser.user?.signup_date)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Billing Cycle</div>
+                      <div className="text-white">
+                        {getDaysRemaining(
+                          selectedUser.billing?.next_billing_date
+                        )}{" "}
+                        days
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Account Status</div>
+                      <div className="text-white">
+                        {selectedUser.user?.fleet_status || "--"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          ) : null}
+            ) : (
+              <div className="text-white/40">Select a client to view data.</div>
+            )}
+          </div>
         </div>
       </div>
     </div>

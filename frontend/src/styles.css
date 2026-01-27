@@ -2352,6 +2352,44 @@ select option {
   box-shadow: -20px 0 60px rgba(0, 0, 0, 0.5);
 }
 
+.fleet-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 7, 18, 0.7);
+  backdrop-filter: blur(6px);
+  z-index: 40;
+}
+
+.fleet-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(560px, 40vw);
+  background: rgba(10, 16, 28, 0.98);
+  border-left: 1px solid rgba(34, 211, 238, 0.25);
+  transition: transform 220ms ease;
+  transform: translateX(105%);
+  z-index: 50;
+  padding: 1.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  overflow-y: auto;
+  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.5);
+}
+
+.fleet-drawer.open {
+  transform: translateX(0);
+}
+
+.fleet-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .calendar-manifest-header {
   display: flex;
   align-items: center;

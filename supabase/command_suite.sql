@@ -3,11 +3,14 @@ create extension if not exists "pgcrypto";
 
 -- Profiles (extend auth.users)
 alter table public.profiles
+  add column if not exists business_name text,
+  add column if not exists area_code text,
   add column if not exists full_name text,
   add column if not exists status text default 'active',
   add column if not exists role text default 'owner',
   add column if not exists referrer_id uuid references auth.users(id) on delete set null,
   add column if not exists cal_api_key text,
+  add column if not exists cal_com_url text,
   add column if not exists cal_event_type_id integer,
   add column if not exists cal_time_zone text,
   add column if not exists cal_event_type_slug text,

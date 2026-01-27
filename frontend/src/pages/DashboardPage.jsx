@@ -38,6 +38,7 @@ export default function DashboardPage() {
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [userLabel, setUserLabel] = React.useState("Operator");
   const [calConnected, setCalConnected] = React.useState(false);
+  const [calComUrl, setCalComUrl] = React.useState("");
   const [calStatusLoading, setCalStatusLoading] = React.useState(true);
   const [calStatusError, setCalStatusError] = React.useState("");
 
@@ -64,12 +65,13 @@ export default function DashboardPage() {
         if (user) {
           const { data: profile } = await supabase
             .from("profiles")
-            .select("business_name, full_name, role")
+            .select("business_name, full_name, role, cal_com_url")
             .eq("user_id", user.id)
             .maybeSingle();
           if (mounted && profile) {
             setIsSeller(profile.role === "seller");
             setIsAdmin(profile.role === "admin");
+            setCalComUrl(profile.cal_com_url || "");
             const label =
               profile.full_name ||
               profile.business_name ||
@@ -108,11 +110,14 @@ export default function DashboardPage() {
       try {
         const res = await getCalcomStatus();
         if (!active) return;
+        const url = res.data?.cal_com_url || "";
         setCalConnected(Boolean(res.data?.connected));
+        setCalComUrl(url);
       } catch (err) {
         if (!active) return;
         setCalStatusError("Calendar connection status unavailable.");
         setCalConnected(false);
+        setCalComUrl("");
       } finally {
         if (active) setCalStatusLoading(false);
       }
@@ -132,6 +137,9 @@ export default function DashboardPage() {
     planTier.includes("elite") ||
     planTier.includes("white") ||
     planTier.includes("glove");
+  const subscriptionActive = ["active", "trialing"].includes(
+    String(subscription.status || "").toLowerCase()
+  );
 
   const usagePercent = (remaining, total) => {
     if (!total) return 0;
@@ -195,6 +203,7 @@ export default function DashboardPage() {
     try {
       await disconnectCalcom();
       setCalConnected(false);
+      setCalComUrl("");
     } catch (err) {
       setCalStatusError("Unable to disconnect calendar.");
     }
@@ -299,16 +308,24 @@ export default function DashboardPage() {
             <div className="calendar-connection-card glass-panel">
               <div className="calendar-connection-header">
                 <div className="calendar-connection-title">Calendar Sync</div>
-                {calStatusLoading ? (
-                  <span className="status-pill status-unknown">Checking</span>
-                ) : calConnected ? (
-                  <span className="status-pill status-active">Connected</span>
+                {subscriptionActive ? (
+                  calStatusLoading ? (
+                    <span className="status-pill status-unknown">Checking</span>
+                  ) : calConnected ? (
+                    <span className="status-pill status-active">Connected</span>
+                  ) : (
+                    <span className="status-pill status-none">Not Connected</span>
+                  )
                 ) : (
-                  <span className="status-pill status-none">Not Connected</span>
+                  <span className="status-pill status-none">Locked</span>
                 )}
               </div>
               <div className="calendar-connection-body">
-                {calConnected ? (
+                {!subscriptionActive ? (
+                  <span className="calendar-connection-note">
+                    Complete payment to unlock calendar connection.
+                  </span>
+                ) : calConnected ? (
                   <span className="calendar-connection-note">
                     Cal.com is linked. The AI can book appointments automatically.
                   </span>
@@ -317,8 +334,21 @@ export default function DashboardPage() {
                     Connect a calendar so the AI can check availability and book.
                   </span>
                 )}
+                {subscriptionActive && calConnected && calComUrl ? (
+                  <div className="text-xs text-white/50 mt-2">
+                    {calComUrl}
+                  </div>
+                ) : null}
                 <div className="calendar-connection-actions">
-                  {calConnected ? (
+                  {!subscriptionActive ? (
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={handleBilling}
+                    >
+                      Go to Billing
+                    </button>
+                  ) : calConnected ? (
                     <button
                       type="button"
                       className="button-primary danger"
