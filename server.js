@@ -2232,7 +2232,11 @@ app.get("/api/calcom/callback", async (req, res) => {
           eventType?.users?.[0]?.username ||
           null;
         const slug = eventType?.slug || null;
+        const calComUrl = username
+          ? `https://cal.com/${username}/service-call`
+          : null;
         bookingUrl =
+          calComUrl ||
           eventType?.schedulingUrl ||
           eventType?.bookingUrl ||
           (username && slug ? `https://cal.com/${username}/${slug}` : null);
@@ -2245,6 +2249,7 @@ app.get("/api/calcom/callback", async (req, res) => {
             cal_team_slug: eventType?.team?.slug || null,
             cal_organization_slug: eventType?.organization?.slug || null,
             cal_time_zone: eventType?.timeZone || null,
+            cal_com_url: calComUrl,
           })
           .eq("user_id", stateData.userId);
       }
@@ -2277,22 +2282,30 @@ app.get("/api/calcom/callback", async (req, res) => {
       { onConflict: "user_id,provider" }
     );
     return res.redirect(
-      `${FRONTEND_URL}/wizard?cal_status=success&status=success`
+      `${FRONTEND_URL}/dashboard?cal_status=success&status=success`
     );
   } catch (err) {
-    return res.redirect(`${FRONTEND_URL}/wizard?cal_status=error&status=error`);
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&status=error`);
   }
 });
 
 app.get("/api/calcom/status", requireAuth, async (req, res) => {
-  const { data } = await supabaseAdmin
-    .from("integrations")
-    .select("is_active, access_token")
-    .eq("user_id", req.user.id)
-    .eq("provider", "calcom")
-    .maybeSingle();
-  const connected = Boolean(data?.is_active && data?.access_token);
-  return res.json({ connected });
+  const [{ data: profile }, { data: integration }] = await Promise.all([
+    supabaseAdmin
+      .from("profiles")
+      .select("cal_com_url")
+      .eq("user_id", req.user.id)
+      .maybeSingle(),
+    supabaseAdmin
+      .from("integrations")
+      .select("is_active, access_token, booking_url")
+      .eq("user_id", req.user.id)
+      .eq("provider", "calcom")
+      .maybeSingle(),
+  ]);
+  const calUrl = profile?.cal_com_url || integration?.booking_url || null;
+  const connected = Boolean(calUrl);
+  return res.json({ connected, cal_com_url: calUrl });
 });
 
 app.post("/api/calcom/disconnect", requireAuth, async (req, res) => {
@@ -2324,6 +2337,7 @@ app.post("/api/calcom/disconnect", requireAuth, async (req, res) => {
         cal_team_slug: null,
         cal_organization_slug: null,
         cal_time_zone: null,
+        cal_com_url: null,
       })
       .eq("user_id", req.user.id);
     return res.json({ connected: false });
@@ -2355,6 +2369,46 @@ const retellWebhookHandler = async (req, res) => {
         .eq("agent_id", agentId)
         .maybeSingle();
       if (agentRow?.user_id) {
+        const { data: subscription } = await supabaseAdmin
+          .from("subscriptions")
+          .select("plan_type, current_period_end")
+          .eq("user_id", agentRow.user_id)
+          .maybeSingle();
+        let usage = await ensureUsageLimits({
+          userId: agentRow.user_id,
+          planType: subscription?.plan_type,
+          periodEnd: subscription?.current_period_end,
+        });
+        usage = await refreshUsagePeriod(
+          usage,
+          subscription?.plan_type,
+          subscription?.current_period_end
+        );
+        const { remaining } = getUsageRemaining(usage);
+        if (
+          (usage.force_pause && !usage.force_resume) ||
+          usage.limit_state === "paused" ||
+          remaining <= 0
+        ) {
+          await supabaseAdmin
+            .from("usage_limits")
+            .update({
+              limit_state: "paused",
+              force_pause: true,
+              force_resume: false,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("user_id", agentRow.user_id);
+          await auditLog({
+            userId: agentRow.user_id,
+            action: "usage_blocked_call",
+            entity: "usage",
+            entityId: agentId,
+            req,
+            metadata: { call_id: callId },
+          });
+          return res.status(402).json({ error: "Usage limit reached" });
+        }
         await logEvent({
           userId: agentRow.user_id,
           actionType: "OUTBOUND_CALL_INITIATED",
@@ -2485,6 +2539,14 @@ const retellWebhookHandler = async (req, res) => {
         } else if (updatedUsed >= usage.call_cap_seconds) {
           nextState = "pending";
         }
+        const { total, remaining } = getUsageRemaining({
+          ...usage,
+          call_used_seconds: updatedUsed,
+        });
+        const shouldForcePause = remaining <= 0;
+        if (shouldForcePause) {
+          nextState = "paused";
+        }
 
         await supabaseAdmin.from("usage_calls").insert({
           user_id: agentRow.user_id,
@@ -2499,14 +2561,12 @@ const retellWebhookHandler = async (req, res) => {
           .update({
             call_used_seconds: updatedUsed,
             limit_state: nextState,
+            force_pause: shouldForcePause ? true : usage.force_pause,
+            force_resume: shouldForcePause ? false : usage.force_resume,
             updated_at: new Date().toISOString(),
           })
           .eq("user_id", agentRow.user_id);
 
-        const { total, remaining } = getUsageRemaining({
-          ...usage,
-          call_used_seconds: updatedUsed,
-        });
         await supabaseAdmin.from("usage_snapshots").insert({
           user_id: agentRow.user_id,
           source: "call_ended",
@@ -3476,10 +3536,34 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       return res.status(404).json({ error: "Agent not found for number" });
     }
 
+    const { data: subscription } = await supabaseAdmin
+      .from("subscriptions")
+      .select("plan_type, current_period_end")
+      .eq("user_id", agentRow.user_id)
+      .maybeSingle();
+    let usage = await ensureUsageLimits({
+      userId: agentRow.user_id,
+      planType: subscription?.plan_type,
+      periodEnd: subscription?.current_period_end,
+    });
+    usage = await refreshUsagePeriod(
+      usage,
+      subscription?.plan_type,
+      subscription?.current_period_end
+    );
+    const { remaining } = getUsageRemaining(usage);
+    if (
+      (usage.force_pause && !usage.force_resume) ||
+      usage.limit_state === "paused" ||
+      remaining <= 0
+    ) {
+      return res.status(402).json({ error: "Usage limit reached" });
+    }
+
     const [{ data: profile }, { data: integration }] = await Promise.all([
       supabaseAdmin
         .from("profiles")
-        .select("business_name")
+        .select("business_name, cal_com_url")
         .eq("user_id", agentRow.user_id)
         .maybeSingle(),
       supabaseAdmin
@@ -3491,7 +3575,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     ]);
 
     const businessName = profile?.business_name || "your business";
-    const bookingUrl = integration?.booking_url || "";
+    const bookingUrl = profile?.cal_com_url || integration?.booking_url || "";
     const transferNumber = agentRow.transfer_number || "";
 
     return res.json({
@@ -4245,6 +4329,43 @@ app.post(
 );
 
 app.post(
+  "/onboarding/identity",
+  requireAuth,
+  rateLimit({ keyPrefix: "onboard", limit: 8, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { businessName, areaCode } = req.body || {};
+      const cleanName = String(businessName || "").trim();
+      const cleanArea = String(areaCode || "").trim();
+      if (!cleanName || cleanName.length < 2 || cleanName.length > 80) {
+        return res.status(400).json({ error: "businessName is invalid" });
+      }
+      if (cleanArea && !/^\d{3}$/.test(cleanArea)) {
+        return res.status(400).json({ error: "areaCode must be 3 digits" });
+      }
+
+      await supabaseAdmin.from("profiles").upsert({
+        user_id: req.user.id,
+        business_name: cleanName,
+        area_code: cleanArea || null,
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        action: "onboarding_identity_saved",
+        entity: "profile",
+        entityId: req.user.id,
+        req,
+      });
+
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
   "/admin/verify-code",
   requireAuth,
   rateLimit({ keyPrefix: "admin-code", limit: 6, windowMs: 60_000 }),
@@ -4977,7 +5098,7 @@ app.get(
 
       const { data: profiles } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, business_name, role")
+        .select("user_id, business_name, role, area_code, cal_com_url")
         .in("user_id", userIds);
       const { data: subscriptions } = await supabaseAdmin
         .from("subscriptions")
@@ -5021,10 +5142,35 @@ app.get(
           (usage.call_credit_seconds || 0) +
           (usage.rollover_seconds || 0);
         const usedSeconds = usage.call_used_seconds || 0;
+        const { remaining } = getUsageRemaining({
+          call_cap_seconds: usage.call_cap_seconds || 0,
+          call_credit_seconds: usage.call_credit_seconds || 0,
+          rollover_seconds: usage.rollover_seconds || 0,
+          call_used_seconds: usedSeconds,
+        });
         const usagePercent =
           totalSeconds > 0
             ? Math.min(100, Math.round((usedSeconds / totalSeconds) * 100))
             : 0;
+        const subscriptionStatus = String(subscription.status || "none").toLowerCase();
+        const isPaid = ["active", "trialing"].includes(subscriptionStatus);
+        const isPaymentFailed = ["past_due", "unpaid", "canceled"].includes(
+          subscriptionStatus
+        );
+        const hasIdentity =
+          Boolean(profile.business_name) && Boolean(profile.area_code);
+        const hasCalcom = Boolean(profile.cal_com_url);
+        const remainingMinutes = Math.floor(remaining / 60);
+        let fleetStatus = "Pending Setup";
+        if (isPaymentFailed) {
+          fleetStatus = "Payment Failed";
+        } else if (isPaid && hasCalcom && remainingMinutes < 60) {
+          fleetStatus = "Low Minutes";
+        } else if (isPaid && hasCalcom && remainingMinutes > 0) {
+          fleetStatus = "Live";
+        } else if (isPaid && (!hasIdentity || !hasCalcom)) {
+          fleetStatus = "Pending Setup";
+        }
 
         return {
           id: user.id,
@@ -5032,10 +5178,15 @@ app.get(
           email: user.email || "--",
           role: profile.role || "user",
           plan_type: subscription.plan_type || null,
-          status: subscription.status || null,
+          subscription_status: subscriptionStatus,
+          fleet_status: fleetStatus,
           usage_percent: usagePercent,
           usage_minutes: Math.floor(usedSeconds / 60),
           usage_limit_minutes: Math.floor(totalSeconds / 60),
+          usage_minutes_remaining: remainingMinutes,
+          area_code: profile.area_code || null,
+          cal_com_url: profile.cal_com_url || null,
+          created_at: user.created_at || null,
           agent_id: agent.agent_id || null,
           agent_phone: agent.phone_number || null,
         };
@@ -5060,7 +5211,7 @@ app.get(
       }
       const { data: profile } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, business_name, role, full_name")
+        .select("user_id, business_name, role, full_name, area_code, cal_com_url")
         .eq("user_id", userId)
         .maybeSingle();
       const { data: subscription } = await supabaseAdmin
@@ -5071,7 +5222,7 @@ app.get(
       const { data: usage } = await supabaseAdmin
         .from("usage_limits")
         .select(
-          "call_used_seconds, call_cap_seconds, call_credit_seconds, rollover_seconds"
+          "call_used_seconds, call_cap_seconds, call_credit_seconds, rollover_seconds, sms_used, sms_cap, sms_credit"
         )
         .eq("user_id", userId)
         .maybeSingle();
@@ -5097,6 +5248,35 @@ app.get(
         (usage?.call_credit_seconds || 0) +
         (usage?.rollover_seconds || 0);
       const usedSeconds = usage?.call_used_seconds || 0;
+      const { remaining } = getUsageRemaining({
+        call_cap_seconds: usage?.call_cap_seconds || 0,
+        call_credit_seconds: usage?.call_credit_seconds || 0,
+        rollover_seconds: usage?.rollover_seconds || 0,
+        call_used_seconds: usedSeconds,
+      });
+      const smsRemaining = Math.max(
+        0,
+        (usage?.sms_cap || 0) + (usage?.sms_credit || 0) - (usage?.sms_used || 0)
+      );
+      const subscriptionStatus = String(subscription?.status || "none").toLowerCase();
+      const isPaid = ["active", "trialing"].includes(subscriptionStatus);
+      const isPaymentFailed = ["past_due", "unpaid", "canceled"].includes(
+        subscriptionStatus
+      );
+      const hasIdentity =
+        Boolean(profile?.business_name) && Boolean(profile?.area_code);
+      const hasCalcom = Boolean(profile?.cal_com_url);
+      const remainingMinutes = Math.floor(remaining / 60);
+      let fleetStatus = "Pending Setup";
+      if (isPaymentFailed) {
+        fleetStatus = "Payment Failed";
+      } else if (isPaid && hasCalcom && remainingMinutes < 60) {
+        fleetStatus = "Low Minutes";
+      } else if (isPaid && hasCalcom && remainingMinutes > 0) {
+        fleetStatus = "Live";
+      } else if (isPaid && (!hasIdentity || !hasCalcom)) {
+        fleetStatus = "Pending Setup";
+      }
       let billing = {
         customer_id: subscription?.customer_id || null,
         payment_method_last4: null,
@@ -5150,6 +5330,8 @@ app.get(
         user: {
           id: userId,
           business_name: profile?.business_name || "Unassigned",
+          area_code: profile?.area_code || null,
+          cal_com_url: profile?.cal_com_url || null,
           full_name:
             profile?.full_name ||
             authUser?.user?.user_metadata?.full_name ||
@@ -5161,8 +5343,12 @@ app.get(
           role: profile?.role || "user",
           plan_type: subscription?.plan_type || null,
           status: subscription?.status || null,
+          fleet_status: fleetStatus,
           usage_minutes: Math.floor(usedSeconds / 60),
           usage_limit_minutes: Math.floor(totalSeconds / 60),
+          usage_minutes_remaining: Math.floor(remaining / 60),
+          sms_remaining: smsRemaining,
+          sms_total: usage?.sms_cap || 0,
         },
         billing,
         config: {

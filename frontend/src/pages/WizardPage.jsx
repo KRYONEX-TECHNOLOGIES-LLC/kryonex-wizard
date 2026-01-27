@@ -20,10 +20,9 @@ import {
   acceptConsent,
   createCheckoutSession,
   deployAgent,
-  getCalcomStatus,
   getSubscriptionStatus,
   verifyAdminCode,
-  verifyCheckoutSession,
+  saveOnboardingIdentity,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
@@ -32,7 +31,9 @@ import { AGENT_TONES, INDUSTRIES } from "../lib/wizardConstants";
 import { clearState, getSavedState, saveState } from "../lib/persistence.js";
 import { normalizePhone } from "../lib/phone.js";
 
-const stepMeta = [
+const LEGACY_STEPS_ENABLED = false;
+
+const FULL_STEP_META = [
   {
     title: "Identity",
     description: "Define the business signature.",
@@ -121,11 +122,17 @@ const terminalLines = [
 
 
 export default function WizardPage() {
+  const stepMeta = LEGACY_STEPS_ENABLED
+    ? FULL_STEP_META
+    : FULL_STEP_META.slice(0, 1);
   const getInitialStep = () => {
+    if (!LEGACY_STEPS_ENABLED) return 1;
+    const maxStep = FULL_STEP_META.length;
     const stored = Number(getSavedState(WIZARD_STEP_KEY));
-    if (Number.isFinite(stored) && stored >= 1 && stored <= 6) return stored;
+    if (Number.isFinite(stored) && stored >= 1 && stored <= maxStep) return stored;
     const fallback = Number(window.localStorage.getItem("kryonex_wizard_step"));
-    if (Number.isFinite(fallback) && fallback >= 1 && fallback <= 6) return fallback;
+    if (Number.isFinite(fallback) && fallback >= 1 && fallback <= maxStep)
+      return fallback;
     return 1;
   };
   const [step, setStep] = useState(getInitialStep);
@@ -159,32 +166,8 @@ export default function WizardPage() {
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
 
   useEffect(() => {
-    let active = true;
-    const status = searchParams.get("cal_status");
-    if (status === "success") {
-      setCalConnected(true);
-    }
-    if (status === "error") {
-      setCalStatusError("Calendar connection failed. Please try again.");
-    }
-    const loadStatus = async () => {
-      try {
-        const res = await getCalcomStatus();
-        if (!active) return;
-        setCalConnected(Boolean(res.data?.connected));
-      } catch (err) {
-        if (!active) return;
-        setCalStatusError("Calendar connection status unavailable.");
-        setCalConnected(false);
-      } finally {
-        if (active) setCalStatusLoading(false);
-      }
-    };
-    loadStatus();
-    return () => {
-      active = false;
-    };
-  }, [searchParams]);
+    setCalStatusLoading(false);
+  }, []);
 
   const handleCalcomConnect = async () => {
     const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
@@ -204,17 +187,19 @@ export default function WizardPage() {
   };
 
   const persistStep = (value) => {
-    setStep(value);
-    window.localStorage.setItem("kryonex_wizard_step", value);
-    saveState(WIZARD_STEP_KEY, value);
+    const next = LEGACY_STEPS_ENABLED ? value : 1;
+    setStep(next);
+    window.localStorage.setItem("kryonex_wizard_step", next);
+    saveState(WIZARD_STEP_KEY, next);
   };
 
   const updateStep = (updater) => {
     setStep((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      window.localStorage.setItem("kryonex_wizard_step", next);
-      saveState(WIZARD_STEP_KEY, next);
-      return next;
+      const clamped = LEGACY_STEPS_ENABLED ? next : 1;
+      window.localStorage.setItem("kryonex_wizard_step", clamped);
+      saveState(WIZARD_STEP_KEY, clamped);
+      return clamped;
     });
   };
 
@@ -223,7 +208,8 @@ export default function WizardPage() {
     saveState(WIZARD_FORM_KEY, next);
   };
 
-  const currentStep = stepMeta[step - 1];
+  const safeStep = LEGACY_STEPS_ENABLED ? step : 1;
+  const currentStep = stepMeta[safeStep - 1];
   const StepIcon = currentStep.icon;
 
   const areaCodeValid = form.areaCodeInput.length === 3;
@@ -315,47 +301,10 @@ export default function WizardPage() {
   };
 
   useEffect(() => {
-    const success = searchParams.get("success");
-    const canceled = searchParams.get("canceled");
-    const sessionId = searchParams.get("session_id");
-    if (canceled) {
+    if (searchParams.get("canceled")) {
       setCheckoutError("Checkout canceled. Please retry.");
-      localStorage.removeItem("kryonex_pending_checkout_session");
     }
-    if (success && sessionId) {
-      verifyCheckoutSession(sessionId)
-        .then((res) => {
-          updateField("paymentId", sessionId);
-          setPaymentVerified(true);
-          if (step < 5) persistStep(5);
-          setCheckoutError("");
-          localStorage.removeItem("kryonex_pending_checkout_session");
-        })
-        .catch((error) => {
-          setCheckoutError(
-            error.response?.data?.error || "Payment verification failed."
-          );
-          setPaymentVerified(false);
-        });
-    } else if (!success && !sessionId) {
-      const pendingSession = localStorage.getItem(
-        "kryonex_pending_checkout_session"
-      );
-      if (pendingSession) {
-        verifyCheckoutSession(pendingSession)
-          .then(() => {
-            updateField("paymentId", pendingSession);
-            setPaymentVerified(true);
-            if (step < 5) persistStep(5);
-            setCheckoutError("");
-            localStorage.removeItem("kryonex_pending_checkout_session");
-          })
-          .catch(() => {
-            // keep pending id for another retry on next load
-          });
-      }
-    }
-  }, [searchParams, step, navigate]);
+  }, [searchParams]);
 
   useEffect(() => {
     window.localStorage.setItem("kryonex_wizard_step", String(step));
@@ -375,21 +324,7 @@ export default function WizardPage() {
         if (mounted && isActive && periodOk) {
           setPaymentVerified(true);
           setCheckoutError("");
-          const isNewAgent = searchParams.get("new") === "1";
-          if (isNewAgent) {
-            updateStep((prev) => (prev < 4 ? 4 : prev));
-          } else {
-            const savedForm = getSavedState(WIZARD_FORM_KEY) || {};
-            const hasWizardProgress = Boolean(
-              savedForm.nameInput ||
-                savedForm.areaCodeInput ||
-                savedForm.industryInput ||
-                Number(getSavedState(WIZARD_STEP_KEY) || 1) > 1
-            );
-            if (!hasWizardProgress) {
-              navigate("/dashboard", { replace: true });
-            }
-          }
+          navigate("/dashboard", { replace: true });
         }
       } catch (err) {
         // Silent: user may not have a subscription yet.
@@ -399,7 +334,7 @@ export default function WizardPage() {
     return () => {
       mounted = false;
     };
-  }, [navigate, searchParams]);
+  }, [navigate]);
 
   useEffect(() => {
     let mounted = true;
@@ -433,11 +368,11 @@ export default function WizardPage() {
       if (!user) return;
       const { data: profile } = await supabase
         .from("profiles")
-        .select("business_name, industry, role")
+        .select("business_name, area_code, role")
         .eq("user_id", user.id)
         .maybeSingle();
       const isOnboarded =
-        Boolean(profile?.business_name) && Boolean(profile?.industry);
+        Boolean(profile?.business_name) && Boolean(profile?.area_code);
       if (wizardMaintenance && profile?.role !== "admin") {
         if (mounted) {
           setWizardLocked(true);
@@ -447,45 +382,19 @@ export default function WizardPage() {
         }
         return;
       }
-      if (!isOnboarded) {
-        if (mounted) {
-          setWizardLocked(false);
-          setWizardLockReason("");
+      if (mounted) {
+        setWizardLocked(false);
+        setWizardLockReason("");
+        if (!isOnboarded) {
           const savedForm = getSavedState(WIZARD_FORM_KEY) || {};
           const hasWizardProgress = Boolean(
-            savedForm.nameInput || savedForm.areaCodeInput || savedForm.industryInput
+            savedForm.nameInput || savedForm.areaCodeInput
           );
           if (!hasWizardProgress) {
             persistStep(1);
             persistForm(defaultFormState);
           }
         }
-        return;
-      }
-      if (profile?.role === "admin") {
-        if (mounted) {
-          setWizardLocked(false);
-          setWizardLockReason("");
-        }
-        return;
-      }
-      const { data: existingAgents } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("user_id", user.id)
-        .limit(1);
-      const hasAgent = Boolean(existingAgents && existingAgents.length);
-      const subRes = await getSubscriptionStatus();
-      const tier = String(subRes?.data?.plan_type || "").toLowerCase();
-      const eligible =
-        tier.includes("elite") || tier.includes("scale") || !hasAgent;
-      if (mounted) {
-        setWizardLocked(!eligible);
-        setWizardLockReason(
-          eligible
-            ? ""
-            : "Additional agents are available on Elite/Scale plans."
-        );
       }
     };
     checkWizardAccess();
@@ -610,19 +519,13 @@ export default function WizardPage() {
     setCheckoutLoading(true);
     try {
       const planTierPayload = planTier === "scale" ? "scale" : planTier || "pro";
-      const successUrl = `${window.location.origin}/wizard?success=true&session_id={CHECKOUT_SESSION_ID}`;
+      const successUrl = `${window.location.origin}/dashboard?checkout=success`;
       const cancelUrl = `${window.location.origin}/wizard?canceled=true`;
       const response = await createCheckoutSession({
         planTier: planTierPayload,
         successUrl,
         cancelUrl,
       });
-      if (response.data?.sessionId) {
-        localStorage.setItem(
-          "kryonex_pending_checkout_session",
-          response.data.sessionId
-        );
-      }
       if (response.data?.url) {
         window.location.href = response.data.url;
       }
@@ -630,6 +533,23 @@ export default function WizardPage() {
       setCheckoutError(error.response?.data?.error || error.message);
     } finally {
       setCheckoutLoading(false);
+    }
+  };
+
+  const handleIdentitySubmit = async () => {
+    setSaveError("");
+    setCheckoutError("");
+    setSaving(true);
+    try {
+      await saveOnboardingIdentity({
+        businessName: form.nameInput,
+        areaCode: form.areaCodeInput,
+      });
+      await handleStripeCheckout();
+    } catch (err) {
+      setSaveError(err.response?.data?.error || err.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -739,7 +659,7 @@ export default function WizardPage() {
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wider text-white/50">
-                  Phase {step} of 6
+                  Phase {safeStep} of {stepMeta.length}
                 </p>
                 <p className="text-lg font-semibold tracking-wide">
                   {currentStep.title}
@@ -752,8 +672,8 @@ export default function WizardPage() {
         <div className="glass-panel relative flex-1 rounded-[28px] p-8 sm:p-10 border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl">
           <div className="mb-10 flex flex-wrap items-center gap-3 overflow-x-auto pb-2 scrollbar-hide">
             {stepMeta.map((meta, index) => {
-              const isActive = step === index + 1;
-              const isPast = step > index + 1;
+              const isActive = safeStep === index + 1;
+              const isPast = safeStep > index + 1;
               const MetaIcon = meta.icon;
               return (
                 <div
@@ -850,6 +770,9 @@ export default function WizardPage() {
                     {saveError ? (
                       <div className="text-neon-pink text-sm">{saveError}</div>
                     ) : null}
+                    {checkoutError ? (
+                      <div className="text-neon-pink text-sm">{checkoutError}</div>
+                    ) : null}
                   </div>
                 </div>
                 <div className="glass-panel preview-glow flex flex-col justify-between rounded-3xl p-8 bg-gradient-to-b from-white/5 to-transparent border border-white/5">
@@ -883,7 +806,7 @@ export default function WizardPage() {
               </motion.div>
             )}
 
-            {step === 2 && (
+            {LEGACY_STEPS_ENABLED && step === 2 && (
               <motion.div
                 key="step-2"
                 variants={stepVariants}
@@ -992,7 +915,7 @@ export default function WizardPage() {
               </motion.div>
             )}
 
-            {step === 3 && (
+            {LEGACY_STEPS_ENABLED && step === 3 && (
               <motion.div
                 key="step-3"
                 variants={stepVariants}
@@ -1376,7 +1299,7 @@ export default function WizardPage() {
             </motion.div>
           )}
 
-            {step === 4 && (
+            {LEGACY_STEPS_ENABLED && step === 4 && (
               <motion.div
                 key="step-4"
                 variants={stepVariants}
@@ -1523,7 +1446,7 @@ export default function WizardPage() {
               </motion.div>
             )}
 
-            {step === 5 && (
+            {LEGACY_STEPS_ENABLED && step === 5 && (
               <motion.div
                 key="step-5"
                 variants={stepVariants}
@@ -1699,7 +1622,7 @@ export default function WizardPage() {
               </motion.div>
             )}
 
-            {step === 6 && (
+            {LEGACY_STEPS_ENABLED && step === 6 && (
               <motion.div
                 key="step-6"
                 variants={stepVariants}
@@ -1747,7 +1670,7 @@ export default function WizardPage() {
           </AnimatePresence>
         </div>
 
-        {step < 6 && (
+        {LEGACY_STEPS_ENABLED ? (
           <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
             <button
               onClick={() => updateStep((prev) => Math.max(1, prev - 1))}
@@ -1808,6 +1731,22 @@ export default function WizardPage() {
                 Review Payload
               </button>
             )}
+          </div>
+        ) : (
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3 text-xs text-white/40 uppercase tracking-widest">
+              <span className="h-1.5 w-1.5 rounded-full bg-neon-cyan animate-pulse" />
+              Kryonex Secure Environment
+            </div>
+            <button
+              onClick={handleIdentitySubmit}
+              disabled={!canContinueIdentity || saving || checkoutLoading}
+              className="glow-button"
+            >
+              {saving || checkoutLoading
+                ? "SECURING CHECKOUT..."
+                : "Continue to Checkout"}
+            </button>
           </div>
         )}
       </div>
