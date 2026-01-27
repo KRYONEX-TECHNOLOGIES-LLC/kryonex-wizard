@@ -36,7 +36,7 @@ export default function TopMenu() {
       if (!user) return;
       const { data: profile } = await supabase
         .from("profiles")
-        .select("role, business_name, industry")
+        .select("role, business_name, area_code")
         .eq("user_id", user.id)
         .maybeSingle();
       if (mounted) {
@@ -44,7 +44,7 @@ export default function TopMenu() {
         setIsSeller(profile?.role === "seller");
         setEmail(user.email || "");
         setOnboardingComplete(
-          Boolean(profile?.business_name) && Boolean(profile?.industry)
+          Boolean(profile?.business_name) && Boolean(profile?.area_code)
         );
       }
       try {
@@ -68,10 +68,9 @@ export default function TopMenu() {
     const updateMode = () => {
       setViewMode(window.localStorage.getItem("kryonex_admin_mode") || "user");
     };
-    window.addEventListener("storage", updateMode);
+    updateMode();
     window.addEventListener("kryonex-admin-mode", updateMode);
     return () => {
-      window.removeEventListener("storage", updateMode);
       window.removeEventListener("kryonex-admin-mode", updateMode);
     };
   }, []);

@@ -5,9 +5,9 @@ import { supabase } from "../lib/supabase";
 export default function AdminModeToggle({ align = "right", onModeChange }) {
   const navigate = useNavigate();
   const [isAdmin, setIsAdmin] = React.useState(false);
-  const [mode, setMode] = React.useState(
-    window.localStorage.getItem("kryonex_admin_mode") || "user"
-  );
+  const readMode = () =>
+    window.localStorage.getItem("kryonex_admin_mode") || "user";
+  const [mode, setMode] = React.useState(readMode);
 
   React.useEffect(() => {
     let mounted = true;
@@ -28,9 +28,18 @@ export default function AdminModeToggle({ align = "right", onModeChange }) {
     };
   }, []);
 
+  React.useEffect(() => {
+    const syncMode = () => setMode(readMode());
+    window.addEventListener("kryonex-admin-mode", syncMode);
+    return () => {
+      window.removeEventListener("kryonex-admin-mode", syncMode);
+    };
+  }, []);
+
   if (!isAdmin) return null;
 
   const setAdminMode = (next) => {
+    if (readMode() === next) return;
     window.localStorage.setItem("kryonex_admin_mode", next);
     setMode(next);
     window.dispatchEvent(new Event("kryonex-admin-mode"));

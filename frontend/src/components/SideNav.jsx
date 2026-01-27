@@ -27,10 +27,8 @@ export default function SideNav({
       setViewMode(next);
     };
     updateMode();
-    window.addEventListener("storage", updateMode);
     window.addEventListener("kryonex-admin-mode", updateMode);
     return () => {
-      window.removeEventListener("storage", updateMode);
       window.removeEventListener("kryonex-admin-mode", updateMode);
     };
   }, []);
