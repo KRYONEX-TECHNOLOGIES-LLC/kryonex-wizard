@@ -1236,6 +1236,7 @@ const formatMoney = (value, fallback = "Not provided") => {
 
 const normalizePromptMode = (mode, industry) => {
   const normalized = String(mode || "").toLowerCase().trim();
+  if (normalized === "template") return "template";
   if (normalized === "hvac" || normalized === "plumbing") return normalized;
   if (industry && industry.toLowerCase().includes("plumb")) return "plumbing";
   return "hvac";
@@ -2666,11 +2667,13 @@ app.post(
         dynamicVars
       );
 
-      const useBackendPrompt = shouldUseBackendPrompt({
-        userId: req.user.id,
-        industry,
-      });
       const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, industry);
+      const useBackendPrompt =
+        promptMode !== "template" &&
+        shouldUseBackendPrompt({
+          userId: req.user.id,
+          industry,
+        });
       const backendPrompt = buildDispatchPrompt({
         mode: promptMode,
         industry,
@@ -2682,7 +2685,9 @@ app.post(
         transferNumber: cleanTransfer,
         travelInstruction,
       });
-      const finalPrompt = useBackendPrompt
+      const finalPrompt = promptMode === "template"
+        ? null
+        : useBackendPrompt
         ? backendPrompt
         : `${legacyPrompt}
 
@@ -2709,7 +2714,6 @@ Business Variables:
           llm_id: llmId,
         },
         agent_name: `${businessName} AI Agent`,
-        prompt: finalPrompt,
         retell_llm_dynamic_variables: {
           business_name: dynamicVars.business_name,
           cal_com_link: dynamicVars.cal_com_link,
@@ -2718,6 +2722,9 @@ Business Variables:
         webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
         webhook_timeout_ms: 10000,
       };
+      if (finalPrompt) {
+        agentPayload.prompt = finalPrompt;
+      }
       agentPayload.voice_id = resolvedVoiceId;
 
       const agentResponse = await retellClient.post("/create-agent", agentPayload);
@@ -2753,7 +2760,7 @@ Business Variables:
         phone_number: phoneNumber,
         voice_id: voiceId || null,
         llm_id: llmId,
-        prompt: finalPrompt,
+        prompt: finalPrompt || null,
         area_code: areaCode || null,
         tone: tone || null,
         schedule_summary: scheduleSummary || null,
@@ -2857,16 +2864,18 @@ const syncRetellTemplates = async ({ llmId }) => {
   const results = [];
   const derivedIndustry =
     llmId === RETELL_LLM_ID_PLUMBING ? "plumbing" : "hvac";
-  const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, derivedIndustry);
+    const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, derivedIndustry);
 
   for (const agent of agents || []) {
     const agentId = agent?.agent_id;
     if (!agentId) continue;
     try {
-      const useBackendPrompt = shouldUseBackendPrompt({
-        userId: agent.user_id,
-        industry: derivedIndustry,
-      });
+        const useBackendPrompt =
+          promptMode !== "template" &&
+          shouldUseBackendPrompt({
+            userId: agent.user_id,
+            industry: derivedIndustry,
+          });
       let promptOverride = null;
       if (useBackendPrompt) {
         const { data: profile } = await supabaseAdmin
