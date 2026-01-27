@@ -29,7 +29,7 @@ import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
 import TimeSelect from "../components/TimeSelect.jsx";
 import { AGENT_TONES, INDUSTRIES } from "../lib/wizardConstants";
-import { getSavedState, saveState } from "../lib/persistence.js";
+import { clearState, getSavedState, saveState } from "../lib/persistence.js";
 import { normalizePhone } from "../lib/phone.js";
 
 const stepMeta = [
@@ -642,6 +642,18 @@ export default function WizardPage() {
         err.response?.data?.error || "Unable to unlock admin access."
       );
     }
+  };
+
+  const resetWizardFlow = () => {
+    clearState(WIZARD_FORM_KEY);
+    clearState(WIZARD_STEP_KEY);
+    window.localStorage.removeItem("kryonex_wizard_step");
+    setPhoneNumber("");
+    setDeployError("");
+    setConfirmOpen(false);
+    persistForm(defaultFormState);
+    persistStep(1);
+    navigate("/wizard", { replace: true });
   };
 
   if (wizardLocked) {
@@ -1712,6 +1724,13 @@ export default function WizardPage() {
                     </span>
                   </div>
                 </div>
+                <button
+                  className="glow-button mt-10"
+                  onClick={resetWizardFlow}
+                  type="button"
+                >
+                  DEPLOY ANOTHER AGENT
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
