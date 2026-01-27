@@ -1,7 +1,12 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import { autoGrantAdmin, getSubscriptionStatus, logBlackBoxEvent } from "../lib/api";
+import {
+  autoGrantAdmin,
+  getSubscriptionStatus,
+  logBlackBoxEvent,
+  verifyAdminCode,
+} from "../lib/api";
 import AdminModeToggle from "./AdminModeToggle.jsx";
 
 export default function TopMenu() {
@@ -129,9 +134,22 @@ export default function TopMenu() {
       }
       setAdminError("Admin access denied.");
     } catch (err) {
-      setAdminError(
-        err.response?.data?.error || "Unable to unlock admin access."
-      );
+      try {
+        const fallback = await verifyAdminCode(code);
+        if (fallback.data?.ok) {
+          window.localStorage.setItem("kryonex_admin_mode", "admin");
+          window.dispatchEvent(new Event("kryonex-admin-mode"));
+          setViewMode("admin");
+          setOpen(false);
+          navigate("/admin");
+          return;
+        }
+        setAdminError("Admin access denied.");
+      } catch (fallbackErr) {
+        setAdminError(
+          fallbackErr.response?.data?.error || "Unable to unlock admin access."
+        );
+      }
     }
   };
 
