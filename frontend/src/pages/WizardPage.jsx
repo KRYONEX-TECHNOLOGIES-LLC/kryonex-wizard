@@ -324,7 +324,19 @@ export default function WizardPage() {
         if (mounted && isActive && periodOk) {
           setPaymentVerified(true);
           setCheckoutError("");
-          navigate("/dashboard", { replace: true });
+          const { data: sessionData } = await supabase.auth.getSession();
+          const user = sessionData?.session?.user;
+          if (!user) return;
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("business_name, area_code")
+            .eq("user_id", user.id)
+            .maybeSingle();
+          const isOnboarded =
+            Boolean(profile?.business_name) && Boolean(profile?.area_code);
+          if (isOnboarded) {
+            navigate("/dashboard", { replace: true });
+          }
         }
       } catch (err) {
         // Silent: user may not have a subscription yet.
