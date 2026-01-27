@@ -1228,15 +1228,26 @@ const applyMasterAgentTools = async ({ industry, agentId }) => {
       `/get-agent/${masterAgentId}`
     );
     const master = normalizeRetellAgent(masterResponse.data);
+    const masterKeys = master ? Object.keys(master) : [];
     const toolPayload = {};
-    if (Array.isArray(master?.tools)) {
-      toolPayload.tools = master.tools;
+    const rawTools =
+      master?.tools ||
+      master?.tool_definitions ||
+      master?.tool_calls ||
+      master?.functions ||
+      null;
+    if (Array.isArray(rawTools)) {
+      toolPayload.tools = rawTools;
     }
     if (master?.post_call_analysis) {
       toolPayload.post_call_analysis = master.post_call_analysis;
     }
-    const toolCount = Array.isArray(master?.tools) ? master.tools.length : 0;
+    const toolCount = Array.isArray(rawTools) ? rawTools.length : 0;
     if (!Object.keys(toolPayload).length) {
+      console.warn("[retell] master agent has no tools", {
+        master_agent_id: masterAgentId,
+        master_keys: masterKeys,
+      });
       return { masterAgentId, toolCount };
     }
     await retellClient.patch(`/update-agent/${agentId}`, toolPayload);
@@ -2785,6 +2796,7 @@ Business Variables:
         llm_version: llmVersion || null,
         master_agent_id: toolCopy?.masterAgentId || null,
         tool_count_after_copy: toolCopy?.toolCount || 0,
+        tools_source: toolCopy?.toolCount ? "master_agent" : "none",
       });
 
       const phonePayload = {
