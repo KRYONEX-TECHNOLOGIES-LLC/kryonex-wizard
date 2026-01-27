@@ -1233,6 +1233,7 @@ const normalizeRetellAgent = (payload) =>
 const extractToolPayload = (payload) => {
   const toolPayload = {};
   const rawTools =
+    payload?.general_tools ||
     payload?.tools ||
     payload?.tool_definitions ||
     payload?.tool_calls ||
@@ -1250,22 +1251,24 @@ const extractToolPayload = (payload) => {
   if (payload?.post_call_analysis_model) {
     toolPayload.post_call_analysis_model = payload.post_call_analysis_model;
   }
-  return { toolPayload, toolCount: Array.isArray(rawTools) ? rawTools.length : 0 };
+  const stateTools = Array.isArray(payload?.states)
+    ? payload.states.flatMap((state) => state?.tools || []).filter(Boolean)
+    : [];
+  const toolCount =
+    (Array.isArray(rawTools) ? rawTools.length : 0) + stateTools.length;
+  return { toolPayload, toolCount };
 };
 
 const fetchLlmTools = async ({ llmId, llmVersion }) => {
   if (!llmId) return null;
   const attempts = [
-    { path: `/get-llm/${llmId}` },
-    { path: `/get-llm?llm_id=${encodeURIComponent(llmId)}` },
-    llmVersion
-      ? { path: `/get-llm?llm_id=${encodeURIComponent(llmId)}&llm_version=${encodeURIComponent(llmVersion)}` }
-      : null,
-    llmVersion
-      ? { path: `/get-llm-version/${encodeURIComponent(llmId)}/${encodeURIComponent(llmVersion)}` }
-      : null,
-    llmVersion
-      ? { path: `/get-llm-version/${encodeURIComponent(llmVersion)}` }
+    { path: `/get-retell-llm/${encodeURIComponent(llmId)}` },
+    llmVersion !== null
+      ? {
+          path: `/get-retell-llm/${encodeURIComponent(llmId)}?version=${encodeURIComponent(
+            llmVersion
+          )}`,
+        }
       : null,
   ].filter(Boolean);
 
