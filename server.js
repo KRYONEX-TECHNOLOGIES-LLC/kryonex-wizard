@@ -1220,7 +1220,60 @@ const pickMasterAgentId = (industry) => {
 const normalizeRetellAgent = (payload) =>
   payload?.agent || payload?.data?.agent || payload?.data || payload;
 
-const applyMasterAgentTools = async ({ industry, agentId }) => {
+const extractToolPayload = (payload) => {
+  const toolPayload = {};
+  const rawTools =
+    payload?.tools ||
+    payload?.tool_definitions ||
+    payload?.tool_calls ||
+    payload?.functions ||
+    null;
+  if (Array.isArray(rawTools)) {
+    toolPayload.tools = rawTools;
+  }
+  if (payload?.post_call_analysis) {
+    toolPayload.post_call_analysis = payload.post_call_analysis;
+  }
+  if (payload?.post_call_analysis_data) {
+    toolPayload.post_call_analysis_data = payload.post_call_analysis_data;
+  }
+  if (payload?.post_call_analysis_model) {
+    toolPayload.post_call_analysis_model = payload.post_call_analysis_model;
+  }
+  return { toolPayload, toolCount: Array.isArray(rawTools) ? rawTools.length : 0 };
+};
+
+const fetchLlmTools = async ({ llmId, llmVersion }) => {
+  if (!llmId) return null;
+  const attempts = [
+    { path: `/get-llm/${llmId}` },
+    { path: `/get-llm?llm_id=${encodeURIComponent(llmId)}` },
+    llmVersion
+      ? { path: `/get-llm?llm_id=${encodeURIComponent(llmId)}&llm_version=${encodeURIComponent(llmVersion)}` }
+      : null,
+    llmVersion
+      ? { path: `/get-llm-version/${encodeURIComponent(llmId)}/${encodeURIComponent(llmVersion)}` }
+      : null,
+    llmVersion
+      ? { path: `/get-llm-version/${encodeURIComponent(llmVersion)}` }
+      : null,
+  ].filter(Boolean);
+
+  for (const attempt of attempts) {
+    try {
+      const res = await retellClient.get(attempt.path);
+      const payload = res?.data?.llm || res?.data?.data || res?.data || null;
+      if (payload) {
+        return { payload, source: attempt.path };
+      }
+    } catch (err) {
+      // try next
+    }
+  }
+  return null;
+};
+
+const applyMasterAgentTools = async ({ industry, agentId, llmId, llmVersion }) => {
   const masterAgentId = pickMasterAgentId(industry);
   if (!masterAgentId) return { masterAgentId: null, toolCount: 0 };
   try {
@@ -1229,26 +1282,32 @@ const applyMasterAgentTools = async ({ industry, agentId }) => {
     );
     const master = normalizeRetellAgent(masterResponse.data);
     const masterKeys = master ? Object.keys(master) : [];
-    const toolPayload = {};
-    const rawTools =
-      master?.tools ||
-      master?.tool_definitions ||
-      master?.tool_calls ||
-      master?.functions ||
-      null;
-    if (Array.isArray(rawTools)) {
-      toolPayload.tools = rawTools;
-    }
-    if (master?.post_call_analysis) {
-      toolPayload.post_call_analysis = master.post_call_analysis;
-    }
-    const toolCount = Array.isArray(rawTools) ? rawTools.length : 0;
+    let { toolPayload, toolCount } = extractToolPayload(master);
+
     if (!Object.keys(toolPayload).length) {
-      console.warn("[retell] master agent has no tools", {
-        master_agent_id: masterAgentId,
-        master_keys: masterKeys,
-      });
-      return { masterAgentId, toolCount };
+      const llmTools = await fetchLlmTools({ llmId, llmVersion });
+      if (llmTools?.payload) {
+        const llmKeys = Object.keys(llmTools.payload || {});
+        const extracted = extractToolPayload(llmTools.payload);
+        toolPayload = extracted.toolPayload;
+        toolCount = extracted.toolCount;
+        if (!Object.keys(toolPayload).length) {
+          console.warn("[retell] no tools on llm payload", {
+            master_agent_id: masterAgentId,
+            llm_id: llmId,
+            llm_version: llmVersion || null,
+            llm_keys: llmKeys,
+            llm_source: llmTools.source,
+          });
+          return { masterAgentId, toolCount };
+        }
+      } else {
+        console.warn("[retell] master agent has no tools", {
+          master_agent_id: masterAgentId,
+          master_keys: masterKeys,
+        });
+        return { masterAgentId, toolCount };
+      }
     }
     await retellClient.patch(`/update-agent/${agentId}`, toolPayload);
     return { masterAgentId, toolCount };
@@ -2789,7 +2848,12 @@ Business Variables:
       if (!agentId) {
         return res.status(500).json({ error: "Retell agent_id missing" });
       }
-      const toolCopy = await applyMasterAgentTools({ industry, agentId });
+      const toolCopy = await applyMasterAgentTools({
+        industry,
+        agentId,
+        llmId,
+        llmVersion,
+      });
       console.info("[retell] agent created", {
         agent_id: agentId,
         llm_id: llmId,
