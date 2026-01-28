@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { createClientDeployment, getAdminLeads } from "../lib/api";
+import { adminQuickOnboard, createClientDeployment, getAdminLeads } from "../lib/api";
 import { FEATURES, TIER_FEATURE_DEFAULTS, getTierOptions } from "../lib/billingConstants";
 import { AGENT_TONES, INDUSTRIES } from "../lib/wizardConstants";
 import TimeSelect from "../components/TimeSelect.jsx";
@@ -85,6 +85,14 @@ export default function AdminClientWizardPage() {
   const [submitted, setSubmitted] = React.useState(false);
   const [deploymentResult, setDeploymentResult] = React.useState(null);
   const [referrerId, setReferrerId] = React.useState("");
+  const [quickForm, setQuickForm] = React.useState({
+    businessName: "",
+    areaCode: "",
+    email: "",
+  });
+  const [quickLoading, setQuickLoading] = React.useState(false);
+  const [quickError, setQuickError] = React.useState("");
+  const [quickSuccess, setQuickSuccess] = React.useState(null);
 
   React.useEffect(() => {
     if (!leadId) return;
@@ -150,6 +158,49 @@ export default function AdminClientWizardPage() {
   const handleChange = (field) => (event) => {
     const value = event.target.value;
     setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleQuickChange = (field) => (event) => {
+    const value = event.target.value;
+    setQuickForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleQuickAreaCode = (event) => {
+    const digits = String(event.target.value || "").replace(/\D/g, "").slice(0, 3);
+    setQuickForm((prev) => ({ ...prev, areaCode: digits }));
+  };
+
+  const handleQuickSubmit = async (event) => {
+    event?.preventDefault();
+    setQuickError("");
+    setQuickSuccess(null);
+    const cleanName = quickForm.businessName.trim();
+    const cleanEmail = quickForm.email.trim();
+    if (!cleanName) {
+      setQuickError("Business name is required.");
+      return;
+    }
+    if (!/^\d{3}$/.test(quickForm.areaCode)) {
+      setQuickError("Area code must be 3 digits.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setQuickError("Enter a valid email address.");
+      return;
+    }
+    setQuickLoading(true);
+    try {
+      const response = await adminQuickOnboard({
+        businessName: cleanName,
+        areaCode: quickForm.areaCode,
+        email: cleanEmail,
+      });
+      setQuickSuccess(response.data || { ok: true });
+    } catch (err) {
+      setQuickError(err.response?.data?.error || err.message);
+    } finally {
+      setQuickLoading(false);
+    }
   };
 
   const generateScheduleSummary = () => {
@@ -278,6 +329,79 @@ export default function AdminClientWizardPage() {
                 transition={{ duration: 0.5 }}
               >
                 <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4">
+                  <div>
+                    <div className="text-sm font-semibold text-white">
+                      Admin Quick Onboarding
+                    </div>
+                    <div className="text-xs text-white/50">
+                      Create a client instantly without Stripe or tier selection.
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <label className="space-y-2">
+                      <span className="text-sm text-white/70">Business Name</span>
+                      <input
+                        className="input-field w-full"
+                        value={quickForm.businessName}
+                        onChange={handleQuickChange("businessName")}
+                        placeholder="Client business"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-sm text-white/70">Area Code</span>
+                      <input
+                        className="input-field w-full"
+                        value={quickForm.areaCode}
+                        onChange={handleQuickAreaCode}
+                        placeholder="123"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-sm text-white/70">Email</span>
+                      <input
+                        className="input-field w-full"
+                        type="email"
+                        value={quickForm.email}
+                        onChange={handleQuickChange("email")}
+                        placeholder="client@domain.com"
+                      />
+                    </label>
+                  </div>
+                  {quickError ? (
+                    <div className="text-neon-pink text-sm">{quickError}</div>
+                  ) : null}
+                  {quickSuccess ? (
+                    <div className="text-neon-green text-sm space-y-1">
+                      <div>Agent deployed for admin onboarding.</div>
+                      {quickSuccess.phone_number ? (
+                        <div className="font-mono">
+                          Agent: {quickSuccess.phone_number}
+                        </div>
+                      ) : null}
+                      {quickSuccess.user_id ? (
+                        <div className="text-xs text-white/60">
+                          User ID: {quickSuccess.user_id}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <button
+                    className="glow-button w-full"
+                    type="button"
+                    disabled={quickLoading}
+                    onClick={handleQuickSubmit}
+                  >
+                    {quickLoading ? "DEPLOYING..." : "Deploy Agent"}
+                  </button>
+                </div>
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.5, delay: 0.1 }}
+              >
+                <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4">
                   <div className="text-sm font-semibold text-white">Tier Selection</div>
                   <select
                     className="input-field w-full text-lg p-4"
@@ -296,7 +420,7 @@ export default function AdminClientWizardPage() {
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.5, delay: 0.1 }}
+                transition={{ duration: 0.5, delay: 0.2 }}
               >
                 <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4">
                   <div className="flex items-center justify-between">
@@ -358,7 +482,7 @@ export default function AdminClientWizardPage() {
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.5, delay: 0.2 }}
+                transition={{ duration: 0.5, delay: 0.3 }}
               >
                 <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-5">
                   <div className="text-sm font-semibold text-white">Client Details</div>
@@ -442,7 +566,7 @@ export default function AdminClientWizardPage() {
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.5, delay: 0.3 }}
+                transition={{ duration: 0.5, delay: 0.4 }}
               >
                 <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-5">
                   <div className="flex items-center justify-between">
@@ -515,7 +639,7 @@ export default function AdminClientWizardPage() {
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.5, delay: 0.4 }}
+                transition={{ duration: 0.5, delay: 0.5 }}
               >
                 <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-5">
                   <div className="flex items-center justify-between">
@@ -599,7 +723,7 @@ export default function AdminClientWizardPage() {
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.5, delay: 0.5 }}
+                transition={{ duration: 0.5, delay: 0.6 }}
               >
                 <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4">
                   <div className="text-sm font-semibold text-white">Deployment Notes</div>

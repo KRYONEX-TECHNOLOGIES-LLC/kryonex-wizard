@@ -150,8 +150,14 @@ export default function AdminUsersPage() {
     const term = searchTerm.toLowerCase();
     return (
       String(user.business_name || "").toLowerCase().includes(term) ||
-      String(user.email || "").toLowerCase().includes(term)
+      String(user.email || "").toLowerCase().includes(term) ||
+      String(user.area_code || "").toLowerCase().includes(term)
     );
+  });
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
+    const aDate = new Date(a.created_at || 0).getTime();
+    const bDate = new Date(b.created_at || 0).getTime();
+    return bDate - aDate;
   });
 
   return (
@@ -194,7 +200,7 @@ export default function AdminUsersPage() {
             <div className="mt-5 flex flex-wrap items-center gap-3">
               <input
                 className="glass-input w-full max-w-sm text-sm"
-                placeholder="Search by business or email"
+                placeholder="Search by business, email, or area code"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
               />
@@ -215,8 +221,11 @@ export default function AdminUsersPage() {
               <div>Usage</div>
               <div>Actions</div>
             </div>
-            <div className="mt-3 space-y-2">
-              {filteredUsers.map((user) => (
+            <div
+              className="mt-3 space-y-2 max-h-[calc(100vh-360px)] overflow-y-auto pr-2"
+              style={{ scrollBehavior: "smooth" }}
+            >
+              {sortedUsers.map((user) => (
                 <div
                   key={user.id}
                   role="button"
@@ -291,7 +300,7 @@ export default function AdminUsersPage() {
                   </div>
                 </div>
               ))}
-              {!filteredUsers.length && !loading ? (
+              {!sortedUsers.length && !loading ? (
                 <div className="text-sm text-white/50 px-4 py-6">
                   No users captured yet.
                 </div>
@@ -335,75 +344,31 @@ export default function AdminUsersPage() {
               <div className="space-y-6">
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-[0.4em] text-white/40">
-                    Copy-Ready Data
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-4 space-y-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs text-white/40">Business Name</div>
-                        <div className="text-white font-semibold">
-                          {selectedUser.user?.business_name || "--"}
-                        </div>
-                      </div>
-                      <button
-                        className="button-primary"
-                        type="button"
-                        onClick={() =>
-                          handleCopy(
-                            selectedUser.user?.business_name,
-                            "Business name"
-                          )
-                        }
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs text-white/40">Cal.com URL</div>
-                        <div className="text-white text-sm break-all">
-                          {selectedUser.user?.cal_com_url || "--"}
-                        </div>
-                      </div>
-                      <button
-                        className="button-primary"
-                        type="button"
-                        onClick={() =>
-                          handleCopy(
-                            selectedUser.user?.cal_com_url,
-                            "Cal.com URL"
-                          )
-                        }
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs text-white/40">Area Code</div>
-                        <div className="text-white font-mono text-sm">
-                          {selectedUser.user?.area_code || "--"}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="text-xs uppercase tracking-[0.4em] text-white/40">
-                    Tracking & Stats
+                    Quick Summary
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-black/40 p-4 grid grid-cols-2 gap-4 text-sm">
                     <div>
-                      <div className="text-white/40 text-xs">Account ID</div>
-                      <div className="text-white font-mono text-xs">
-                        {selectedUser.user?.id}
+                      <div className="text-white/40 text-xs">Business Name</div>
+                      <div className="text-white font-semibold">
+                        {selectedUser.user?.business_name || "--"}
                       </div>
                     </div>
                     <div>
-                      <div className="text-white/40 text-xs">Tier Plan</div>
+                      <div className="text-white/40 text-xs">Email</div>
+                      <div className="text-white text-xs break-all">
+                        {selectedUser.user?.email || "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Tier</div>
                       <div className="text-white">
                         {selectedUser.user?.plan_type || "--"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-white/40 text-xs">Status</div>
+                      <div className="text-white">
+                        {selectedUser.user?.fleet_status || "--"}
                       </div>
                     </div>
                     <div>
@@ -419,32 +384,80 @@ export default function AdminUsersPage() {
                       </div>
                     </div>
                     <div>
-                      <div className="text-white/40 text-xs">Sign-up Date</div>
+                      <div className="text-white/40 text-xs">Billing Cycle End</div>
                       <div className="text-white">
-                        {formatDate(selectedUser.user?.signup_date)}
+                        {formatDate(selectedUser.billing?.next_billing_date)}
                       </div>
                     </div>
                     <div>
-                      <div className="text-white/40 text-xs">Days Active</div>
+                      <div className="text-white/40 text-xs">Days Remaining</div>
                       <div className="text-white">
-                        {getDaysActive(selectedUser.user?.signup_date)}
+                        {getDaysRemaining(selectedUser.billing?.next_billing_date)}
                       </div>
                     </div>
                     <div>
-                      <div className="text-white/40 text-xs">Billing Cycle</div>
-                      <div className="text-white">
-                        {getDaysRemaining(
-                          selectedUser.billing?.next_billing_date
-                        )}{" "}
-                        days
+                      <div className="text-white/40 text-xs">Agent Phone</div>
+                      <div className="text-white font-mono text-xs">
+                        {selectedUser.config?.phone_number || "--"}
                       </div>
                     </div>
                     <div>
-                      <div className="text-white/40 text-xs">Account Status</div>
-                      <div className="text-white">
-                        {selectedUser.user?.fleet_status || "--"}
+                      <div className="text-white/40 text-xs">Cal.com URL</div>
+                      <div className="text-white text-xs break-all">
+                        {selectedUser.user?.cal_com_url || "--"}
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-[0.4em] text-white/40">
+                    Quick Copy
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-4 space-y-3">
+                    {[
+                      {
+                        label: "Business Name",
+                        value: selectedUser.user?.business_name,
+                      },
+                      {
+                        label: "Agent Phone Number",
+                        value: selectedUser.config?.phone_number,
+                      },
+                      {
+                        label: "Cal.com URL",
+                        value: selectedUser.user?.cal_com_url,
+                      },
+                      {
+                        label: "Transfer Number",
+                        value: selectedUser.config?.transfer_number,
+                      },
+                      {
+                        label: "Retell Agent ID",
+                        value: selectedUser.config?.agent_id,
+                      },
+                      {
+                        label: "User ID",
+                        value: selectedUser.user?.id,
+                      },
+                    ].map((item) => (
+                      <div key={item.label} className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs text-white/40">{item.label}</div>
+                          <div className="text-white text-sm break-all">
+                            {item.value || "--"}
+                          </div>
+                        </div>
+                        <button
+                          className="button-primary"
+                          type="button"
+                          disabled={!item.value}
+                          onClick={() => handleCopy(item.value, item.label)}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>

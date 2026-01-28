@@ -409,7 +409,7 @@ describe("Wizard matrix sweep", () => {
       if (config.coreOffer) {
         cy.contains("CORE — $99/mo").click();
       } else {
-        cy.contains("PRO — $197/mo").click();
+        cy.contains("PRO — $249/mo").click();
       }
 
       cy.contains("OPEN STRIPE CHECKOUT").click();
