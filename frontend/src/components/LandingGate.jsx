@@ -5,8 +5,8 @@ import LandingPage from "../pages/LandingPage.jsx";
 import BackgroundGrid from "./BackgroundGrid.jsx";
 
 /**
- * Renders "/" (landing). If the user is logged in and already has an agent,
- * redirects to /dashboard without showing the landing page (no screen glitch).
+ * Renders "/" (landing). Logged-in users with an agent, or admins (by role or env email),
+ * are sent to /dashboard. Others see the marketing landing (no screen glitch).
  */
 export default function LandingGate() {
   const [status, setStatus] = React.useState("checking"); // 'checking' | 'no-session' | 'has-agent' | 'no-agent'
@@ -23,6 +23,29 @@ export default function LandingGate() {
 
       if (!user) {
         setStatus("no-session");
+        return;
+      }
+
+      const adminEmails = String(
+        import.meta.env.VITE_ADMIN_EMAIL || import.meta.env.VITE_ADMIN_EMAILS || ""
+      )
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean);
+      const isAdminByEmail = adminEmails.includes(String(user.email || "").toLowerCase());
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      const isAdminByRole = profile?.role === "admin";
+      const canAccessAdmin = isAdminByRole || isAdminByEmail;
+
+      if (!mounted) return;
+      // Admins can go straight to user dashboard without an agent
+      if (canAccessAdmin) {
+        setStatus("has-agent");
         return;
       }
 
