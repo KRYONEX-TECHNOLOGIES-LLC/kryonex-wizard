@@ -370,12 +370,22 @@ const sendSmsInternal = async ({ userId, to, body, leadId, source, req }) => {
   if (usage.limit_state === "paused") {
     throw new Error("Usage limit reached");
   }
-  if (usage.sms_used >= usage.sms_cap + usage.sms_credit) {
+  const smsCap = usage.sms_cap ?? 0;
+  const newSmsUsed = (usage.sms_used || 0) + 1;
+  if (newSmsUsed > smsCap) {
+    console.warn("[sendSms] SMS blocked: usage cap reached", {
+      user_id: userId,
+      sms_used: usage.sms_used,
+      sms_cap: smsCap,
+      grace_seconds: usage.grace_seconds ?? 600,
+    });
     await supabaseAdmin
       .from("usage_limits")
       .update({ limit_state: "paused", updated_at: new Date().toISOString() })
       .eq("user_id", userId);
-    throw new Error("Usage limit reached");
+    const err = new Error("Usage cap reached");
+    err.code = "USAGE_CAP_REACHED";
+    throw err;
   }
 
   if (String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true") {
@@ -689,15 +699,39 @@ app.post(
             );
             const userId =
               session.metadata?.user_id || session.client_reference_id;
-            if (userId) {
+            const metaPlanTier =
+              session.metadata?.planTier || session.metadata?.plan_type;
+            const metaMinutesCap = session.metadata?.minutesCap;
+            const metaSmsCap = session.metadata?.smsCap;
+
+            if (!userId) {
+              console.error(
+                "[stripe-webhook] checkout.session.completed subscription: missing user_id, abort",
+                {
+                  sessionId: session.id,
+                  subscriptionId: subscription.id,
+                  metadataKeys: session.metadata
+                    ? Object.keys(session.metadata)
+                    : [],
+                }
+              );
+            } else {
+              const planType =
+                metaPlanTier && String(metaPlanTier).trim() !== ""
+                  ? metaPlanTier
+                  : subscription.items.data?.[0]?.price?.nickname || "pro";
+              if (!metaPlanTier || String(metaPlanTier).trim() === "") {
+                console.warn(
+                  "[stripe-webhook] checkout.session.completed: planTier missing in metadata; usage_limits from metadata skipped, plan_type fallback used",
+                  { sessionId: session.id, userId, planType }
+                );
+              }
+
               await supabaseAdmin.from("subscriptions").upsert({
                 user_id: userId,
                 customer_id: subscription.customer,
                 status: subscription.status,
-                plan_type:
-                  session.metadata?.plan_type ||
-                  subscription.items.data?.[0]?.price?.nickname ||
-                  "pro",
+                plan_type: planType,
                 current_period_end: new Date(
                   subscription.current_period_end * 1000
                 ).toISOString(),
@@ -706,13 +740,71 @@ app.post(
                 .from("profiles")
                 .update({ role: "active" })
                 .eq("user_id", userId);
+
+              if (
+                metaMinutesCap != null &&
+                metaSmsCap != null &&
+                (String(metaMinutesCap).trim() !== "" ||
+                  String(metaSmsCap).trim() !== "")
+              ) {
+                const minutesCap = Number(metaMinutesCap);
+                const smsCap = Number(metaSmsCap);
+                if (
+                  Number.isFinite(minutesCap) &&
+                  Number.isFinite(smsCap) &&
+                  minutesCap >= 0 &&
+                  smsCap >= 0
+                ) {
+                  const { data: existingUsage } = await supabaseAdmin
+                    .from("usage_limits")
+                    .select("id, user_id")
+                    .eq("user_id", userId)
+                    .maybeSingle();
+                  if (existingUsage) {
+                    await supabaseAdmin
+                      .from("usage_limits")
+                      .update({
+                        call_cap_seconds: Math.round(minutesCap * 60),
+                        sms_cap: Math.round(smsCap),
+                        updated_at: new Date().toISOString(),
+                      })
+                      .eq("user_id", userId);
+                  } else {
+                    const periodEnd = new Date(
+                      subscription.current_period_end * 1000
+                    ).toISOString();
+                    const periodStart = new Date().toISOString();
+                    await supabaseAdmin.from("usage_limits").insert({
+                      user_id: userId,
+                      call_cap_seconds: Math.round(minutesCap * 60),
+                      sms_cap: Math.round(smsCap),
+                      grace_seconds: 600,
+                      call_used_seconds: 0,
+                      sms_used: 0,
+                      period_start: periodStart,
+                      period_end: periodEnd,
+                    });
+                  }
+                } else {
+                  console.error(
+                    "[stripe-webhook] invalid minutesCap/smsCap in metadata",
+                    { userId, metaMinutesCap, metaSmsCap, sessionId: session.id }
+                  );
+                }
+              }
+
               await auditLog({
                 userId,
                 action: "subscription_activated",
                 entity: "subscription",
                 entityId: subscription.id,
                 req,
-                metadata: { status: subscription.status },
+                metadata: {
+                  status: subscription.status,
+                  plan_type: planType,
+                  minutesCap: metaMinutesCap,
+                  smsCap: metaSmsCap,
+                },
               });
               await logEvent({
                 userId,
@@ -721,10 +813,7 @@ app.post(
                 metaData: {
                   transaction_id: session.id,
                   status: subscription.status,
-                  plan_type:
-                    session.metadata?.plan_type ||
-                    subscription.items.data?.[0]?.price?.nickname ||
-                    null,
+                  plan_type: planType,
                 },
               });
             }
@@ -998,6 +1087,32 @@ const planPriceId = (planTier) => {
   return STRIPE_PRICE_ID_PRO || STRIPE_PRICE_ID_HVAC;
 };
 
+/** Single source of truth: tier → Stripe price ID + minutes/SMS caps. Used by /admin/stripe-link and webhook metadata. */
+const PLAN_TIERS = ["pro", "elite", "scale"];
+const PLAN_CONFIG = {
+  pro: {
+    priceId: STRIPE_PRICE_ID_PRO || STRIPE_PRICE_ID_HVAC,
+    minutesCap: 300,
+    smsCap: 1000,
+  },
+  elite: {
+    priceId: STRIPE_PRICE_ID_ELITE || STRIPE_PRICE_ID_PLUMBING,
+    minutesCap: 800,
+    smsCap: 3000,
+  },
+  scale: {
+    priceId: STRIPE_PRICE_ID_SCALE,
+    minutesCap: 3000,
+    smsCap: 5000,
+  },
+};
+
+const isValidEmailFormat = (value) => {
+  const s = String(value || "").trim();
+  if (!s) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 256;
+};
+
 const DEFAULT_COMMISSION_RATE = 0.2;
 
 const getStartOfDayIso = () => {
@@ -1073,6 +1188,7 @@ const refreshUsagePeriod = async (usage, planType, periodEnd) => {
       rollover_seconds: rolloverSeconds,
       rollover_applied: true,
       limit_state: "ok",
+      hard_stop_active: false,
       period_start: new Date().toISOString(),
       period_end: nextEnd.toISOString(),
     })
@@ -2414,12 +2530,30 @@ const retellWebhookHandler = async (req, res) => {
           subscription?.plan_type,
           subscription?.current_period_end
         );
+        const capSeconds = usage.call_cap_seconds || 0;
+        const graceSeconds = usage.grace_seconds ?? 600;
+        const usedSeconds = usage.call_used_seconds || 0;
+        const overCapPlusGrace = usedSeconds >= capSeconds + graceSeconds;
+        const hardStop = usage.hard_stop_active === true || overCapPlusGrace;
         const { remaining } = getUsageRemaining(usage);
         if (
+          hardStop ||
           (usage.force_pause && !usage.force_resume) ||
           usage.limit_state === "paused" ||
           remaining <= 0
         ) {
+          if (hardStop) {
+            console.warn(
+              "[retell call_started] call blocked: over cap+grace or hard_stop_active",
+              {
+                user_id: agentRow.user_id,
+                call_used_seconds: usedSeconds,
+                call_cap_seconds: capSeconds,
+                grace_seconds: graceSeconds,
+                hard_stop_active: usage.hard_stop_active,
+              }
+            );
+          }
           await supabaseAdmin
             .from("usage_limits")
             .update({
@@ -2435,7 +2569,7 @@ const retellWebhookHandler = async (req, res) => {
             entity: "usage",
             entityId: agentId,
             req,
-            metadata: { call_id: callId },
+            metadata: { call_id: callId, hard_stop: hardStop },
           });
           return res.status(402).json({ error: "Usage limit reached" });
         }
@@ -2558,15 +2692,30 @@ const retellWebhookHandler = async (req, res) => {
         );
 
         const updatedUsed = (usage.call_used_seconds || 0) + durationSeconds;
+        const capSeconds = usage.call_cap_seconds || 0;
+        const graceSeconds = usage.grace_seconds ?? 600;
+        const hardStopThreshold = capSeconds + graceSeconds;
+        const overCapPlusGrace = updatedUsed > hardStopThreshold;
+        if (overCapPlusGrace) {
+          console.warn(
+            "[retell call_ended] user over cap+grace, setting hard_stop_active",
+            {
+              user_id: agentRow.user_id,
+              newCallUsed: updatedUsed,
+              call_cap_seconds: capSeconds,
+              grace_seconds: graceSeconds,
+            }
+          );
+        }
         const graceLimit =
-          usage.call_cap_seconds +
-          usage.grace_seconds +
-          usage.call_credit_seconds +
-          usage.rollover_seconds;
+          capSeconds +
+          graceSeconds +
+          (usage.call_credit_seconds || 0) +
+          (usage.rollover_seconds || 0);
         let nextState = usage.limit_state;
         if (updatedUsed >= graceLimit) {
           nextState = "paused";
-        } else if (updatedUsed >= usage.call_cap_seconds) {
+        } else if (updatedUsed >= capSeconds) {
           nextState = "pending";
         }
         const { total, remaining } = getUsageRemaining({
@@ -2593,6 +2742,7 @@ const retellWebhookHandler = async (req, res) => {
             limit_state: nextState,
             force_pause: shouldForcePause ? true : usage.force_pause,
             force_resume: shouldForcePause ? false : usage.force_resume,
+            hard_stop_active: overCapPlusGrace ? true : (usage.hard_stop_active ?? false),
             updated_at: new Date().toISOString(),
           })
           .eq("user_id", agentRow.user_id);
@@ -3490,6 +3640,9 @@ app.post(
 
       return res.json({ sent: true, sandbox: isSandbox, data: retellResponse });
     } catch (err) {
+      if (err.code === "USAGE_CAP_REACHED") {
+        return res.status(402).json({ error: "USAGE_CAP_REACHED" });
+      }
       let message =
         err.response?.data?.error || err.response?.data || err.message;
       if (typeof message === "string" && message.includes("<!DOCTYPE")) {
@@ -5346,22 +5499,69 @@ app.post(
   rateLimit({ keyPrefix: "admin-stripe-link", limit: 10, windowMs: 60_000 }),
   async (req, res) => {
     try {
-      const { planTier } = req.body || {};
-      const tier = String(planTier || "").toLowerCase();
-      if (!["pro", "elite", "scale"].includes(tier)) {
-        return res.status(400).json({ error: "Invalid planTier" });
+      const { email, planTier } = req.body || {};
+      const rawTier = String(planTier ?? "").trim().toLowerCase();
+      const rawEmail = String(email ?? "").trim();
+
+      if (!isValidEmailFormat(rawEmail)) {
+        return res.status(400).json({
+          error: "VALIDATION_ERROR",
+          message: "email is required and must be a valid email address.",
+        });
       }
-      const priceId = planPriceId(tier);
-      if (!priceId) {
-        return res.status(400).json({ error: "Stripe price not configured" });
+      if (!PLAN_TIERS.includes(rawTier)) {
+        return res.status(400).json({
+          error: "VALIDATION_ERROR",
+          message: "planTier must be one of: pro, elite, scale.",
+        });
       }
+
+      const user = await findAuthUserByEmail(rawEmail);
+      if (!user || !user.id) {
+        return res.status(404).json({ error: "USER_NOT_FOUND" });
+      }
+
+      await ensureUsageLimits({
+        userId: user.id,
+        planType: rawTier,
+      });
+
+      const config = PLAN_CONFIG[rawTier];
+      if (!config || !config.priceId) {
+        console.error("[admin/stripe-link] Missing Stripe price ID for tier", {
+          tier: rawTier,
+          email: rawEmail,
+          userId: user.id,
+        });
+        return res.status(500).json({
+          error: "CONFIG_ERROR",
+          message: "Stripe price not configured for this tier.",
+        });
+      }
+
+      const metadata = {
+        user_id: String(user.id),
+        email: String(user.email ?? rawEmail),
+        planTier: rawTier,
+        minutesCap: String(config.minutesCap),
+        smsCap: String(config.smsCap),
+      };
 
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
-        line_items: [{ price: priceId, quantity: 1 }],
+        line_items: [{ price: config.priceId, quantity: 1 }],
         success_url: `${FRONTEND_URL}/login?checkout=success`,
         cancel_url: `${FRONTEND_URL}/login?checkout=canceled`,
-        metadata: { plan_type: tier },
+        client_reference_id: user.id,
+        metadata,
+      });
+
+      console.info("[admin/stripe-link] session created", {
+        user_id: user.id,
+        email: metadata.email,
+        planTier: rawTier,
+        priceId: config.priceId,
+        sessionId: session.id,
       });
 
       await auditLog({
@@ -5372,12 +5572,26 @@ app.post(
         entity: "stripe_session",
         entityId: session.id,
         req,
-        metadata: { plan_type: tier },
+        metadata: {
+          target_user_id: user.id,
+          email: metadata.email,
+          planTier: rawTier,
+          priceId: config.priceId,
+          sessionId: session.id,
+        },
       });
 
-      return res.json({ ok: true, url: session.url });
+      return res.json({ url: session.url ?? null });
     } catch (err) {
-      return res.status(500).json({ error: err.message });
+      console.error("[admin/stripe-link] error", {
+        message: err.message,
+        name: err.name,
+      });
+      const message = err.message || "Internal server error";
+      return res.status(500).json({
+        error: "INTERNAL_ERROR",
+        message,
+      });
     }
   }
 );

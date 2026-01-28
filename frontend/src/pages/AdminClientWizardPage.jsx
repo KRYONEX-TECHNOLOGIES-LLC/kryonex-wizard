@@ -34,6 +34,7 @@ export default function AdminClientWizardPage() {
   const [signupError, setSignupError] = React.useState("");
   const [signupSuccess, setSignupSuccess] = React.useState(null);
 
+  const [stripeClientEmail, setStripeClientEmail] = React.useState("");
   const [stripeTier, setStripeTier] = React.useState("pro");
   const [stripeLoading, setStripeLoading] = React.useState(false);
   const [stripeError, setStripeError] = React.useState("");
@@ -102,12 +103,33 @@ export default function AdminClientWizardPage() {
   const handleStripeLink = async () => {
     setStripeError("");
     setStripeLink("");
+    const email = stripeClientEmail.trim();
+    if (!email) {
+      setStripeError("Client email is required.");
+      return;
+    }
+    if (!isValidEmail(email)) {
+      setStripeError("Enter a valid email address.");
+      return;
+    }
     setStripeLoading(true);
     try {
-      const response = await adminGenerateStripeLink({ planTier: stripeTier });
-      setStripeLink(response.data?.url || "");
+      const response = await adminGenerateStripeLink({
+        email,
+        planTier: stripeTier,
+      });
+      const url = response.data?.url ?? "";
+      setStripeLink(url);
     } catch (err) {
-      setStripeError(err.response?.data?.error || err.message);
+      const status = err.response?.status;
+      const body = err.response?.data ?? {};
+      const msg =
+        body.message ?? body.error ?? err.message ?? "Request failed.";
+      if (status === 404 && body.error === "USER_NOT_FOUND") {
+        setStripeError(body.message ?? "No user found for that email.");
+      } else {
+        setStripeError(msg);
+      }
     } finally {
       setStripeLoading(false);
     }
@@ -317,39 +339,62 @@ export default function AdminClientWizardPage() {
                     Tier Picker + Stripe Link
                   </div>
                   <div className="text-xs text-white/50">
-                    Generate a Stripe checkout link for a tier.
+                    Generate a Stripe checkout link for a client by email and tier.
                   </div>
                 </div>
                 <label className="space-y-2">
-                  <span className="text-sm text-white/70">Tier</span>
+                  <span className="text-sm text-white/70">
+                    Client Email <span className="text-neon-pink">*</span>
+                  </span>
+                  <input
+                    className="input-field w-full"
+                    type="email"
+                    value={stripeClientEmail}
+                    onChange={(e) => setStripeClientEmail(e.target.value)}
+                    placeholder="client@domain.com"
+                    required
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-sm text-white/70">
+                    Tier <span className="text-neon-pink">*</span>
+                  </span>
                   <select
                     className="input-field w-full"
                     value={stripeTier}
                     onChange={(event) => setStripeTier(event.target.value)}
                   >
-                    <option value="pro">PRO — $249/mo</option>
-                    <option value="elite">ELITE — $497/mo</option>
-                    <option value="scale">SCALE — $997/mo</option>
+                    <option value="pro">Pro</option>
+                    <option value="elite">Elite</option>
+                    <option value="scale">Scale</option>
                   </select>
                 </label>
                 {stripeError ? (
-                  <div className="text-neon-pink text-sm">{stripeError}</div>
+                  <div className="text-neon-pink text-sm" role="alert">
+                    {stripeError}
+                  </div>
                 ) : null}
                 {stripeLink ? (
                   <div className="rounded-2xl border border-white/10 bg-black/40 p-3 space-y-2">
-                    <div className="text-xs uppercase tracking-[0.3em] text-white/40">
-                      Checkout Link
+                    <span className="text-xs uppercase tracking-[0.3em] text-white/40">
+                      Checkout URL
+                    </span>
+                    <div className="flex gap-2">
+                      <input
+                        readOnly
+                        type="url"
+                        value={stripeLink}
+                        className="input-field flex-1 text-sm font-mono truncate"
+                        aria-label="Stripe checkout URL"
+                      />
+                      <button
+                        className="button-primary shrink-0"
+                        type="button"
+                        onClick={() => handleCopy(stripeLink)}
+                      >
+                        Copy
+                      </button>
                     </div>
-                    <div className="text-xs text-white/70 break-all">
-                      {stripeLink}
-                    </div>
-                    <button
-                      className="button-primary w-full"
-                      type="button"
-                      onClick={() => handleCopy(stripeLink)}
-                    >
-                      Copy Link
-                    </button>
                     {copyNotice ? (
                       <div className="text-xs text-neon-green">{copyNotice}</div>
                     ) : null}

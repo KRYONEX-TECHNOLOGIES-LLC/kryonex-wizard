@@ -124,13 +124,14 @@ Body:
 
 ### Tool 3 — Tier Picker + Stripe Link
 
-Generate a Stripe checkout link for a selected tier.
+Generate a Stripe checkout link for a specific client and tier.
 
 **Fields**
 
-| Field | Required | Notes |
-|-------|----------|-------|
-| Tier  | Yes      | Pro / Elite / Scale |
+| Field         | Required | Notes                    |
+|---------------|----------|--------------------------|
+| Client Email  | Yes      | Must exist in auth.users |
+| Tier          | Yes      | Pro / Elite / Scale      |
 
 **Button**
 
@@ -138,8 +139,10 @@ Generate a Stripe checkout link for a selected tier.
 
 **Behavior**
 
-- Creates a Stripe checkout link using existing price IDs
-- Returns a copyable URL for manual sending
+- Validates email and tier; looks up user by email (case-insensitive)
+- If no user found: 404 `USER_NOT_FOUND`
+- Creates a Stripe Checkout Session with rich metadata (user_id, email, planTier, minutesCap, smsCap)
+- Returns `{ url }`; show in read-only input with Copy button
 
 **API**
 
@@ -148,8 +151,13 @@ Generate a Stripe checkout link for a selected tier.
 Body:
 
 ```json
-{ "planTier": "pro" }
+{
+  "email": "client@example.com",
+  "planTier": "pro"
+}
 ```
+
+Response: `{ "url": "https://checkout.stripe.com/..." }`. Errors: 400 validation, 404 USER_NOT_FOUND, 500 config/ internal.
 
 ---
 
