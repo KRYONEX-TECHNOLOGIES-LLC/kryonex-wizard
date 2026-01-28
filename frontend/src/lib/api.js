@@ -49,6 +49,10 @@ export const createClientDeployment = (data) =>
   api.post("/admin/create-client", data);
 export const adminQuickOnboard = (data) =>
   api.post("/admin/quick-onboard", data);
+export const adminCreateAccount = (data) =>
+  api.post("/admin/create-account", data);
+export const adminGenerateStripeLink = (data) =>
+  api.post("/admin/stripe-link", data);
 export const acceptConsent = () => api.post("/consent");
 export const getUsageStatus = () => api.get("/usage/status");
 export const getCalcomStatus = () => api.get("/api/calcom/status");
