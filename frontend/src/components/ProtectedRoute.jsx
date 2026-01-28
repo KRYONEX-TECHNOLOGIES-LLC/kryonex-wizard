@@ -32,17 +32,17 @@ export default function ProtectedRoute({ children }) {
     if (!session) return;
     if (!window.localStorage.getItem("kryonex_session_ok")) {
       supabase.auth.signOut();
-      navigate("/login", { replace: true });
+      navigate("/login?reason=session", { replace: true });
       return;
     }
     let timeoutId = null;
-    const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+    const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
     const resetTimer = () => {
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(async () => {
         await supabase.auth.signOut();
-        navigate("/login", { replace: true });
+        navigate("/login?reason=idle", { replace: true });
       }, IDLE_TIMEOUT_MS);
     };
 

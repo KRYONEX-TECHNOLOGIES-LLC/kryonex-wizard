@@ -63,6 +63,10 @@ export const adminQuickOnboard = (data) =>
   api.post("/admin/quick-onboard", data);
 export const adminCreateAccount = (data) =>
   api.post("/admin/create-account", data);
+export const adminSaveOnboardingIdentity = (data) =>
+  api.post("/admin/onboarding/identity", data);
+export const adminAcceptConsent = (data) =>
+  api.post("/admin/consent", data);
 export const adminGenerateStripeLink = (data) =>
   api.post("/admin/stripe-link", data);
 export const logImpersonationStart = (userId) =>

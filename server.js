@@ -5773,6 +5773,98 @@ app.post(
 );
 
 app.post(
+  "/admin/onboarding/identity",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-onboard-identity", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { for_user_id, businessName, areaCode } = req.body || {};
+      const targetUserId = String(for_user_id ?? "").trim();
+      const cleanName = String(businessName ?? "").trim();
+      const cleanArea = String(areaCode ?? "").trim();
+      if (!targetUserId) {
+        return res.status(400).json({ error: "for_user_id is required" });
+      }
+      if (!cleanName || cleanName.length < 2 || cleanName.length > 80) {
+        return res.status(400).json({ error: "businessName is invalid" });
+      }
+      if (cleanArea && !/^\d{3}$/.test(cleanArea)) {
+        return res.status(400).json({ error: "areaCode must be 3 digits" });
+      }
+
+      await supabaseAdmin.from("profiles").upsert({
+        user_id: targetUserId,
+        business_name: cleanName,
+        area_code: cleanArea || null,
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_onboarding_identity",
+        actionType: "admin_onboarding_identity",
+        entity: "profile",
+        entityId: targetUserId,
+        req,
+        metadata: { target_user_id: targetUserId },
+      });
+
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/admin/consent",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-consent", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { for_user_id } = req.body || {};
+      const targetUserId = String(for_user_id ?? "").trim();
+      if (!targetUserId) {
+        return res.status(400).json({ error: "for_user_id is required" });
+      }
+
+      await supabaseAdmin.from("consent_logs").insert({
+        user_id: targetUserId,
+        version: currentConsentVersion,
+        ip:
+          req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+          req.socket?.remoteAddress ||
+          null,
+        user_agent: req.headers["user-agent"] || null,
+      });
+
+      await supabaseAdmin.from("profiles").upsert({
+        user_id: targetUserId,
+        consent_accepted_at: new Date().toISOString(),
+        consent_version: currentConsentVersion,
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_consent",
+        actionType: "admin_consent",
+        entity: "consent",
+        entityId: targetUserId,
+        req,
+        metadata: { target_user_id: targetUserId, version: currentConsentVersion },
+      });
+
+      return res.json({ ok: true, version: currentConsentVersion });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
   "/admin/stripe-link",
   requireAuth,
   requireAdmin,

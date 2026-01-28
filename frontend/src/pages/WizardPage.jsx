@@ -18,6 +18,8 @@ import {
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   acceptConsent,
+  adminAcceptConsent,
+  adminSaveOnboardingIdentity,
   createCheckoutSession,
   deployAgent,
   getSubscriptionStatus,
@@ -122,6 +124,8 @@ const defaultFormState = {
 
 const WIZARD_FORM_KEY = "wizard.form";
 const WIZARD_STEP_KEY = "wizard.step";
+const WIZARD_EMBEDDED_FORM_KEY = "wizard.embedded.form";
+const WIZARD_EMBEDDED_STEP_KEY = "wizard.embedded.step";
 
 const terminalLines = [
   "Securing uplink...",
@@ -134,21 +138,24 @@ const terminalLines = [
 ];
 
 
-export default function WizardPage() {
+export default function WizardPage({ embeddedMode }) {
   const stepMeta = LEGACY_STEPS_ENABLED ? FULL_STEP_META : MODERN_STEP_META;
   const maxStep = stepMeta.length;
+  const formKey = embeddedMode ? WIZARD_EMBEDDED_FORM_KEY : WIZARD_FORM_KEY;
+  const stepKey = embeddedMode ? WIZARD_EMBEDDED_STEP_KEY : WIZARD_STEP_KEY;
   const getInitialStep = () => {
-    const maxStep = LEGACY_STEPS_ENABLED ? FULL_STEP_META.length : 2;
-    const stored = Number(getSavedState(WIZARD_STEP_KEY));
-    if (Number.isFinite(stored) && stored >= 1 && stored <= maxStep) return stored;
-    const fallback = Number(window.localStorage.getItem("kryonex_wizard_step"));
-    if (Number.isFinite(fallback) && fallback >= 1 && fallback <= maxStep)
+    const maxStepVal = LEGACY_STEPS_ENABLED ? FULL_STEP_META.length : 2;
+    const stored = Number(getSavedState(stepKey));
+    if (Number.isFinite(stored) && stored >= 1 && stored <= maxStepVal) return stored;
+    const fallbackKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+    const fallback = Number(window.localStorage.getItem(fallbackKey));
+    if (Number.isFinite(fallback) && fallback >= 1 && fallback <= maxStepVal)
       return fallback;
     return 1;
   };
   const [step, setStep] = useState(getInitialStep);
   const navigate = useNavigate();
-  const [form, setForm] = useState(() => getSavedState(WIZARD_FORM_KEY) || defaultFormState);
+  const [form, setForm] = useState(() => getSavedState(formKey) || defaultFormState);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployError, setDeployError] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -200,23 +207,25 @@ export default function WizardPage() {
   const persistStep = (value) => {
     const next = Math.min(Math.max(1, value), maxStep);
     setStep(next);
-    window.localStorage.setItem("kryonex_wizard_step", next);
-    saveState(WIZARD_STEP_KEY, next);
+    const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+    window.localStorage.setItem(lsKey, next);
+    saveState(stepKey, next);
   };
 
   const updateStep = (updater) => {
     setStep((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       const clamped = Math.min(Math.max(1, next), maxStep);
-      window.localStorage.setItem("kryonex_wizard_step", clamped);
-      saveState(WIZARD_STEP_KEY, clamped);
+      const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+      window.localStorage.setItem(lsKey, clamped);
+      saveState(stepKey, clamped);
       return clamped;
     });
   };
 
   const persistForm = (next) => {
     setForm(next);
-    saveState(WIZARD_FORM_KEY, next);
+    saveState(formKey, next);
   };
 
   const safeStep = Math.min(Math.max(1, step), maxStep);
@@ -234,7 +243,7 @@ export default function WizardPage() {
   const updateField = (field, value) => {
     setForm((prev) => {
       const next = { ...prev, [field]: value };
-      saveState(WIZARD_FORM_KEY, next);
+      saveState(formKey, next);
       return next;
     });
   };
@@ -272,9 +281,16 @@ export default function WizardPage() {
       return;
     }
     try {
-      const res = await acceptConsent();
-      if (res.data?.ok) {
-        setConsentAccepted(true);
+      if (embeddedMode?.targetUserId) {
+        const res = await adminAcceptConsent({ for_user_id: embeddedMode.targetUserId });
+        if (res.data?.ok) {
+          setConsentAccepted(true);
+        }
+      } else {
+        const res = await acceptConsent();
+        if (res.data?.ok) {
+          setConsentAccepted(true);
+        }
       }
     } catch (err) {
       setConsentError(err.response?.data?.error || "Consent failed");
@@ -318,10 +334,12 @@ export default function WizardPage() {
   }, [searchParams]);
 
   useEffect(() => {
-    window.localStorage.setItem("kryonex_wizard_step", String(step));
-  }, [step]);
+    const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+    window.localStorage.setItem(lsKey, String(step));
+  }, [step, embeddedMode]);
 
   useEffect(() => {
+    if (embeddedMode) return;
     let mounted = true;
     const hydrateSubscription = async () => {
       try {
@@ -357,9 +375,10 @@ export default function WizardPage() {
     return () => {
       mounted = false;
     };
-  }, [navigate]);
+  }, [navigate, embeddedMode]);
 
   useEffect(() => {
+    if (embeddedMode) return;
     let mounted = true;
     const loadConsent = async () => {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -381,7 +400,7 @@ export default function WizardPage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [embeddedMode]);
 
   useEffect(() => {
     const updateMode = () => {
@@ -395,6 +414,11 @@ export default function WizardPage() {
   }, []);
 
   useEffect(() => {
+    if (embeddedMode) {
+      setWizardLocked(false);
+      setWizardLockReason("");
+      return;
+    }
     let mounted = true;
     const checkWizardAccess = async () => {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -420,7 +444,7 @@ export default function WizardPage() {
         setWizardLocked(false);
         setWizardLockReason("");
         if (!isOnboarded) {
-          const savedForm = getSavedState(WIZARD_FORM_KEY) || {};
+          const savedForm = getSavedState(formKey) || {};
           const hasWizardProgress = Boolean(
             savedForm.nameInput || savedForm.areaCodeInput
           );
@@ -435,7 +459,7 @@ export default function WizardPage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [embeddedMode, formKey]);
 
   const generateScheduleSummary = () => {
     let summary = `Standard operating hours are Monday through Friday, ${form.weekdayOpen} to ${form.weekdayClose}.`;
@@ -527,7 +551,9 @@ export default function WizardPage() {
       });
       setPhoneNumber(response?.data?.phone_number || "");
       persistStep(6);
-      navigate("/numbers?new=1");
+      if (!embeddedMode) {
+        navigate("/numbers?new=1");
+      }
     } catch (error) {
       const status = error.response?.status;
       const serverError = error.response?.data?.error;
@@ -577,10 +603,18 @@ export default function WizardPage() {
     setCheckoutError("");
     setSaving(true);
     try {
-      await saveOnboardingIdentity({
-        businessName: form.nameInput,
-        areaCode: form.areaCodeInput,
-      });
+      if (embeddedMode?.targetUserId) {
+        await adminSaveOnboardingIdentity({
+          for_user_id: embeddedMode.targetUserId,
+          businessName: form.nameInput,
+          areaCode: form.areaCodeInput,
+        });
+      } else {
+        await saveOnboardingIdentity({
+          businessName: form.nameInput,
+          areaCode: form.areaCodeInput,
+        });
+      }
       persistStep(2);
     } catch (err) {
       setSaveError(err.response?.data?.error || err.message);
@@ -612,15 +646,17 @@ export default function WizardPage() {
   };
 
   const resetWizardFlow = () => {
-    clearState(WIZARD_FORM_KEY);
-    clearState(WIZARD_STEP_KEY);
-    window.localStorage.removeItem("kryonex_wizard_step");
+    clearState(formKey);
+    clearState(stepKey);
+    window.localStorage.removeItem(embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step");
     setPhoneNumber("");
     setDeployError("");
     setConfirmOpen(false);
     persistForm(defaultFormState);
     persistStep(1);
-    navigate("/wizard", { replace: true });
+    if (!embeddedMode) {
+      navigate("/wizard", { replace: true });
+    }
   };
 
   if (wizardLocked) {
@@ -665,16 +701,21 @@ export default function WizardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30">
-      <TopMenu />
+    <div className={`${embeddedMode ? "min-h-0" : "min-h-screen"} bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30`}>
+      {!embeddedMode && <TopMenu />}
       <div
         className="absolute inset-0 bg-grid-lines opacity-40"
         style={{ backgroundSize: "48px 48px" }}
       />
-      <div className="absolute -top-28 -right-28 h-72 w-72 rounded-full bg-neon-purple/20 blur-[120px]" />
-      <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[140px]" />
+      {!embeddedMode && (
+        <>
+          <div className="absolute -top-28 -right-28 h-72 w-72 rounded-full bg-neon-purple/20 blur-[120px]" />
+          <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[140px]" />
+        </>
+      )}
 
-      <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-10">
+      <div className={`relative z-10 mx-auto flex ${embeddedMode ? "min-h-0 flex-1 flex-col px-4 py-4" : "min-h-screen max-w-6xl flex-col px-6 py-10"}`}>
+        {!embeddedMode && (
         <header className="mb-10 flex flex-wrap items-center justify-between gap-6">
           <div>
             <p className="text-sm uppercase tracking-[0.4em] text-neon-cyan/70">
@@ -704,8 +745,9 @@ export default function WizardPage() {
             </div>
           </div>
         </header>
+        )}
 
-        <div className="glass-panel relative flex-1 rounded-[28px] p-8 sm:p-10 border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl">
+        <div className={`glass-panel relative flex-1 rounded-[28px] border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl ${embeddedMode ? "p-4 sm:p-5" : "p-8 sm:p-10"}`}>
           <div className="mb-10 flex flex-wrap items-center gap-3 overflow-x-auto pb-2 scrollbar-hide">
             {stepMeta.map((meta, index) => {
               const isActive = safeStep === index + 1;
@@ -855,14 +897,20 @@ export default function WizardPage() {
                   <div>
                     <h2 className="text-3xl font-semibold">Plan Selection</h2>
                     <p className="mt-2 text-white/60">
-                      Choose the deployment tier to activate and proceed to
-                      Stripe checkout.
+                      {embeddedMode
+                        ? "Choose the tier for this client. Use the Stripe Link Generator to send them a checkout link."
+                        : "Choose the deployment tier to activate and proceed to Stripe checkout."}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/50">
                     Pricing Updated
                   </div>
                 </div>
+                {embeddedMode ? (
+                  <div className="rounded-2xl border border-neon-cyan/30 bg-neon-cyan/5 px-4 py-3 text-sm text-neon-cyan/90">
+                    Client will pay via the Stripe Link Generator on the right. Select a plan below to choose their tier, then generate the link.
+                  </div>
+                ) : null}
 
                 <div className="rounded-2xl border border-white/10 bg-black/40 px-6 py-5 text-center">
                   <p
@@ -990,12 +1038,16 @@ export default function WizardPage() {
                           type="button"
                           onClick={async () => {
                             setPlanTier(tier.id);
-                            await handleStripeCheckout(tier.id);
+                            if (!embeddedMode) {
+                              await handleStripeCheckout(tier.id);
+                            }
                           }}
-                          disabled={checkoutLoading}
+                          disabled={embeddedMode ? false : checkoutLoading}
                           className="glow-button mt-8 w-full"
                         >
-                          {checkoutLoading && planTier === tier.id
+                          {embeddedMode
+                            ? "Select Plan (use Stripe link below)"
+                            : checkoutLoading && planTier === tier.id
                             ? "OPENING CHECKOUT..."
                             : "Select Plan"}
                         </button>
