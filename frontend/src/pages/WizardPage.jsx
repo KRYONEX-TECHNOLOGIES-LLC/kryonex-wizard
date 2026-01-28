@@ -707,15 +707,10 @@ export default function WizardPage({ embeddedMode }) {
         className="absolute inset-0 bg-grid-lines opacity-40"
         style={{ backgroundSize: "48px 48px" }}
       />
-      {!embeddedMode && (
-        <>
-          <div className="absolute -top-28 -right-28 h-72 w-72 rounded-full bg-neon-purple/20 blur-[120px]" />
-          <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[140px]" />
-        </>
-      )}
+      <div className="absolute -top-28 -right-28 h-72 w-72 rounded-full bg-neon-purple/20 blur-[120px]" />
+      <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[140px]" />
 
       <div className={`relative z-10 mx-auto flex ${embeddedMode ? "min-h-0 flex-1 flex-col px-4 py-4" : "min-h-screen max-w-6xl flex-col px-6 py-10"}`}>
-        {!embeddedMode && (
         <header className="mb-10 flex flex-wrap items-center justify-between gap-6">
           <div>
             <p className="text-sm uppercase tracking-[0.4em] text-neon-cyan/70">
@@ -745,7 +740,6 @@ export default function WizardPage({ embeddedMode }) {
             </div>
           </div>
         </header>
-        )}
 
         <div className={`glass-panel relative flex-1 rounded-[28px] border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl ${embeddedMode ? "p-4 sm:p-5" : "p-8 sm:p-10"}`}>
           <div className="mb-10 flex flex-wrap items-center gap-3 overflow-x-auto pb-2 scrollbar-hide">

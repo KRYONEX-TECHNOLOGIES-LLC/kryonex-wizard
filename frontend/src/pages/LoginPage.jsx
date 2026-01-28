@@ -5,7 +5,7 @@ import BackgroundGrid from "../components/BackgroundGrid.jsx";
 import { supabase } from "../lib/supabase";
 import { autoGrantAdmin, logBlackBoxEvent, verifyAdminCode } from "../lib/api";
 
-export default function LoginPage() {
+export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [email, setEmail] = React.useState("");
@@ -14,7 +14,7 @@ export default function LoginPage() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
-  const [checkingSession, setCheckingSession] = React.useState(true);
+  const [checkingSession, setCheckingSession] = React.useState(!embeddedMode);
   const [adminCode, setAdminCode] = React.useState("");
 
   React.useEffect(() => {
@@ -29,6 +29,7 @@ export default function LoginPage() {
   }, [searchParams, setSearchParams]);
 
   React.useEffect(() => {
+    if (embeddedMode) return;
     let mounted = true;
     const bootstrap = async () => {
       const { data } = await supabase.auth.getSession();
@@ -68,7 +69,7 @@ export default function LoginPage() {
     return () => {
       mounted = false;
     };
-  }, [navigate]);
+  }, [navigate, embeddedMode]);
 
   React.useEffect(() => {
     const handleKey = (event) => {
@@ -90,6 +91,28 @@ export default function LoginPage() {
     event.preventDefault();
     setError("");
     setNotice("");
+    if (embeddedMode && onEmbeddedSubmit) {
+      setLoading(true);
+      try {
+        await onEmbeddedSubmit({ email: email.trim(), password, mode });
+      } catch (err) {
+        const message = err.response?.data?.error ?? err.message ?? "Request failed";
+        if (
+          mode === "signup" &&
+          /already exists|already registered|user already/i.test(message)
+        ) {
+          setNotice("Account exists. Switch to Sign In.");
+          setMode("login");
+        } else if (mode === "login" && /not found|user not found/i.test(message)) {
+          setError("No account found for this email. Use Create to add a new client.");
+        } else {
+          setError(message);
+        }
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     setLoading(true);
     const authResult =
       mode === "signup"
@@ -192,15 +215,15 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", position: "relative" }}>
+    <div style={{ minHeight: embeddedMode ? "auto" : "100vh", position: "relative" }}>
       <BackgroundGrid />
       <div
         style={{
           position: "relative",
           zIndex: 1,
           maxWidth: "420px",
-          margin: "0 auto",
-          padding: "7rem 1.5rem",
+          margin: embeddedMode ? "0" : "0 auto",
+          padding: embeddedMode ? "1.5rem" : "7rem 1.5rem",
         }}
       >
         {checkingSession ? (

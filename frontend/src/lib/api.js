@@ -67,6 +67,8 @@ export const adminSaveOnboardingIdentity = (data) =>
   api.post("/admin/onboarding/identity", data);
 export const adminAcceptConsent = (data) =>
   api.post("/admin/consent", data);
+export const adminGetUserByEmail = (email) =>
+  api.get("/admin/user-by-email", { params: { email } });
 export const adminGenerateStripeLink = (data) =>
   api.post("/admin/stripe-link", data);
 export const logImpersonationStart = (userId) =>
