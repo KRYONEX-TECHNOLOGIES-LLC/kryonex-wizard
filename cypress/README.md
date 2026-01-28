@@ -4,7 +4,8 @@ This folder contains the Cypress regression suite for Kryonex.
 
 ## Specs
 - `e2e/smoke.spec.js`: high-level smoke for core pages.
-- `e2e/wizard-matrix.spec.js`: wizard permutations and persistence checks.
+- `e2e/wizard-matrix.spec.js`: wizard permutations and persistence checks (Identity → Plan Selection → Stripe flow).
+- `e2e/critical.spec.js`: critical-path checks.
 
 ## Run
 From repo root:
