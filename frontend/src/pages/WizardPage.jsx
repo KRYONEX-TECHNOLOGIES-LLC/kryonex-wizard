@@ -850,43 +850,86 @@ export default function WizardPage() {
                   </div>
                 </div>
 
+                <div className="rounded-2xl border border-white/10 bg-black/40 px-6 py-5 text-center">
+                  <p
+                    className="text-xl sm:text-2xl font-bold uppercase tracking-[0.25em] text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan via-white to-neon-purple"
+                    style={{ letterSpacing: "0.2em" }}
+                  >
+                    Turn your business into a powerhouse. Now.
+                  </p>
+                  <p className="mt-2 text-sm uppercase tracking-[0.3em] text-white/50">
+                    Level up. Full throttle.
+                  </p>
+                </div>
+
                 <div className="grid gap-6 lg:grid-cols-3">
                   {[
                     {
                       id: "pro",
                       title: "PRO",
                       price: "$249/mo",
-                      description:
-                        "Core automation, smart routing, and business-grade availability.",
+                      minutes: 500,
+                      texts: 800,
+                      includesFrom: null,
+                      includes: [
+                        "Auto calendar booking",
+                        "Call recordings & auto SMS follow-up",
+                        "SMS reminders & transfer routing",
+                        "Core automation, smart routing",
+                      ],
                       accentClass: "border-neon-cyan/60",
+                      recommended: false,
                     },
                     {
                       id: "elite",
                       title: "ELITE",
-                      price: "$399/mo",
-                      description:
-                        "Multi-location scale, priority optimization, and VIP support.",
+                      price: "$497/mo",
+                      minutes: 1200,
+                      texts: 2000,
+                      includesFrom: "PRO",
+                      extras: [
+                        "1,200 min / 2,000 texts per month",
+                        "Auto calendar booking",
+                        "Multi-location & VIP onboarding",
+                        "ETA texts & live tracking link",
+                        "After-hours emergency mode",
+                      ],
                       accentClass: "border-neon-purple/60",
+                      recommended: true,
                     },
                     {
                       id: "scale",
                       title: "SCALE",
-                      price: "$799/mo",
-                      description:
-                        "High-volume orchestration, enterprise workflows, and fleet readiness.",
+                      price: "$997/mo",
+                      minutes: 3000,
+                      texts: 5000,
+                      includesFrom: "ELITE",
+                      extras: [
+                        "3,000 min / 5,000 texts per month",
+                        "Auto calendar booking",
+                        "Enterprise volume & fleet readiness",
+                        "Dedicated admin & white-glove setup",
+                        "High-volume orchestration",
+                      ],
                       accentClass: "border-neon-green/60",
+                      recommended: false,
                     },
                   ].map((tier) => {
                     const isSelected = planTier === tier.id;
                     return (
                       <div
                         key={tier.id}
-                        className={`group relative flex h-full flex-col justify-between rounded-3xl border bg-black/40 p-8 transition-all duration-300 ${
+                        className={`group relative flex h-full flex-col justify-between rounded-3xl border bg-black/40 p-8 pt-10 transition-all duration-300 ${
                           isSelected
                             ? `${tier.accentClass} shadow-glow`
                             : "border-white/10 hover:border-white/30"
                         }`}
                       >
+                        {tier.recommended ? (
+                          <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-neon-purple/50 bg-neon-purple/20 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-neon-purple">
+                            Recommended
+                          </div>
+                        ) : null}
                         <div>
                           <div className="text-xs uppercase tracking-[0.35em] text-white/40">
                             {tier.title}
@@ -894,8 +937,39 @@ export default function WizardPage() {
                           <div className="mt-4 text-4xl font-semibold text-white">
                             {tier.price}
                           </div>
-                          <p className="mt-4 text-sm text-white/60">
-                            {tier.description}
+                          <div className="mt-3 font-semibold text-white/90">
+                            <span>{tier.minutes.toLocaleString()} min</span>
+                            <span className="text-white/50"> / </span>
+                            <span>{tier.texts.toLocaleString()} texts</span>
+                            <span className="text-sm font-normal text-white/50"> per month</span>
+                          </div>
+                          {tier.includesFrom ? (
+                            <p className="mt-3 text-sm font-medium text-white/80">
+                              Everything in {tier.includesFrom}, plus:
+                            </p>
+                          ) : null}
+                          {tier.includes ? (
+                            <ul className="mt-2 space-y-1 text-sm text-white/60">
+                              {tier.includes.map((item, i) => (
+                                <li key={i} className="flex items-start gap-2">
+                                  <span className="text-neon-cyan mt-0.5">•</span>
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          {tier.extras ? (
+                            <ul className="mt-2 space-y-1 text-sm text-white/60">
+                              {tier.extras.map((item, i) => (
+                                <li key={i} className="flex items-start gap-2">
+                                  <span className={`mt-0.5 ${tier.id === "elite" ? "text-neon-purple" : "text-neon-green"}`}>•</span>
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          <p className="mt-4 text-xs font-medium text-white/50">
+                            Support included — assistance when you need it.
                           </p>
                         </div>
                         <button
@@ -1459,8 +1533,8 @@ export default function WizardPage() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {[
                         { id: "pro", label: "PRO — $249/mo", desc: "Core automation tier" },
-                        { id: "elite", label: "ELITE — $399/mo", desc: "Multi‑location + VIP" },
-                        { id: "scale", label: "SCALE — $799/mo", desc: "Enterprise scale tier" },
+                        { id: "elite", label: "ELITE — $497/mo", desc: "Multi‑location + VIP" },
+                        { id: "scale", label: "SCALE — $997/mo", desc: "Enterprise scale tier" },
                       ].map((tier) => (
                         <button
                           key={tier.id}
@@ -1489,9 +1563,9 @@ export default function WizardPage() {
                       </span>
                       <span className="font-mono text-neon-cyan">
                         {planTier === "elite"
-                          ? "$399/mo"
+                          ? "$497/mo"
                           : planTier === "scale"
-                          ? "$799/mo"
+                          ? "$997/mo"
                           : "$249/mo"}
                       </span>
                     </div>

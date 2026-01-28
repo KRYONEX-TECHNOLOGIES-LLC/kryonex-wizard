@@ -17,13 +17,14 @@ Required keys (high-level):
 - Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, price IDs
 - Retell: `RETELL_API_KEY`, `RETELL_LLM_ID_*`, `RETELL_DEMO_AGENT_ID`
 - URLs: `FRONTEND_URL`, `APP_URL`, `SERVER_URL`
+- Admin: `ADMIN_EMAIL` (comma-separated for multiple)
 
 ## Auth Model
 - Most routes require a Supabase JWT in `Authorization: Bearer <token>`.
-- Admin routes validate an admin profile and/or access code.
+- Admin routes use `requireAdmin`: user is allowed if `profiles.role === 'admin'` **or** `req.user.email` matches one of the emails in `ADMIN_EMAIL`. Same logic secures admin-only endpoints.
 
 ## Core Endpoints (selection)
-- Wizard + onboarding: `POST /deploy-agent`, `POST /consent`
+- Wizard + onboarding: `POST /onboarding/identity`, `POST /deploy-agent`, `POST /consent`
 - Dashboard + usage: `GET /api/dashboard/stats`, `GET /usage/status`
 - Leads: `GET /leads`, `GET /admin/leads`, `POST /leads/update-status`
 - Messaging: `GET /messages`, `POST /send-sms`, `POST /webhooks/sms-inbound`
@@ -31,13 +32,14 @@ Required keys (high-level):
 - Tracking: `POST /tracking/create`, `POST /tracking/update`, `GET /tracking/session/:token`
 - Billing: `POST /create-checkout-session`, `POST /create-portal-session`,
   `POST /create-topup-session`, `POST /verify-checkout-session`
-- Admin ops: `GET /admin/users`, `GET /admin/users/:id`, `GET /admin/metrics`,
+- Admin ops: `GET /admin/users`, `GET /admin/users/:userId`, `GET /admin/metrics`,
   `GET /admin/health`, `GET /admin/timeseries`, `POST /admin/sync-stripe`
+- **Admin quick onboard:** `POST /admin/quick-onboard` — admin-only. Body: `{ businessName, areaCode, email }`. Creates/finds user by email, saves business_name + area_code + email to profiles, sets Core tier, initializes usage_limits, creates Retell agent, sets `admin_onboarded`. No Stripe. See `docs/ADMIN_WORKFLOW.md`.
 - Call center: `GET /admin/dialer-queue`, `POST /admin/dialer-queue`
 - Webhooks: `POST /retell-webhook` (and `/api/retell/webhook`)
 
 ## Rate Limits
-Appointment create/update routes use an in-memory rate limiter (30/min).
+Appointment create/update routes use an in-memory rate limiter (30/min). Admin quick-onboard is rate-limited (e.g. 6/min).
 
 ## Logging
 Morgan logs requests to stdout; errors return JSON `{ error }`.

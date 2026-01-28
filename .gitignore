@@ -2,6 +2,10 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 .env
+frontend/.env
+**/.env
+*.env.local
+.env.*
 database.sqlite
 .restore_tmp/
 .DS_Store

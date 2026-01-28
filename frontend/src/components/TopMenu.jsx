@@ -104,14 +104,14 @@ export default function TopMenu() {
       items.push({ to: "/wizard", label: "Wizard" });
     }
   } else {
+    if (canAccessAdmin) {
+      items.push({ to: "/admin", label: "Access Admin" });
+    }
     items.push({ to: "/dashboard", label: "Dashboard" });
-    if ((!onboardingComplete || viewMode === "user") && (!wizardMaintenance || isAdmin)) {
+    if ((!onboardingComplete || viewMode === "user") && (!wizardMaintenance || canAccessAdmin)) {
       items.push({ to: "/wizard", label: "Wizard" });
     }
     items.push({ to: "/billing", label: "Billing" });
-    if (canAccessAdmin) {
-      items.push({ to: "/admin", label: "Admin Command" });
-    }
   }
 
   const badgeLabel =
@@ -229,7 +229,7 @@ export default function TopMenu() {
                     style={{ marginTop: "0.75rem" }}
                     onClick={handleSwitchToAdmin}
                   >
-                    Switch to Admin View
+                    Access Admin
                   </button>
                 ) : null}
               </div>

@@ -20,7 +20,7 @@ export const TIERS = [
     title: "ELITE",
     description: "Multi-Location Support, VIP Onboarding, and SLA Guarantees.",
     accent: "#7c3aed",
-    price: "$399/mo",
+    price: "$497/mo",
     minutes: 1200,
   },
   {
@@ -28,7 +28,7 @@ export const TIERS = [
     title: "KRYONEX SCALE",
     description: "Enterprise Minutes, Dedicated Admin, and White-Glove Setup.",
     accent: "#ec4899",
-    price: "$799/mo",
+    price: "$997/mo",
     minutes: 3000,
   },
 ];
