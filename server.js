@@ -1082,6 +1082,27 @@ const refreshUsagePeriod = async (usage, planType, periodEnd) => {
   return data || usage;
 };
 
+const findAuthUserByEmail = async (email) => {
+  const target = String(email || "").trim().toLowerCase();
+  if (!target) return null;
+  let page = 1;
+  while (page <= 10) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+      page,
+      perPage: 1000,
+    });
+    if (error) throw error;
+    const users = data?.users || [];
+    const match = users.find(
+      (user) => String(user.email || "").toLowerCase() === target
+    );
+    if (match) return match;
+    if (users.length < 1000) break;
+    page += 1;
+  }
+  return null;
+};
+
 const getUsageRemaining = (usage) => {
   const total =
     usage.call_cap_seconds +
@@ -1148,6 +1169,15 @@ const getDashboardStats = async (userId) => {
   };
 };
 
+const isAdminEmail = (email) => {
+  if (!email || !ADMIN_EMAIL) return false;
+  const adminEmails = ADMIN_EMAIL.split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (!adminEmails.length) return false;
+  return adminEmails.includes(String(email).trim().toLowerCase());
+};
+
 const requireAdmin = async (req, res, next) => {
   try {
     const { data: profile, error } = await supabaseAdmin
@@ -1159,7 +1189,7 @@ const requireAdmin = async (req, res, next) => {
     if (error) {
       return res.status(500).json({ error: error.message });
     }
-    if (profile?.role !== "admin") {
+    if (profile?.role !== "admin" && !isAdminEmail(req.user.email)) {
       return res.status(403).json({ error: "Admin access required" });
     }
     return next();
@@ -4975,6 +5005,283 @@ app.post(
   }
 );
 
+const ADMIN_ONBOARD_DEFAULTS = {
+  industry: "hvac",
+  tone: "Calm & Professional",
+  travelLimitValue: 30,
+  travelLimitMode: "minutes",
+};
+
+const buildAdminScheduleSummary = () =>
+  "Standard operating hours are Monday through Friday, 08:00 AM to 05:00 PM. We are closed on weekends. We do NOT offer after-hours service. If they call late, ask them to call back in the morning.";
+
+const createAdminAgent = async ({ userId, businessName, areaCode }) => {
+  const industry = ADMIN_ONBOARD_DEFAULTS.industry;
+  const tone = ADMIN_ONBOARD_DEFAULTS.tone;
+  const scheduleSummary = buildAdminScheduleSummary();
+  const dispatchBaseLocation = areaCode
+    ? `Area Code ${areaCode}`
+    : "Local Service Area";
+  const travelValue = ADMIN_ONBOARD_DEFAULTS.travelLimitValue;
+  const travelMode = ADMIN_ONBOARD_DEFAULTS.travelLimitMode;
+  const travelInstruction = buildTravelInstruction({
+    dispatchBaseLocation,
+    travelLimitValue: travelValue,
+    travelLimitMode: travelMode,
+  });
+
+  const llmId = pickLlmId(industry);
+  const llmVersion = pickLlmVersion(industry);
+  const llmVersionNumber = parseRetellVersionNumber(llmVersion);
+  const dynamicVars = {
+    business_name: String(businessName || ""),
+    industry: String(industry || ""),
+    transfer_number: "",
+    cal_com_link: "",
+    agent_tone: String(tone || ADMIN_ONBOARD_DEFAULTS.tone),
+    schedule_summary: String(scheduleSummary || ""),
+    standard_fee: "",
+    emergency_fee: "",
+    caller_name: "",
+    call_reason: "",
+    safety_check_result: "",
+    current_temp: "",
+    service_address: "",
+    callback_number: "",
+    urgency_level: "",
+    vulnerable_flag: "",
+    issue_type: "",
+  };
+  const greeting = interpolateTemplate(
+    "Thank you for calling {{business_name}}. I'm Grace, the automated {{industry}} dispatch. Briefly, how may I help you today?",
+    dynamicVars
+  );
+
+  const promptMode = normalizePromptMode(RETELL_PROMPT_MODE, industry);
+  const useBackendPrompt =
+    promptMode !== "template" &&
+    shouldUseBackendPrompt({
+      userId,
+      industry,
+    });
+  const backendPrompt = buildDispatchPrompt({
+    mode: promptMode,
+    industry,
+    businessName,
+    agentTone: tone,
+    scheduleSummary,
+    standardFee: null,
+    emergencyFee: null,
+    transferNumber: null,
+    travelInstruction,
+  });
+  const legacyPrompt = `You are the AI phone agent for ${businessName}, a ${industry} business. Be concise, professional, and focus on booking service calls. Voice tone: ${
+    tone || ADMIN_ONBOARD_DEFAULTS.tone
+  }. Collect caller name, phone, address, issue, and preferred time. Scheduling: ${scheduleSummary} ${travelInstruction}`.trim();
+  const finalPrompt = promptMode === "template"
+    ? null
+    : useBackendPrompt
+    ? backendPrompt
+    : `${legacyPrompt}
+
+Greeting:
+${greeting}
+
+Business Variables:
+- business_name: ${businessName}
+- cal_com_link: not_set
+- transfer_number: not_set`.trim();
+
+  const resolvedVoiceId = RETELL_VOICE_ID || "11labs-Grace";
+  if (!resolvedVoiceId) {
+    throw new Error("Missing voice_id");
+  }
+
+  const sourceAgentId = pickMasterAgentId(industry);
+  if (!sourceAgentId) {
+    throw new Error("Missing master agent id for industry");
+  }
+
+  const copyResponse = await retellClient.post(
+    `/copy-agent/${encodeURIComponent(sourceAgentId)}`,
+    {}
+  );
+  const copiedAgent = normalizeRetellAgent(copyResponse.data);
+  const agentId =
+    copiedAgent?.agent_id ||
+    copiedAgent?.id ||
+    copyResponse.data?.agent_id ||
+    copyResponse.data?.id;
+  if (!agentId) {
+    throw new Error("Retell agent_id missing");
+  }
+
+  const updatePayload = {
+    agent_name: `${businessName} AI Agent`,
+    retell_llm_dynamic_variables: dynamicVars,
+    webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
+    webhook_timeout_ms: 10000,
+    voice_id: resolvedVoiceId,
+  };
+  if (finalPrompt) {
+    updatePayload.prompt = finalPrompt;
+  }
+  await retellClient.patch(`/update-agent/${agentId}`, updatePayload);
+
+  console.info("[retell] admin agent copied", {
+    agent_id: agentId,
+    llm_id: llmId,
+    llm_version: llmVersionNumber,
+    source_agent_id: sourceAgentId,
+  });
+
+  const phonePayload = {
+    inbound_agent_id: agentId,
+    outbound_agent_id: agentId,
+    area_code:
+      areaCode && String(areaCode).length === 3 ? Number(areaCode) : undefined,
+    country_code: "US",
+    nickname: `${businessName} Line`,
+    inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
+    inbound_sms_enabled: true,
+  };
+  const phoneResponse = await retellClient.post("/create-phone-number", phonePayload);
+  const phoneNumber = phoneResponse.data.phone_number || phoneResponse.data.number;
+
+  const { error: insertError } = await supabaseAdmin.from("agents").insert({
+    user_id: userId,
+    agent_id: agentId,
+    phone_number: phoneNumber,
+    voice_id: RETELL_VOICE_ID || null,
+    llm_id: llmId,
+    prompt: finalPrompt || null,
+    area_code: areaCode || null,
+    tone: tone || null,
+    schedule_summary: scheduleSummary || null,
+    standard_fee: null,
+    emergency_fee: null,
+    payment_id: "admin_onboarded",
+    transfer_number: null,
+    dispatch_base_location: dispatchBaseLocation || null,
+    travel_limit_value: travelValue,
+    travel_limit_mode: travelMode,
+    is_active: true,
+  });
+
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+
+  await auditLog({
+    userId,
+    action: "admin_agent_deployed",
+    entity: "agent",
+    entityId: agentId,
+  });
+
+  return { agent_id: agentId, phone_number: phoneNumber };
+};
+
+app.post(
+  "/admin/quick-onboard",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-quick-onboard", limit: 6, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { businessName, areaCode, email } = req.body || {};
+      const cleanName = String(businessName || "").trim();
+      const cleanArea = String(areaCode || "").trim();
+      const cleanEmail = String(email || "").trim().toLowerCase();
+
+      if (!cleanName || cleanName.length < 2 || cleanName.length > 80) {
+        return res.status(400).json({ error: "businessName is invalid" });
+      }
+      if (!/^\d{3}$/.test(cleanArea)) {
+        return res.status(400).json({ error: "areaCode must be 3 digits" });
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ error: "email is invalid" });
+      }
+
+      let authUser = await findAuthUserByEmail(cleanEmail);
+      if (!authUser) {
+        const { data: userResult, error: userError } =
+          await supabaseAdmin.auth.admin.createUser({
+            email: cleanEmail,
+            email_confirm: true,
+          });
+        if (userError || !userResult?.user) {
+          return res.status(500).json({ error: userError?.message || "User create failed" });
+        }
+        authUser = userResult.user;
+      }
+
+      const userId = authUser.id;
+      const { data: existingProfile } = await supabaseAdmin
+        .from("profiles")
+        .select("role")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const resolvedRole =
+        existingProfile?.role === "admin" ? "admin" : existingProfile?.role || "owner";
+
+      await supabaseAdmin.from("profiles").upsert({
+        user_id: userId,
+        role: resolvedRole,
+        business_name: cleanName,
+        area_code: cleanArea,
+        admin_onboarded: true,
+        admin_onboarded_at: new Date().toISOString(),
+      });
+
+      const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      await supabaseAdmin.from("subscriptions").upsert({
+        user_id: userId,
+        status: "active",
+        plan_type: "core",
+        current_period_end: periodEnd,
+      });
+      await ensureUsageLimits({ userId, planType: "core", periodEnd });
+
+      const { data: existingAgent } = await supabaseAdmin
+        .from("agents")
+        .select("agent_id, phone_number")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const agentInfo =
+        existingAgent?.agent_id && existingAgent?.phone_number
+          ? {
+              agent_id: existingAgent.agent_id,
+              phone_number: existingAgent.phone_number,
+            }
+          : await createAdminAgent({
+              userId,
+              businessName: cleanName,
+              areaCode: cleanArea,
+            });
+
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_quick_onboard",
+        actionType: "admin_quick_onboard",
+        entity: "user",
+        entityId: userId,
+        req,
+        metadata: { plan_tier: "core" },
+      });
+
+      return res.json({ ok: true, user_id: userId, ...agentInfo });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.get(
   "/admin/audit-logs",
   requireAuth,
@@ -5228,7 +5535,7 @@ app.get(
         .maybeSingle();
       const { data: agent } = await supabaseAdmin
         .from("agents")
-        .select("agent_id, phone_number, llm_id, created_at")
+        .select("agent_id, phone_number, llm_id, transfer_number, created_at")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -5354,6 +5661,7 @@ app.get(
         config: {
           agent_id: agent?.agent_id || null,
           phone_number: agent?.phone_number || null,
+          transfer_number: agent?.transfer_number || null,
           script_version: agent?.llm_id || null,
         },
       });

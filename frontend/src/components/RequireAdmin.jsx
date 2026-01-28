@@ -5,6 +5,12 @@ import { supabase } from "../lib/supabase";
 export default function RequireAdmin({ children }) {
   const [checking, setChecking] = React.useState(true);
   const [isAdmin, setIsAdmin] = React.useState(false);
+  const adminEmails = String(
+    import.meta.env.VITE_ADMIN_EMAIL || import.meta.env.VITE_ADMIN_EMAILS || ""
+  )
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
 
   React.useEffect(() => {
     let mounted = true;
@@ -26,9 +32,8 @@ export default function RequireAdmin({ children }) {
         .maybeSingle();
 
       if (mounted) {
-        const adminMode =
-          window.localStorage.getItem("kryonex_admin_mode") || "user";
-        setIsAdmin(profile?.role === "admin" && adminMode === "admin");
+        const emailMatch = adminEmails.includes(String(user.email || "").toLowerCase());
+        setIsAdmin(profile?.role === "admin" || emailMatch);
         setChecking(false);
       }
     };

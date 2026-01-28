@@ -66,6 +66,19 @@ const FULL_STEP_META = [
   },
 ];
 
+const MODERN_STEP_META = [
+  {
+    title: "Identity",
+    description: "Define the business signature.",
+    icon: Building2,
+  },
+  {
+    title: "Plan Selection",
+    description: "Choose the tier to activate.",
+    icon: CreditCard,
+  },
+];
+
 const stepVariants = {
   initial: { opacity: 0, y: 24, scale: 0.95 },
   animate: {
@@ -122,12 +135,10 @@ const terminalLines = [
 
 
 export default function WizardPage() {
-  const stepMeta = LEGACY_STEPS_ENABLED
-    ? FULL_STEP_META
-    : FULL_STEP_META.slice(0, 1);
+  const stepMeta = LEGACY_STEPS_ENABLED ? FULL_STEP_META : MODERN_STEP_META;
+  const maxStep = stepMeta.length;
   const getInitialStep = () => {
-    if (!LEGACY_STEPS_ENABLED) return 1;
-    const maxStep = FULL_STEP_META.length;
+    const maxStep = LEGACY_STEPS_ENABLED ? FULL_STEP_META.length : 2;
     const stored = Number(getSavedState(WIZARD_STEP_KEY));
     if (Number.isFinite(stored) && stored >= 1 && stored <= maxStep) return stored;
     const fallback = Number(window.localStorage.getItem("kryonex_wizard_step"));
@@ -158,9 +169,6 @@ export default function WizardPage() {
   const [calConnected, setCalConnected] = useState(false);
   const [calStatusLoading, setCalStatusLoading] = useState(true);
   const [calStatusError, setCalStatusError] = useState("");
-  const coreOffer =
-    searchParams.get("core") === "1" ||
-    window.localStorage.getItem("kryonex_core_offer") === "1";
   const wizardMaintenance =
     String(import.meta.env.VITE_WIZARD_MAINTENANCE || "").toLowerCase() === "true";
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
@@ -187,7 +195,7 @@ export default function WizardPage() {
   };
 
   const persistStep = (value) => {
-    const next = LEGACY_STEPS_ENABLED ? value : 1;
+    const next = Math.min(Math.max(1, value), maxStep);
     setStep(next);
     window.localStorage.setItem("kryonex_wizard_step", next);
     saveState(WIZARD_STEP_KEY, next);
@@ -196,7 +204,7 @@ export default function WizardPage() {
   const updateStep = (updater) => {
     setStep((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      const clamped = LEGACY_STEPS_ENABLED ? next : 1;
+      const clamped = Math.min(Math.max(1, next), maxStep);
       window.localStorage.setItem("kryonex_wizard_step", clamped);
       saveState(WIZARD_STEP_KEY, clamped);
       return clamped;
@@ -208,7 +216,7 @@ export default function WizardPage() {
     saveState(WIZARD_FORM_KEY, next);
   };
 
-  const safeStep = LEGACY_STEPS_ENABLED ? step : 1;
+  const safeStep = Math.min(Math.max(1, step), maxStep);
   const currentStep = stepMeta[safeStep - 1];
   const StepIcon = currentStep.icon;
 
@@ -526,11 +534,13 @@ export default function WizardPage() {
     }
   };
 
-  const handleStripeCheckout = async () => {
+  const handleStripeCheckout = async (selectedTier) => {
     setCheckoutError("");
     setCheckoutLoading(true);
     try {
-      const planTierPayload = planTier === "scale" ? "scale" : planTier || "pro";
+      const planTierPayload = String(
+        selectedTier || planTier || "pro"
+      ).toLowerCase();
       const successUrl = `${window.location.origin}/dashboard?checkout=success`;
       const cancelUrl = `${window.location.origin}/wizard?canceled=true`;
       const response = await createCheckoutSession({
@@ -557,7 +567,7 @@ export default function WizardPage() {
         businessName: form.nameInput,
         areaCode: form.areaCodeInput,
       });
-      await handleStripeCheckout();
+      persistStep(2);
     } catch (err) {
       setSaveError(err.response?.data?.error || err.message);
     } finally {
@@ -815,6 +825,100 @@ export default function WizardPage() {
                     </div>
                   </div>
                 </div>
+              </motion.div>
+            )}
+
+            {!LEGACY_STEPS_ENABLED && step === 2 && (
+              <motion.div
+                key="step-2-plan"
+                variants={stepVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="space-y-10"
+              >
+                <div className="flex flex-wrap items-end justify-between gap-6">
+                  <div>
+                    <h2 className="text-3xl font-semibold">Plan Selection</h2>
+                    <p className="mt-2 text-white/60">
+                      Choose the deployment tier to activate and proceed to
+                      Stripe checkout.
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/50">
+                    Pricing Updated
+                  </div>
+                </div>
+
+                <div className="grid gap-6 lg:grid-cols-3">
+                  {[
+                    {
+                      id: "pro",
+                      title: "PRO",
+                      price: "$249/mo",
+                      description:
+                        "Core automation, smart routing, and business-grade availability.",
+                      accentClass: "border-neon-cyan/60",
+                    },
+                    {
+                      id: "elite",
+                      title: "ELITE",
+                      price: "$399/mo",
+                      description:
+                        "Multi-location scale, priority optimization, and VIP support.",
+                      accentClass: "border-neon-purple/60",
+                    },
+                    {
+                      id: "scale",
+                      title: "SCALE",
+                      price: "$799/mo",
+                      description:
+                        "High-volume orchestration, enterprise workflows, and fleet readiness.",
+                      accentClass: "border-neon-green/60",
+                    },
+                  ].map((tier) => {
+                    const isSelected = planTier === tier.id;
+                    return (
+                      <div
+                        key={tier.id}
+                        className={`group relative flex h-full flex-col justify-between rounded-3xl border bg-black/40 p-8 transition-all duration-300 ${
+                          isSelected
+                            ? `${tier.accentClass} shadow-glow`
+                            : "border-white/10 hover:border-white/30"
+                        }`}
+                      >
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.35em] text-white/40">
+                            {tier.title}
+                          </div>
+                          <div className="mt-4 text-4xl font-semibold text-white">
+                            {tier.price}
+                          </div>
+                          <p className="mt-4 text-sm text-white/60">
+                            {tier.description}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setPlanTier(tier.id);
+                            await handleStripeCheckout(tier.id);
+                          }}
+                          disabled={checkoutLoading}
+                          className="glow-button mt-8 w-full"
+                        >
+                          {checkoutLoading && planTier === tier.id
+                            ? "OPENING CHECKOUT..."
+                            : "Select Plan"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {checkoutError ? (
+                  <div className="text-neon-pink text-sm">{checkoutError}</div>
+                ) : null}
               </motion.div>
             )}
 
@@ -1354,18 +1458,9 @@ export default function WizardPage() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {[
-                        { id: "pro", label: "PRO — $197/mo", desc: "Most popular" },
-                        { id: "elite", label: "ELITE — $397/mo", desc: "Multi‑location + VIP" },
-                        { id: "scale", label: "SCALE — $997/mo", desc: "Enterprise scale tier" },
-                        ...(coreOffer || planTier === "core"
-                          ? [
-                              {
-                                id: "core",
-                                label: "CORE — $99/mo",
-                                desc: "Private access tier",
-                              },
-                            ]
-                          : []),
+                        { id: "pro", label: "PRO — $249/mo", desc: "Core automation tier" },
+                        { id: "elite", label: "ELITE — $399/mo", desc: "Multi‑location + VIP" },
+                        { id: "scale", label: "SCALE — $799/mo", desc: "Enterprise scale tier" },
                       ].map((tier) => (
                         <button
                           key={tier.id}
@@ -1394,12 +1489,10 @@ export default function WizardPage() {
                       </span>
                       <span className="font-mono text-neon-cyan">
                         {planTier === "elite"
-                          ? "$397/mo"
+                          ? "$399/mo"
                           : planTier === "scale"
-                          ? "$997/mo"
-                          : planTier === "core"
-                          ? "$99/mo"
-                          : "$197/mo"}
+                          ? "$799/mo"
+                          : "$249/mo"}
                       </span>
                     </div>
                   </div>
@@ -1746,19 +1839,32 @@ export default function WizardPage() {
           </div>
         ) : (
           <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
+            <button
+              onClick={() => updateStep((prev) => Math.max(1, prev - 1))}
+              disabled={step === 1 || saving || checkoutLoading}
+              className="px-6 py-3 rounded-xl border border-white/10 hover:bg-white/5 hover:border-white/30 text-white/60 disabled:opacity-30 transition-all text-sm font-medium tracking-wide uppercase"
+            >
+              Back
+            </button>
+
             <div className="flex items-center gap-3 text-xs text-white/40 uppercase tracking-widest">
               <span className="h-1.5 w-1.5 rounded-full bg-neon-cyan animate-pulse" />
               Kryonex Secure Environment
             </div>
-            <button
-              onClick={handleIdentitySubmit}
-              disabled={!canContinueIdentity || saving || checkoutLoading}
-              className="glow-button"
-            >
-              {saving || checkoutLoading
-                ? "SECURING CHECKOUT..."
-                : "Continue to Checkout"}
-            </button>
+
+            {step === 1 ? (
+              <button
+                onClick={handleIdentitySubmit}
+                disabled={!canContinueIdentity || saving || checkoutLoading}
+                className="glow-button"
+              >
+                {saving ? "SAVING IDENTITY..." : "Continue to Plans"}
+              </button>
+            ) : (
+              <div className="text-xs text-white/50 uppercase tracking-widest">
+                Select a plan to continue
+              </div>
+            )}
           </div>
         )}
       </div>

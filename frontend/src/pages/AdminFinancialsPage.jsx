@@ -35,8 +35,8 @@ const kpis = [
 const transactions = [
   { id: "txn_1093", client: "Apex Heating", amount: "$1,250", status: "Success", time: "Just now" },
   { id: "txn_1092", client: "Flow Plumbing Co", amount: "$980", status: "Success", time: "6m ago" },
-  { id: "txn_1091", client: "Northstar HVAC", amount: "$197", status: "Pending", time: "12m ago" },
-  { id: "txn_1090", client: "Zenith Cooling", amount: "$397", status: "Success", time: "20m ago" },
+  { id: "txn_1091", client: "Northstar HVAC", amount: "$249", status: "Pending", time: "12m ago" },
+  { id: "txn_1090", client: "Zenith Cooling", amount: "$399", status: "Success", time: "20m ago" },
 ];
 
 const chartPoints = [

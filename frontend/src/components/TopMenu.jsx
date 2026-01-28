@@ -27,6 +27,14 @@ export default function TopMenu() {
   const [viewMode, setViewMode] = React.useState(
     () => window.localStorage.getItem("kryonex_admin_mode") || "user"
   );
+  const adminEmails = String(
+    import.meta.env.VITE_ADMIN_EMAIL || import.meta.env.VITE_ADMIN_EMAILS || ""
+  )
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdminEmail = adminEmails.includes(email.toLowerCase());
+  const canAccessAdmin = isAdmin || isAdminEmail;
 
   React.useEffect(() => {
     let mounted = true;
@@ -87,7 +95,7 @@ export default function TopMenu() {
     navigate("/login", { replace: true });
   };
 
-  const adminEnabled = isAdmin && viewMode === "admin";
+  const adminEnabled = canAccessAdmin && viewMode === "admin";
   const items = [];
   if (isSeller) {
     items.push({ to: "/console/dialer", label: "Call Center" });
@@ -101,7 +109,7 @@ export default function TopMenu() {
       items.push({ to: "/wizard", label: "Wizard" });
     }
     items.push({ to: "/billing", label: "Billing" });
-    if (isAdmin) {
+    if (canAccessAdmin) {
       items.push({ to: "/admin", label: "Admin Command" });
     }
   }
@@ -208,7 +216,7 @@ export default function TopMenu() {
                   : subscription.status}
               </div>
             </div>
-            {isAdmin ? (
+            {canAccessAdmin ? (
               <div className="top-menu-section">
                 <AdminModeToggle
                   align="left"
@@ -225,22 +233,7 @@ export default function TopMenu() {
                   </button>
                 ) : null}
               </div>
-            ) : (
-              <div className="top-menu-section">
-                <button
-                  type="button"
-                  className="top-menu-logout"
-                  onClick={handleAdminUnlock}
-                >
-                  Unlock Admin Access
-                </button>
-                {adminError ? (
-                  <div style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "#f472b6" }}>
-                    {adminError}
-                  </div>
-                ) : null}
-              </div>
-            )}
+            ) : null}
             <button className="top-menu-logout" type="button" onClick={handleLogout}>
               Log Out
             </button>
