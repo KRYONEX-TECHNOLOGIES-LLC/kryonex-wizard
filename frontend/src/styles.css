@@ -1360,6 +1360,21 @@ select option {
   color: var(--neon-green);
 }
 
+.top-menu-item-button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.top-menu-item-button:hover {
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--neon-cyan);
+}
+
 .top-menu-section {
   margin: 0.75rem 0;
 }

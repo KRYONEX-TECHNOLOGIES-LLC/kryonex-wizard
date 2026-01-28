@@ -124,6 +124,9 @@ export default function SideNav({
                 <Link to="/admin/users" className="side-nav-link">
                   Fleet Registry
                 </Link>
+                <Link to="/billing/tiers" className="side-nav-link">
+                  Billing & Top-Ups
+                </Link>
                 <Link to="/admin/logs" className="side-nav-link">
                   Sales Floor Activity
                 </Link>

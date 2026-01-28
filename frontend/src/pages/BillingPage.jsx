@@ -8,7 +8,7 @@ import {
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
-import { getTierOptions } from "../lib/billingConstants";
+import { getTierOptions, TOP_UPS } from "../lib/billingConstants";
 
 export default function BillingPage() {
   const [loadingPlan, setLoadingPlan] = React.useState(null);
@@ -223,34 +223,21 @@ export default function BillingPage() {
               gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
             }}
           >
-            <button
-              className="button-primary"
-              onClick={() => handleTopup("call_300")}
-              disabled={topupLoading === "call_300"}
-            >
-              {topupLoading === "call_300" ? "LOADING..." : "300 MINS ($99)"}
-            </button>
-            <button
-              className="button-primary"
-              onClick={() => handleTopup("call_800")}
-              disabled={topupLoading === "call_800"}
-            >
-              {topupLoading === "call_800" ? "LOADING..." : "800 MINS ($265)"}
-            </button>
-            <button
-              className="button-primary"
-              onClick={() => handleTopup("sms_500")}
-              disabled={topupLoading === "sms_500"}
-            >
-              {topupLoading === "sms_500" ? "LOADING..." : "500 SMS ($40)"}
-            </button>
-            <button
-              className="button-primary"
-              onClick={() => handleTopup("sms_1000")}
-              disabled={topupLoading === "sms_1000"}
-            >
-              {topupLoading === "sms_1000" ? "LOADING..." : "1000 SMS ($80)"}
-            </button>
+            {TOP_UPS.map((topup) => {
+              const label = topup.call_minutes
+                ? `${topup.call_minutes} MINS (${topup.priceLabel})`
+                : `${topup.sms_count} SMS (${topup.priceLabel})`;
+              return (
+                <button
+                  key={topup.id}
+                  className="button-primary"
+                  onClick={() => handleTopup(topup.id)}
+                  disabled={topupLoading === topup.id}
+                >
+                  {topupLoading === topup.id ? "LOADING..." : label}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
