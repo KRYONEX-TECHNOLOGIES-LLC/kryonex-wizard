@@ -25,11 +25,16 @@ export default function RequireOnboarding({ children }) {
         .eq("user_id", user.id)
         .maybeSingle();
 
+      const adminMode =
+        typeof window === "undefined"
+          ? "user"
+          : window.localStorage.getItem("kryonex_admin_mode") || "user";
       if (mounted) {
         if (error || !profile) {
           setIsComplete(false);
         } else {
-          if (profile.role === "admin") {
+          // Admins in Admin View or User View bypass wizard gating (can explore dashboard, billing, calendar)
+          if (profile.role === "admin" && (adminMode === "admin" || adminMode === "user")) {
             setIsComplete(true);
             setChecking(false);
             return;

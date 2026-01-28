@@ -41,6 +41,11 @@ export default function DashboardPage() {
   const [calComUrl, setCalComUrl] = React.useState("");
   const [calStatusLoading, setCalStatusLoading] = React.useState(true);
   const [calStatusError, setCalStatusError] = React.useState("");
+  const [lowUsageDismissed, setLowUsageDismissed] = React.useState(() =>
+    typeof window === "undefined"
+      ? false
+      : window.localStorage.getItem("kryonex_low_usage_dismissed") === "true"
+  );
 
   React.useEffect(() => {
     let mounted = true;
@@ -131,6 +136,13 @@ export default function DashboardPage() {
   const handleBilling = () => {
     navigate("/billing");
   };
+  const handleViewTopups = () => {
+    setLowUsageDismissed(true);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("kryonex_low_usage_dismissed", "true");
+    }
+    navigate("/billing/tiers");
+  };
 
   const planTier = String(subscription.plan_type || "").toLowerCase();
   const eligibleNewAgent =
@@ -152,6 +164,11 @@ export default function DashboardPage() {
   const callUsed = Math.max(0, callTotal - callRemaining);
   const callPercent = usagePercent(callRemaining, callTotal);
   const isCritical = callPercent >= 75;
+  const smsTotal = usage?.sms_total ?? 0;
+  const smsRemaining = usage?.sms_remaining ?? 0;
+  const smsUsed = Math.max(0, smsTotal - smsRemaining);
+  const smsPercent = usagePercent(smsRemaining, smsTotal);
+  const isLowUsage = callPercent >= 75 || smsPercent >= 75;
   const pipelineValue = stats.pipeline_value || 0;
 
   const formatCurrency = (value) =>
@@ -160,6 +177,15 @@ export default function DashboardPage() {
       currency: "USD",
       maximumFractionDigits: 0,
     }).format(value || 0);
+
+  React.useEffect(() => {
+    if (!isLowUsage) {
+      setLowUsageDismissed(false);
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("kryonex_low_usage_dismissed");
+      }
+    }
+  }, [isLowUsage]);
 
   const handleTopup = async () => {
     try {
@@ -236,6 +262,21 @@ export default function DashboardPage() {
           isAdmin={isAdmin}
         />
         <div className="main-content">
+          {isLowUsage && !lowUsageDismissed ? (
+            <div className="glass-panel low-usage-alert">
+              <div>
+                You’re running low on minutes/texts. Buy a top-up to avoid
+                interruptions.
+              </div>
+              <button
+                type="button"
+                className="button-primary"
+                onClick={handleViewTopups}
+              >
+                View Top-Ups
+              </button>
+            </div>
+          ) : null}
           <div className="top-bar glass-panel">
             <div className="status-indicator">🟢 SYSTEM ONLINE</div>
             <div className="usage-pill">

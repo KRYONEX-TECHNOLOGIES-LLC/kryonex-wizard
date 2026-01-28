@@ -5,9 +5,11 @@ import {
   autoGrantAdmin,
   getSubscriptionStatus,
   logBlackBoxEvent,
+  logImpersonationEnd,
   verifyAdminCode,
 } from "../lib/api";
 import AdminModeToggle from "./AdminModeToggle.jsx";
+import { getImpersonation, clearImpersonation, IMPERSONATION_EVENT } from "../lib/impersonation";
 
 export default function TopMenu() {
   const location = useLocation();
@@ -27,6 +29,7 @@ export default function TopMenu() {
   const [viewMode, setViewMode] = React.useState(
     () => window.localStorage.getItem("kryonex_admin_mode") || "user"
   );
+  const [impersonation, setImpersonationState] = React.useState(getImpersonation);
   const adminEmails = String(
     import.meta.env.VITE_ADMIN_EMAIL || import.meta.env.VITE_ADMIN_EMAILS || ""
   )
@@ -84,6 +87,13 @@ export default function TopMenu() {
   }, []);
 
   React.useEffect(() => {
+    const updateImpersonation = () => setImpersonationState(getImpersonation());
+    updateImpersonation();
+    window.addEventListener(IMPERSONATION_EVENT, updateImpersonation);
+    return () => window.removeEventListener(IMPERSONATION_EVENT, updateImpersonation);
+  }, []);
+
+  React.useEffect(() => {
     if (canAccessAdmin && location.pathname.startsWith("/admin") && viewMode !== "admin") {
       window.localStorage.setItem("kryonex_admin_mode", "admin");
       window.dispatchEvent(new Event("kryonex-admin-mode"));
@@ -123,18 +133,32 @@ export default function TopMenu() {
     items.push({ to: "/billing", label: "Billing" });
   }
 
-  const badgeLabel =
-    adminEnabled
-      ? "ADMIN VIEW"
-      : isSeller
-      ? "AGENT VIEW"
-      : "USER VIEW";
-  const badgeClass =
-    adminEnabled
-      ? "view-admin"
-      : isSeller
-      ? "view-agent"
-      : "view-user";
+  const badgeLabel = impersonation.active
+    ? "IMPERSONATING"
+    : adminEnabled
+    ? "ADMIN VIEW"
+    : isSeller
+    ? "AGENT VIEW"
+    : "USER VIEW";
+  const badgeClass = impersonation.active
+    ? "view-admin"
+    : adminEnabled
+    ? "view-admin"
+    : isSeller
+    ? "view-agent"
+    : "view-user";
+
+  const handleExitImpersonation = async () => {
+    const { userId } = impersonation;
+    try {
+      if (userId) await logImpersonationEnd(userId);
+    } catch {
+      // best-effort
+    }
+    clearImpersonation();
+    setOpen(false);
+    navigate(canAccessAdmin ? "/admin/users" : "/dashboard");
+  };
 
   const handleAdminUnlock = async () => {
     const code = window.prompt("Admin Access Code");
@@ -225,7 +249,16 @@ export default function TopMenu() {
                   : subscription.status}
               </div>
             </div>
-            {canAccessAdmin ? (
+            {impersonation.active ? (
+              <button
+                type="button"
+                className="top-menu-logout"
+                style={{ marginTop: "0.75rem" }}
+                onClick={handleExitImpersonation}
+              >
+                Exit Impersonation
+              </button>
+            ) : canAccessAdmin ? (
               <div className="top-menu-section">
                 <AdminModeToggle
                   align="left"

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { supabase } from "./supabase";
+import { getImpersonation } from "./impersonation";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://localhost:3000",
@@ -10,6 +11,17 @@ api.interceptors.request.use(async (config) => {
   const token = data?.session?.access_token;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  if (typeof window !== "undefined") {
+    const adminMode = window.localStorage.getItem("kryonex_admin_mode");
+    if (adminMode) {
+      config.headers["X-Admin-Mode"] = adminMode;
+    }
+    const { active, userId } = getImpersonation();
+    if (active && userId) {
+      config.headers["X-Impersonation-Mode"] = "true";
+      config.headers["X-Impersonated-User-ID"] = userId;
+    }
   }
   return config;
 });
@@ -53,12 +65,20 @@ export const adminCreateAccount = (data) =>
   api.post("/admin/create-account", data);
 export const adminGenerateStripeLink = (data) =>
   api.post("/admin/stripe-link", data);
+export const logImpersonationStart = (userId) =>
+  api.post("/admin/impersonation/start", { user_id: userId });
+export const logImpersonationEnd = (userId) =>
+  api.post("/admin/impersonation/end", { user_id: userId });
 export const acceptConsent = () => api.post("/consent");
 export const getUsageStatus = () => api.get("/usage/status");
 export const getCalcomStatus = () => api.get("/api/calcom/status");
 export const disconnectCalcom = () => api.post("/api/calcom/disconnect");
 export const sendSms = (data) => api.post("/send-sms", data);
 export const createTrackingSession = (data) => api.post("/tracking/create", data);
+export const getAppointments = (startTime, endTime) =>
+  api.get("/appointments", {
+    params: { start_time: startTime, end_time: endTime },
+  });
 export const createAppointment = (data) => api.post("/appointments", data);
 export const updateAppointment = (appointmentId, data) =>
   api.put(`/appointments/${appointmentId}`, data);

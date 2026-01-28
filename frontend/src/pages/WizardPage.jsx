@@ -160,6 +160,9 @@ export default function WizardPage() {
   const [consentAccepted, setConsentAccepted] = useState(false);
   const [consentError, setConsentError] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [adminMode, setAdminMode] = useState(
+    window.localStorage.getItem("kryonex_admin_mode") || "user"
+  );
   const [planTier, setPlanTier] = useState("pro");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [wizardLocked, setWizardLocked] = useState(false);
@@ -377,6 +380,17 @@ export default function WizardPage() {
     loadConsent();
     return () => {
       mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const updateMode = () => {
+      setAdminMode(window.localStorage.getItem("kryonex_admin_mode") || "user");
+    };
+    updateMode();
+    window.addEventListener("kryonex-admin-mode", updateMode);
+    return () => {
+      window.removeEventListener("kryonex-admin-mode", updateMode);
     };
   }, []);
 
@@ -1505,7 +1519,7 @@ export default function WizardPage() {
                       Secure the deployment uplink with Stripe checkout.
                     </p>
                   </div>
-                  {isAdmin ? (
+                  {isAdmin && adminMode === "admin" ? (
                     <div className="glass-panel rounded-2xl p-4 border border-white/10">
                       <div className="text-xs uppercase tracking-widest text-white/40">
                         Admin Override

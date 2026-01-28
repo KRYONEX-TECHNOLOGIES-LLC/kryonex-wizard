@@ -3,7 +3,8 @@ import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { getAdminUsers, getAdminUserProfile } from "../lib/api.js";
+import { getAdminUsers, getAdminUserProfile, logImpersonationStart } from "../lib/api.js";
+import { setImpersonation } from "../lib/impersonation.js";
 
 const statusDot = {
   "pending setup": "bg-amber-400",
@@ -71,6 +72,25 @@ export default function AdminUsersPage() {
     setCopyNotice("");
   };
 
+  const enterUserView = () => {
+    window.localStorage.setItem("kryonex_admin_mode", "user");
+    window.dispatchEvent(new Event("kryonex-admin-mode"));
+    navigate("/dashboard");
+  };
+
+  const startImpersonation = async () => {
+    const userId = selectedUser?.user?.id;
+    if (!userId) return;
+    try {
+      await logImpersonationStart(userId);
+    } catch {
+      // best-effort logging
+    }
+    setImpersonation(userId);
+    closeDrawer();
+    navigate("/dashboard");
+  };
+
   const handleCopy = async (value, label) => {
     if (!value) return;
     try {
@@ -105,6 +125,67 @@ export default function AdminUsersPage() {
         ? "border-amber-300/60 text-amber-200 bg-amber-400/10"
         : "border-neon-cyan/60 text-neon-cyan bg-neon-cyan/10",
     };
+  };
+
+  const getCalendarBadge = (user) => {
+    const connected = Boolean(user?.cal_com_url);
+    return connected
+      ? {
+          label: "Calendar Connected",
+          className: "border-neon-green/60 text-neon-green bg-neon-green/10",
+        }
+      : {
+          label: "Calendar Not Connected",
+          className: "border-white/20 text-white/60 bg-white/10",
+        };
+  };
+
+  const getBillingBadge = (user) => {
+    const status = String(user?.status || user?.subscription_status || "")
+      .toLowerCase()
+      .trim();
+    const isActive = ["active", "trialing"].includes(status);
+    const isPaused = ["canceled", "past_due", "unpaid", "cutoff"].includes(
+      status
+    );
+    if (isActive) {
+      return {
+        label: "Billing: Active",
+        className: "border-neon-green/60 text-neon-green bg-neon-green/10",
+      };
+    }
+    if (isPaused) {
+      return {
+        label: "Billing: Paused",
+        className: "border-amber-300/60 text-amber-200 bg-amber-400/10",
+      };
+    }
+    return {
+      label: "Billing: Paused",
+      className: "border-white/20 text-white/60 bg-white/10",
+    };
+  };
+
+  const getLowUsageBadges = (user) => {
+    const badges = [];
+    const minutesUsed = Number(user?.usage_minutes || 0);
+    const minutesTotal = Number(user?.usage_limit_minutes || 0);
+    if (minutesTotal > 0 && minutesUsed / minutesTotal >= 0.75) {
+      badges.push({
+        label: "Low Minutes",
+        className: "border-amber-300/60 text-amber-200 bg-amber-400/10",
+      });
+    }
+    const smsTotal = Number(user?.sms_total || 0);
+    const smsRemaining = Number(user?.sms_remaining ?? 0);
+    const smsUsed = Math.max(0, smsTotal - smsRemaining);
+    if (smsTotal > 0 && smsUsed / smsTotal >= 0.75) {
+      badges.push({
+        label: "Low Texts",
+        className: "border-amber-300/60 text-amber-200 bg-amber-400/10",
+      });
+    }
+    return badges;
   };
 
   const getStatusLabel = (user) => {
@@ -327,9 +408,22 @@ export default function AdminUsersPage() {
                   {selectedUser?.user?.email || ""}
                 </div>
               </div>
-              <button className="button-primary" onClick={closeDrawer}>
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="button-primary"
+                  type="button"
+                  onClick={startImpersonation}
+                  disabled={!selectedUser?.user?.id}
+                >
+                  Impersonate
+                </button>
+                <button className="button-primary" onClick={enterUserView}>
+                  Dashboard
+                </button>
+                <button className="button-primary" onClick={closeDrawer}>
+                  Close
+                </button>
+              </div>
             </div>
 
             {copyNotice ? (
@@ -345,6 +439,26 @@ export default function AdminUsersPage() {
                 <div className="space-y-3">
                   <div className="text-xs uppercase tracking-[0.4em] text-white/40">
                     Quick Summary
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {(() => {
+                      const calendarBadge = getCalendarBadge(selectedUser.user);
+                      const billingBadge = getBillingBadge(selectedUser.user);
+                      const lowUsageBadges = getLowUsageBadges(selectedUser.user);
+                      const badges = [
+                        calendarBadge,
+                        billingBadge,
+                        ...lowUsageBadges,
+                      ];
+                      return badges.map((badge) => (
+                        <span
+                          key={badge.label}
+                          className={`px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-widest border rounded-full ${badge.className}`}
+                        >
+                          {badge.label}
+                        </span>
+                      ));
+                    })()}
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-black/40 p-4 grid grid-cols-2 gap-4 text-sm">
                     <div>
