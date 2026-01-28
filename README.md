@@ -50,7 +50,9 @@ npm run dev
 
 ### Admin-Only Flows
 - **Mini Admin Onboarding:** On Admin Client Wizard (`/admin/wizard/create`), a small “Admin Quick Onboarding” box lets admins deploy a client with Business Name + Area Code + Email and **Deploy Agent**. No Stripe, no tier picker; creates/finds user, saves identity, sets Core tier, initializes usage limits, creates Retell agent, marks `admin_onboarded`. See `docs/ADMIN_WORKFLOW.md`.
-- **Admin menu:** “Access Admin” / Admin Command is visible only when `user.role === 'admin'` or the logged-in email matches `VITE_ADMIN_EMAIL` / `VITE_ADMIN_EMAILS`. Route guard enforces the same.
+- **Admin menu:** “Admin Command” link and ADMIN COMMAND / USER VIEW buttons are visible only when `user.role === 'admin'` or the logged-in email matches `VITE_ADMIN_EMAIL` / `VITE_ADMIN_EMAILS`. Route guard enforces the same.
+- **Admin user dashboard access:** Admins (by role or env email) can open the user dashboard, billing, calendar, etc., **without** completing the wizard or having an agent. They are not redirected to wizard step 1 when using “User view” or dashboard.
+- **Landing (“/”):** Logged-in users who already have an agent, or any admin, are sent to `/dashboard`; others see the marketing landing. No screen glitch.
 - **Fleet Registry:** `/admin/users` — newest-first sort, instant search (business, email, area code), scrollable list, right-side cheat-sheet drawer with summary and quick-copy for Business Name, Agent Phone, Cal.com URL, Transfer Number, Retell Agent ID, User ID.
 
 ### Other Flows

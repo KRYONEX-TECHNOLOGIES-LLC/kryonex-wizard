@@ -31,6 +31,14 @@ VITE_ADMIN_EMAILS=admin1@domain.com,admin2@domain.com
 
 The menu and `RequireAdmin` use this to show/hide the Admin link and to gate admin routes. Non-admins never see the option and cannot reach `/admin/*` even by URL.
 
+### Admin user dashboard access (no wizard required)
+
+Admins (by `role === 'admin'` or by env email) can use the **user dashboard** and other user-facing pages (billing, calendar, leads, etc.) **without** completing the wizard or having an agent:
+
+- **RequireOnboarding:** Admins bypass the “complete wizard first” check, so they are not redirected to wizard step 1 when opening `/dashboard`, `/billing`, `/calendar`, etc.
+- **Landing (“/”):** When an admin visits the root URL while logged in, they are sent to `/dashboard` even if they have no agent, so their default landing is the user dashboard.
+- Admins can switch between “Admin view” (admin suite) and “User view” (user dashboard) from the menu; in User view they can explore the app without creating an agent.
+
 ---
 
 ## Admin Client Wizard — 3 Tools

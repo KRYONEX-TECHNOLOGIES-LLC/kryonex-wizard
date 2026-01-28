@@ -25,16 +25,27 @@ export default function RequireOnboarding({ children }) {
         .eq("user_id", user.id)
         .maybeSingle();
 
+      const adminEmails = String(
+        import.meta.env.VITE_ADMIN_EMAIL || import.meta.env.VITE_ADMIN_EMAILS || ""
+      )
+        .split(",")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean);
+      const isAdminByEmail = adminEmails.includes(String(user.email || "").toLowerCase());
+      const isAdminByRole = profile?.role === "admin";
+      const canAccessAdmin = isAdminByRole || isAdminByEmail;
+
       const adminMode =
         typeof window === "undefined"
           ? "user"
           : window.localStorage.getItem("kryonex_admin_mode") || "user";
       if (mounted) {
         if (error || !profile) {
-          setIsComplete(false);
+          // No profile: still allow bypass if admin-by-email so they can reach dashboard
+          setIsComplete(isAdminByEmail);
         } else {
-          // Admins in Admin View or User View bypass wizard gating (can explore dashboard, billing, calendar)
-          if (profile.role === "admin" && (adminMode === "admin" || adminMode === "user")) {
+          // Admins (by role or env email) bypass wizard gating and can use user dashboard without an agent
+          if (canAccessAdmin && (adminMode === "admin" || adminMode === "user")) {
             setIsComplete(true);
             setChecking(false);
             return;

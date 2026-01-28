@@ -6,7 +6,7 @@ Feature and workflow documentation for Kryonex Wizard.
 
 | Doc | Description |
 |-----|-------------|
-| [ADMIN_WORKFLOW.md](./ADMIN_WORKFLOW.md) | Admin menu security, mini Admin Quick Onboarding, and Fleet Registry (sort, search, drawer, quick copy). |
+| [ADMIN_WORKFLOW.md](./ADMIN_WORKFLOW.md) | Admin menu security, admin user-dashboard access (no wizard required), mini Admin Quick Onboarding, and Fleet Registry (sort, search, drawer, quick copy). |
 
 ## Related
 
