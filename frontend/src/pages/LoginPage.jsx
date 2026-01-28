@@ -1,12 +1,13 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import BackgroundGrid from "../components/BackgroundGrid.jsx";
 import { supabase } from "../lib/supabase";
 import { autoGrantAdmin, logBlackBoxEvent, verifyAdminCode } from "../lib/api";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [mode, setMode] = React.useState("login");
@@ -15,6 +16,17 @@ export default function LoginPage() {
   const [notice, setNotice] = React.useState("");
   const [checkingSession, setCheckingSession] = React.useState(true);
   const [adminCode, setAdminCode] = React.useState("");
+
+  React.useEffect(() => {
+    const reason = searchParams.get("reason");
+    if (reason === "idle") {
+      setNotice("You were signed out due to inactivity. Sign in again.");
+      setSearchParams({}, { replace: true });
+    } else if (reason === "session") {
+      setNotice("Your session ended. Sign in again.");
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -98,8 +110,8 @@ export default function LoginPage() {
       ) {
         setNotice("Account exists. Switch to Sign In.");
         setMode("login");
-      } else if (mode === "login" && /invalid login/i.test(message)) {
-        setError("Invalid credentials. Use Forgot Password or Sign Up.");
+      } else if (mode === "login" && /invalid login|credentials|invalid credentials/i.test(message)) {
+        setError("Invalid credentials. Use Forgot Password to reset your password, then sign in again.");
       } else {
         setError(message);
       }
