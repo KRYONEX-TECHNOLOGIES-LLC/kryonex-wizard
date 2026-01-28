@@ -123,7 +123,7 @@ export default function TopMenu() {
     }
   } else {
     if (canAccessAdmin) {
-      items.push({ to: "/admin", label: "Access Admin" });
+      items.push({ to: "/admin", label: "Admin Command" });
     }
     items.push({ to: "/dashboard", label: "Dashboard" });
     if ((!onboardingComplete || viewMode === "user") && (!wizardMaintenance || canAccessAdmin)) {
@@ -275,7 +275,7 @@ export default function TopMenu() {
                     navigate("/admin/dashboard");
                   }}
                 >
-                  Admin view
+                  ADMIN COMMAND
                 </button>
                 <button
                   type="button"
@@ -288,7 +288,7 @@ export default function TopMenu() {
                     navigate("/dashboard");
                   }}
                 >
-                  User view
+                  USER VIEW
                 </button>
               </div>
             ) : null}
