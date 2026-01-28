@@ -33,13 +33,17 @@ The menu and `RequireAdmin` use this to show/hide the Admin link and to gate adm
 
 ---
 
-## Mini Admin Onboarding Wizard
+## Admin Client Wizard — 3 Tools
 
-**Where:** Admin Client Wizard — `/admin/wizard/create`
+**Where:** `/admin/wizard/create`
 
-A small **“Admin Quick Onboarding”** box at the top of the page lets you onboard a client without Stripe or tier selection.
+The Admin Client Wizard is now a compact control panel with **three mini tools** in separate boxes. No multi-step flow, no preview panels.
 
-### Fields
+### Tool 1 — Mini Onboarding Wizard
+
+Fast manual onboarding for real clients (no Stripe, no tier picker).
+
+**Fields**
 
 | Field         | Required | Notes                                |
 |---------------|----------|--------------------------------------|
@@ -47,19 +51,19 @@ A small **“Admin Quick Onboarding”** box at the top of the page lets you onb
 | Area Code     | Yes      | Exactly 3 digits                     |
 | Email         | Yes      | Real email (used to find or create user) |
 
-### Button
+**Button**
 
-**Deploy Agent** — submits the form.
+**Deploy Agent**
 
-### On Submit
+**Behavior**
 
 - **User:** Created via Supabase Auth if the email does not exist; otherwise the existing user is used.
 - **Profile:** `business_name`, `area_code`, and identity are saved. `admin_onboarded` (and `admin_onboarded_at`) are set.
-- **Tier:** Core is applied (no Stripe). Subscription and usage limits are initialized.
+- **Tier:** Core is applied (no Stripe). Subscription + usage limits are initialized.
 - **Retell:** Same backend logic as the normal wizard — Retell agent is created, phone number provisioned, agent linked to the user.
-- **Redirect:** None. You stay on the Admin Client Wizard; success message shows user id and agent phone when available.
+- **Redirect:** None. Stays on page; success shows user id and agent phone.
 
-### API
+**API**
 
 `POST /admin/quick-onboard` (admin-only, rate-limited).
 
@@ -73,7 +77,7 @@ Body:
 }
 ```
 
-Response (success):
+Response:
 
 ```json
 {
@@ -84,7 +88,68 @@ Response (success):
 }
 ```
 
-No Stripe, no calendar connection, no multi-step UI. For full control (tier, features, schedule, etc.) use the full Admin Client Wizard form below the quick box.
+### Tool 2 — Mini Sign‑Up Box (real users)
+
+Create a real user with a temporary password.
+
+**Fields**
+
+| Field          | Required | Notes                      |
+|----------------|----------|---------------------------|
+| Email          | Yes      | Real user email           |
+| Temp Password  | Yes      | 8+ characters             |
+
+**Button**
+
+**Create Account**
+
+**Behavior**
+
+- Creates a real user account (no trial or temp flags)
+- Saves to `profiles` with `role = owner`
+- User can reset password via normal flow later
+
+**API**
+
+`POST /admin/create-account`
+
+Body:
+
+```json
+{
+  "email": "client@example.com",
+  "password": "TempPassword123"
+}
+```
+
+### Tool 3 — Tier Picker + Stripe Link
+
+Generate a Stripe checkout link for a selected tier.
+
+**Fields**
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| Tier  | Yes      | Pro / Elite / Scale |
+
+**Button**
+
+**Generate Stripe Link**
+
+**Behavior**
+
+- Creates a Stripe checkout link using existing price IDs
+- Returns a copyable URL for manual sending
+
+**API**
+
+`POST /admin/stripe-link`
+
+Body:
+
+```json
+{ "planTier": "pro" }
+```
 
 ---
 

@@ -83,6 +83,14 @@ export default function TopMenu() {
     };
   }, []);
 
+  React.useEffect(() => {
+    if (canAccessAdmin && location.pathname.startsWith("/admin") && viewMode !== "admin") {
+      window.localStorage.setItem("kryonex_admin_mode", "admin");
+      window.dispatchEvent(new Event("kryonex-admin-mode"));
+      setViewMode("admin");
+    }
+  }, [location.pathname, canAccessAdmin, viewMode]);
+
   const handleLogout = async () => {
     try {
       await logBlackBoxEvent("LOGOUT");
@@ -95,7 +103,8 @@ export default function TopMenu() {
     navigate("/login", { replace: true });
   };
 
-  const adminEnabled = canAccessAdmin && viewMode === "admin";
+  const isOnAdminRoute = location.pathname.startsWith("/admin");
+  const adminEnabled = canAccessAdmin && (viewMode === "admin" || isOnAdminRoute);
   const items = [];
   if (isSeller) {
     items.push({ to: "/console/dialer", label: "Call Center" });
@@ -221,8 +230,9 @@ export default function TopMenu() {
                 <AdminModeToggle
                   align="left"
                   onModeChange={(mode) => setViewMode(mode)}
+                  canAccessAdmin={canAccessAdmin}
                 />
-                {viewMode !== "admin" ? (
+                {viewMode !== "admin" && !isOnAdminRoute ? (
                   <button
                     type="button"
                     className="top-menu-logout"
@@ -230,6 +240,22 @@ export default function TopMenu() {
                     onClick={handleSwitchToAdmin}
                   >
                     Access Admin
+                  </button>
+                ) : null}
+                {viewMode === "admin" || isOnAdminRoute ? (
+                  <button
+                    type="button"
+                    className="top-menu-logout"
+                    style={{ marginTop: "0.75rem" }}
+                    onClick={() => {
+                      window.localStorage.setItem("kryonex_admin_mode", "user");
+                      window.dispatchEvent(new Event("kryonex-admin-mode"));
+                      setViewMode("user");
+                      setOpen(false);
+                      navigate("/dashboard");
+                    }}
+                  >
+                    Switch to User View
                   </button>
                 ) : null}
               </div>

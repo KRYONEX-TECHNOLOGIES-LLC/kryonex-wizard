@@ -5282,6 +5282,106 @@ app.post(
   }
 );
 
+app.post(
+  "/admin/create-account",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-create-account", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+      const cleanEmail = String(email || "").trim().toLowerCase();
+      const cleanPassword = String(password || "");
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ error: "email is invalid" });
+      }
+      if (!cleanPassword || cleanPassword.length < 8) {
+        return res
+          .status(400)
+          .json({ error: "password must be at least 8 characters" });
+      }
+
+      const existingUser = await findAuthUserByEmail(cleanEmail);
+      if (existingUser) {
+        return res.status(409).json({ error: "User already exists" });
+      }
+
+      const { data: userResult, error: userError } =
+        await supabaseAdmin.auth.admin.createUser({
+          email: cleanEmail,
+          password: cleanPassword,
+          email_confirm: true,
+        });
+      if (userError || !userResult?.user) {
+        return res.status(500).json({ error: userError?.message || "User create failed" });
+      }
+
+      const userId = userResult.user.id;
+      await supabaseAdmin.from("profiles").upsert({
+        user_id: userId,
+        role: "owner",
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_create_account",
+        actionType: "admin_create_account",
+        entity: "user",
+        entityId: userId,
+        req,
+      });
+
+      return res.json({ ok: true, user_id: userId });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/admin/stripe-link",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-stripe-link", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { planTier } = req.body || {};
+      const tier = String(planTier || "").toLowerCase();
+      if (!["pro", "elite", "scale"].includes(tier)) {
+        return res.status(400).json({ error: "Invalid planTier" });
+      }
+      const priceId = planPriceId(tier);
+      if (!priceId) {
+        return res.status(400).json({ error: "Stripe price not configured" });
+      }
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        line_items: [{ price: priceId, quantity: 1 }],
+        success_url: `${FRONTEND_URL}/login?checkout=success`,
+        cancel_url: `${FRONTEND_URL}/login?checkout=canceled`,
+        metadata: { plan_type: tier },
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_stripe_link_created",
+        actionType: "admin_stripe_link_created",
+        entity: "stripe_session",
+        entityId: session.id,
+        req,
+        metadata: { plan_type: tier },
+      });
+
+      return res.json({ ok: true, url: session.url });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.get(
   "/admin/audit-logs",
   requireAuth,

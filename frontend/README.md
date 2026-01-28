@@ -37,9 +37,7 @@ The “Access Admin” / Admin Command menu option and admin routes are visible 
 4. After success → redirect to `/dashboard` (agent number, business info, Cal.com CTA).
 
 ## Admin-Only UI
-- **Admin Client Wizard** (`/admin/wizard/create`): “Admin Quick Onboarding” box — Business Name, Area Code, Email, **Deploy Agent**. No Stripe, no tier picker; calls `POST /admin/quick-onboard`. Stays on page.
-- **Fleet Registry** (`/admin/users`): Sort by `created_at` DESC, instant search by business_name / email / area_code, scrollable list, right-side cheat-sheet drawer with Business Name, Email, Tier, Minutes/Texts remaining, Billing Cycle End, Days Remaining, Agent Phone, Cal.com URL, Status. Quick-copy for Business Name, Agent Phone, Cal.com URL, Transfer Number, Retell Agent ID, User ID.
-- **Admin menu security:** Admin nav and admin routes require `role === 'admin'` or email in `VITE_ADMIN_EMAIL` / `VITE_ADMIN_EMAILS`. `RequireAdmin.jsx` and `TopMenu.jsx` enforce this.
+- **Admin Client Wizard** (`/admin/wizard/create`): 3 mini tools in separate boxes:\n  1) **Mini Onboarding Wizard** — Business Name, Area Code, Email → **Deploy Agent** (`POST /admin/quick-onboard`, Core default).\n  2) **Mini Sign-Up Box** — Email + Temp Password → **Create Account** (`POST /admin/create-account`).\n  3) **Tier Picker + Stripe Link** — Select Pro/Elite/Scale → **Generate Stripe Link** (`POST /admin/stripe-link`).\n  No schedule config, no emergency toggles, no JSON preview.\n- **Fleet Registry** (`/admin/users`): Sort by `created_at` DESC, instant search by business_name / email / area_code, scrollable list, right-side cheat-sheet drawer with Business Name, Email, Tier, Minutes/Texts remaining, Billing Cycle End, Days Remaining, Agent Phone, Cal.com URL, Status. Quick-copy for Business Name, Agent Phone, Cal.com URL, Transfer Number, Retell Agent ID, User ID.\n- **Admin menu security:** Admin nav and admin routes require `role === 'admin'` or email in `VITE_ADMIN_EMAIL` / `VITE_ADMIN_EMAILS`. `RequireAdmin.jsx` and `TopMenu.jsx` enforce this.
 
 ## State + Persistence
 - Wizard state is persisted via `localStorage` keys with `kryonex:` prefix.

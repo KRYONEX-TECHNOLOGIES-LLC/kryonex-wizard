@@ -2,9 +2,10 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-export default function AdminModeToggle({ align = "right", onModeChange }) {
+export default function AdminModeToggle({ align = "right", onModeChange, canAccessAdmin }) {
   const navigate = useNavigate();
   const [isAdmin, setIsAdmin] = React.useState(false);
+  const [email, setEmail] = React.useState("");
   const readMode = () =>
     window.localStorage.getItem("kryonex_admin_mode") || "user";
   const [mode, setMode] = React.useState(readMode);
@@ -20,7 +21,10 @@ export default function AdminModeToggle({ align = "right", onModeChange }) {
         .select("role")
         .eq("user_id", user.id)
         .maybeSingle();
-      if (mounted) setIsAdmin(profile?.role === "admin");
+      if (mounted) {
+        setIsAdmin(profile?.role === "admin");
+        setEmail(user.email || "");
+      }
     };
     load();
     return () => {
@@ -36,7 +40,16 @@ export default function AdminModeToggle({ align = "right", onModeChange }) {
     };
   }, []);
 
-  if (!isAdmin) return null;
+  const adminEmails = String(
+    import.meta.env.VITE_ADMIN_EMAIL || import.meta.env.VITE_ADMIN_EMAILS || ""
+  )
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdminEmail = adminEmails.includes(email.toLowerCase());
+  const hasAccess = canAccessAdmin !== undefined ? canAccessAdmin : (isAdmin || isAdminEmail);
+
+  if (!hasAccess) return null;
 
   const setAdminMode = (next) => {
     if (readMode() === next) return;

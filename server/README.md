@@ -35,6 +35,8 @@ Required keys (high-level):
 - Admin ops: `GET /admin/users`, `GET /admin/users/:userId`, `GET /admin/metrics`,
   `GET /admin/health`, `GET /admin/timeseries`, `POST /admin/sync-stripe`
 - **Admin quick onboard:** `POST /admin/quick-onboard` — admin-only. Body: `{ businessName, areaCode, email }`. Creates/finds user by email, saves business_name + area_code + email to profiles, sets Core tier, initializes usage_limits, creates Retell agent, sets `admin_onboarded`. No Stripe. See `docs/ADMIN_WORKFLOW.md`.
+- **Admin create account:** `POST /admin/create-account` — admin-only. Body: `{ email, password }`. Creates a real user with temp password and `role=owner`.
+- **Admin Stripe link:** `POST /admin/stripe-link` — admin-only. Body: `{ planTier: "pro" | "elite" | "scale" }`. Returns a checkout URL using existing Stripe price IDs.
 - Call center: `GET /admin/dialer-queue`, `POST /admin/dialer-queue`
 - Webhooks: `POST /retell-webhook` (and `/api/retell/webhook`)
 
