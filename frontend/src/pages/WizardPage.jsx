@@ -710,7 +710,7 @@ export default function WizardPage({ embeddedMode }) {
       <div className="absolute -top-28 -right-28 h-72 w-72 rounded-full bg-neon-purple/20 blur-[120px]" />
       <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[140px]" />
 
-      <div className={`relative z-10 mx-auto flex ${embeddedMode ? "min-h-0 flex-1 flex-col px-4 py-4" : "min-h-screen max-w-6xl flex-col px-6 py-10"}`}>
+      <div className={`relative z-10 mx-auto flex w-full ${embeddedMode ? "min-h-0 flex-1 max-w-6xl flex-col px-6 py-6" : "min-h-screen max-w-6xl flex-col px-6 py-10"}`}>
         <header className="mb-10 flex flex-wrap items-center justify-between gap-6">
           <div>
             <p className="text-sm uppercase tracking-[0.4em] text-neon-cyan/70">
@@ -741,7 +741,7 @@ export default function WizardPage({ embeddedMode }) {
           </div>
         </header>
 
-        <div className={`glass-panel relative flex-1 rounded-[28px] border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl ${embeddedMode ? "p-4 sm:p-5" : "p-8 sm:p-10"}`}>
+        <div className="glass-panel relative flex-1 rounded-[28px] border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl p-8 sm:p-10">
           <div className="mb-10 flex flex-wrap items-center gap-3 overflow-x-auto pb-2 scrollbar-hide">
             {stepMeta.map((meta, index) => {
               const isActive = safeStep === index + 1;
@@ -891,20 +891,14 @@ export default function WizardPage({ embeddedMode }) {
                   <div>
                     <h2 className="text-3xl font-semibold">Plan Selection</h2>
                     <p className="mt-2 text-white/60">
-                      {embeddedMode
-                        ? "Choose the tier for this client. Use the Stripe Link Generator to send them a checkout link."
-                        : "Choose the deployment tier to activate and proceed to Stripe checkout."}
+                      Choose the deployment tier to activate and proceed to
+                      Stripe checkout.
                     </p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/50">
                     Pricing Updated
                   </div>
                 </div>
-                {embeddedMode ? (
-                  <div className="rounded-2xl border border-neon-cyan/30 bg-neon-cyan/5 px-4 py-3 text-sm text-neon-cyan/90">
-                    Client will pay via the Stripe Link Generator on the right. Select a plan below to choose their tier, then generate the link.
-                  </div>
-                ) : null}
 
                 <div className="rounded-2xl border border-white/10 bg-black/40 px-6 py-5 text-center">
                   <p
@@ -1039,9 +1033,7 @@ export default function WizardPage({ embeddedMode }) {
                           disabled={embeddedMode ? false : checkoutLoading}
                           className="glow-button mt-8 w-full"
                         >
-                          {embeddedMode
-                            ? "Select Plan (use Stripe link below)"
-                            : checkoutLoading && planTier === tier.id
+                          {checkoutLoading && planTier === tier.id && !embeddedMode
                             ? "OPENING CHECKOUT..."
                             : "Select Plan"}
                         </button>
