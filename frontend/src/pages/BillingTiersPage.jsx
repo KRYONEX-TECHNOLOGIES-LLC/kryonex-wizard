@@ -8,7 +8,7 @@ import {
 } from "../lib/api";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { TIERS } from "../lib/billingConstants";
+import { TIERS, TOP_UPS } from "../lib/billingConstants";
 
 const TIER_CAPS = {
   pro: { minutesCap: 300, smsCap: 1000 },
@@ -17,33 +17,6 @@ const TIER_CAPS = {
 };
 
 const TIER_ORDER = ["pro", "elite", "scale"];
-
-const TOPUPS = [
-  {
-    id: "call_300",
-    name: "+300 Minutes",
-    description: "Extend your call capacity quickly.",
-    priceLabel: "$99",
-  },
-  {
-    id: "call_800",
-    name: "+800 Minutes",
-    description: "Best value for heavy call volume.",
-    priceLabel: "$265",
-  },
-  {
-    id: "sms_500",
-    name: "+500 Texts",
-    description: "Keep follow-ups flowing.",
-    priceLabel: "$40",
-  },
-  {
-    id: "sms_1000",
-    name: "+1000 Texts",
-    description: "Highest SMS boost.",
-    priceLabel: "$80",
-  },
-];
 
 const normalizeTier = (value) => {
   const tier = String(value || "").toLowerCase();
@@ -220,6 +193,11 @@ export default function BillingTiersPage() {
                         {caps?.minutesCap ?? tier.minutes} minutes ·{" "}
                         {caps?.smsCap ?? "--"} texts
                       </div>
+                      <div className="text-xs text-white/40 mt-1">
+                        Top-ups: {TOP_UPS.map((t) =>
+                          t.call_minutes ? `+${t.call_minutes} min ${t.priceLabel}` : `+${t.sms_count} SMS ${t.priceLabel}`
+                        ).join(", ")}
+                      </div>
                       <button
                         type="button"
                         className="button-primary w-full"
@@ -244,7 +222,7 @@ export default function BillingTiersPage() {
                 Top-Ups
               </div>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                {TOPUPS.map((topup) => (
+                {TOP_UPS.map((topup) => (
                   <div
                     key={topup.id}
                     className="rounded-2xl border border-white/10 bg-black/40 p-4 space-y-3"

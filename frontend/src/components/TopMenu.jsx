@@ -8,7 +8,6 @@ import {
   logImpersonationEnd,
   verifyAdminCode,
 } from "../lib/api";
-import AdminModeToggle from "./AdminModeToggle.jsx";
 import { getImpersonation, clearImpersonation, IMPERSONATION_EVENT } from "../lib/impersonation";
 
 export default function TopMenu() {
@@ -258,39 +257,39 @@ export default function TopMenu() {
               >
                 Exit Impersonation
               </button>
-            ) : canAccessAdmin ? (
+            ) : null}
+            {canAccessAdmin ? (
               <div className="top-menu-section">
-                <AdminModeToggle
-                  align="left"
-                  onModeChange={(mode) => setViewMode(mode)}
-                  canAccessAdmin={canAccessAdmin}
-                />
-                {viewMode !== "admin" && !isOnAdminRoute ? (
-                  <button
-                    type="button"
-                    className="top-menu-logout"
-                    style={{ marginTop: "0.75rem" }}
-                    onClick={handleSwitchToAdmin}
-                  >
-                    Access Admin
-                  </button>
-                ) : null}
-                {viewMode === "admin" || isOnAdminRoute ? (
-                  <button
-                    type="button"
-                    className="top-menu-logout"
-                    style={{ marginTop: "0.75rem" }}
-                    onClick={() => {
-                      window.localStorage.setItem("kryonex_admin_mode", "user");
-                      window.dispatchEvent(new Event("kryonex-admin-mode"));
-                      setViewMode("user");
-                      setOpen(false);
-                      navigate("/dashboard");
-                    }}
-                  >
-                    Switch to User View
-                  </button>
-                ) : null}
+                <div className="top-menu-status-label" style={{ marginTop: "0.75rem" }}>
+                  View mode
+                </div>
+                <button
+                  type="button"
+                  className="top-menu-item top-menu-item-button"
+                  style={{ marginTop: "0.25rem" }}
+                  onClick={() => {
+                    window.localStorage.setItem("kryonex_admin_mode", "admin");
+                    window.dispatchEvent(new Event("kryonex-admin-mode"));
+                    setViewMode("admin");
+                    setOpen(false);
+                    navigate("/admin/dashboard");
+                  }}
+                >
+                  Admin view
+                </button>
+                <button
+                  type="button"
+                  className="top-menu-item top-menu-item-button"
+                  onClick={() => {
+                    window.localStorage.setItem("kryonex_admin_mode", "user");
+                    window.dispatchEvent(new Event("kryonex-admin-mode"));
+                    setViewMode("user");
+                    setOpen(false);
+                    navigate("/dashboard");
+                  }}
+                >
+                  User view
+                </button>
               </div>
             ) : null}
             <button className="top-menu-logout" type="button" onClick={handleLogout}>

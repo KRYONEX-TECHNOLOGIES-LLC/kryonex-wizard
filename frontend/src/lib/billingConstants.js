@@ -96,3 +96,39 @@ export const TIER_FEATURE_DEFAULTS = {
 
 export const getTierOptions = (coreOffer) =>
   coreOffer ? TIERS : TIERS.filter((tier) => tier.id !== "core");
+
+/** Single source of truth for top-up pricing. Must match server topupPriceMap / topupCatalog. */
+export const TOP_UPS = [
+  {
+    id: "call_300",
+    name: "+300 Minutes",
+    description: "Extend your call capacity quickly.",
+    priceLabel: "$99",
+    call_minutes: 300,
+    sms_count: 0,
+  },
+  {
+    id: "call_800",
+    name: "+800 Minutes",
+    description: "Best value for heavy call volume.",
+    priceLabel: "$265",
+    call_minutes: 800,
+    sms_count: 0,
+  },
+  {
+    id: "sms_500",
+    name: "+500 Texts",
+    description: "Keep follow-ups flowing.",
+    priceLabel: "$40",
+    call_minutes: 0,
+    sms_count: 500,
+  },
+  {
+    id: "sms_1000",
+    name: "+1000 Texts",
+    description: "Highest SMS boost.",
+    priceLabel: "$80",
+    call_minutes: 0,
+    sms_count: 1000,
+  },
+];
