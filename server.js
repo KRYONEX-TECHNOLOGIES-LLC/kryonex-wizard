@@ -333,7 +333,15 @@ const lookupUserIdByCustomerId = async (customerId) => {
   return data?.user_id || null;
 };
 
-const sendSmsInternal = async ({ userId, to, body, leadId, source, req }) => {
+const sendSmsInternal = async ({
+  userId,
+  to,
+  body,
+  leadId,
+  source,
+  req,
+  bypassUsage = false,
+}) => {
   if (!body || !to) {
     throw new Error("body and to are required");
   }
@@ -364,15 +372,17 @@ const sendSmsInternal = async ({ userId, to, body, leadId, source, req }) => {
     subscription?.current_period_end
   );
 
-  if (usage.force_pause && !usage.force_resume) {
+  if (bypassUsage) {
+    // Admin view bypass: allow send without usage gating.
+  } else if (usage.force_pause && !usage.force_resume) {
     throw new Error("Usage paused by admin");
   }
-  if (usage.limit_state === "paused") {
+  if (!bypassUsage && usage.limit_state === "paused") {
     throw new Error("Usage limit reached");
   }
   const smsCap = usage.sms_cap ?? 0;
   const newSmsUsed = (usage.sms_used || 0) + 1;
-  if (newSmsUsed > smsCap) {
+  if (!bypassUsage && newSmsUsed > smsCap) {
     console.warn("[sendSms] SMS blocked: usage cap reached", {
       user_id: userId,
       sms_used: usage.sms_used,
@@ -647,50 +657,117 @@ app.post(
           if (session.metadata?.type === "topup") {
             const userId =
               session.metadata?.user_id || session.client_reference_id;
-            const callSeconds = parseInt(
-              session.metadata?.call_seconds || "0",
+            const extraMinutes = parseInt(
+              session.metadata?.extra_minutes ||
+                String(Math.floor((session.metadata?.call_seconds || 0) / 60)) ||
+                "0",
               10
             );
-            const smsCount = parseInt(session.metadata?.sms_count || "0", 10);
-            if (userId) {
-              const { data: usage } = await supabaseAdmin
-                .from("usage_limits")
-                .select("*")
-                .eq("user_id", userId)
-                .maybeSingle();
-              if (usage) {
-                await supabaseAdmin
-                  .from("usage_limits")
-                  .update({
-                    call_credit_seconds:
-                      (usage.call_credit_seconds || 0) + callSeconds,
-                    sms_credit: (usage.sms_credit || 0) + smsCount,
-                    limit_state: "ok",
-                    force_pause: false,
-                    updated_at: new Date().toISOString(),
-                  })
-                  .eq("user_id", userId);
-              }
-              await auditLog({
-                userId,
-                action: "topup_applied",
-                entity: "usage",
-                entityId: session.id,
-                req,
-                metadata: { call_seconds: callSeconds, sms_count: smsCount },
+            const extraSms = parseInt(
+              session.metadata?.extra_sms ||
+                session.metadata?.sms_count ||
+                "0",
+              10
+            );
+            if (!userId) {
+              console.error("[stripe-webhook] topup missing user_id", {
+                sessionId: session.id,
+                metadataKeys: session.metadata
+                  ? Object.keys(session.metadata)
+                  : [],
               });
-              await logEvent({
-                userId,
-                actionType: "STRIPE_CHARGE_SUCCEEDED",
-                req,
-                metaData: {
-                  transaction_id: session.id,
-                  amount: (session.amount_total || 0) / 100,
-                  status: session.status,
-                  type: "topup",
-                },
+              return;
+            }
+            if (extraMinutes <= 0 && extraSms <= 0) {
+              console.error("[stripe-webhook] topup missing cap metadata", {
+                user_id: userId,
+                topup_type: session.metadata?.topup_type || null,
+                extra_minutes: extraMinutes,
+                extra_sms: extraSms,
+              });
+              return;
+            }
+            const { data: usage } = await supabaseAdmin
+              .from("usage_limits")
+              .select("*")
+              .eq("user_id", userId)
+              .maybeSingle();
+            let usageRow = usage;
+            if (!usageRow) {
+              const { data: created } = await supabaseAdmin
+                .from("usage_limits")
+                .insert({
+                  user_id: userId,
+                  call_cap_seconds: 0,
+                  sms_cap: 0,
+                  grace_seconds: 600,
+                  call_used_seconds: 0,
+                  sms_used: 0,
+                  period_start: new Date().toISOString(),
+                  period_end: new Date(
+                    Date.now() + 30 * 24 * 60 * 60 * 1000
+                  ).toISOString(),
+                })
+                .select("*")
+                .single();
+              usageRow = created || null;
+            }
+            if (usageRow) {
+              const addedCallSeconds = Math.max(0, extraMinutes) * 60;
+              const addedSms = Math.max(0, extraSms);
+              const nextCallCap =
+                (usageRow.call_cap_seconds || 0) + addedCallSeconds;
+              const nextSmsCap = (usageRow.sms_cap || 0) + addedSms;
+              const graceSeconds = usageRow.grace_seconds ?? 600;
+              const underCapPlusGrace =
+                (usageRow.call_used_seconds || 0) <=
+                  nextCallCap + graceSeconds &&
+                (usageRow.sms_used || 0) <= nextSmsCap;
+              await supabaseAdmin
+                .from("usage_limits")
+                .update({
+                  call_cap_seconds: nextCallCap,
+                  sms_cap: nextSmsCap,
+                  limit_state: "ok",
+                  force_pause: false,
+                  hard_stop_active: usageRow.hard_stop_active
+                    ? !underCapPlusGrace
+                    : usageRow.hard_stop_active,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("user_id", userId);
+              console.info("[stripe-webhook] topup applied", {
+                user_id: userId,
+                topup_type: session.metadata?.topup_type || null,
+                extra_minutes: extraMinutes,
+                extra_sms: extraSms,
+                new_call_cap_seconds: nextCallCap,
+                new_sms_cap: nextSmsCap,
               });
             }
+            await auditLog({
+              userId,
+              action: "topup_applied",
+              entity: "usage",
+              entityId: session.id,
+              req,
+              metadata: {
+                topup_type: session.metadata?.topup_type || null,
+                extra_minutes: extraMinutes,
+                extra_sms: extraSms,
+              },
+            });
+            await logEvent({
+              userId,
+              actionType: "STRIPE_CHARGE_SUCCEEDED",
+              req,
+              metaData: {
+                transaction_id: session.id,
+                amount: (session.amount_total || 0) / 100,
+                status: session.status,
+                type: "topup",
+              },
+            });
             return;
           }
           if (session.mode === "subscription" && session.subscription) {
@@ -1107,6 +1184,34 @@ const PLAN_CONFIG = {
   },
 };
 
+const resolvePlanTierFromPriceId = (priceId) => {
+  if (!priceId) return null;
+  if (priceId === STRIPE_PRICE_ID_SCALE) return "scale";
+  if ([STRIPE_PRICE_ID_ELITE, STRIPE_PRICE_ID_PLUMBING].includes(priceId)) {
+    return "elite";
+  }
+  if (priceId === STRIPE_PRICE_ID_CORE) return "core";
+  if ([STRIPE_PRICE_ID_PRO, STRIPE_PRICE_ID_HVAC].includes(priceId)) {
+    return "pro";
+  }
+  return null;
+};
+
+const getPlanCaps = (planTier) => {
+  const tier = String(planTier || "").toLowerCase();
+  if (PLAN_CONFIG[tier]) {
+    return {
+      minutesCap: PLAN_CONFIG[tier].minutesCap,
+      smsCap: PLAN_CONFIG[tier].smsCap,
+    };
+  }
+  const fallback = planConfig(tier || "core");
+  return {
+    minutesCap: fallback.call_minutes,
+    smsCap: fallback.sms_count,
+  };
+};
+
 const isValidEmailFormat = (value) => {
   const s = String(value || "").trim();
   if (!s) return false;
@@ -1342,6 +1447,32 @@ const requireAuth = async (req, res, next) => {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
+};
+
+const isAdminViewRequest = (req) => {
+  return String(req.headers["x-admin-mode"] || "").toLowerCase() === "admin";
+};
+
+/** When X-Impersonation-Mode & X-Impersonated-User-ID are set and requester is admin, set req.effectiveUserId for data scope. */
+const resolveEffectiveUser = async (req, res, next) => {
+  req.effectiveUserId = req.user?.id ?? null;
+  const mode = String(req.headers["x-impersonation-mode"] || "").toLowerCase();
+  const targetId = String(req.headers["x-impersonated-user-id"] || "").trim();
+  if (mode !== "true" || !targetId) return next();
+  try {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("role")
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    const isAdmin =
+      profile?.role === "admin" || isAdminEmail(req.user?.email);
+    if (!isAdmin) return next();
+    req.effectiveUserId = targetId;
+  } catch {
+    // leave effectiveUserId as req.user.id
+  }
+  return next();
 };
 
 const pickLlmId = (industry) => {
@@ -2435,17 +2566,18 @@ app.get("/api/calcom/callback", async (req, res) => {
   }
 });
 
-app.get("/api/calcom/status", requireAuth, async (req, res) => {
+app.get("/api/calcom/status", requireAuth, resolveEffectiveUser, async (req, res) => {
+  const uid = req.effectiveUserId ?? req.user.id;
   const [{ data: profile }, { data: integration }] = await Promise.all([
     supabaseAdmin
       .from("profiles")
       .select("cal_com_url")
-      .eq("user_id", req.user.id)
+      .eq("user_id", uid)
       .maybeSingle(),
     supabaseAdmin
       .from("integrations")
       .select("is_active, access_token, booking_url")
-      .eq("user_id", req.user.id)
+      .eq("user_id", uid)
       .eq("provider", "calcom")
       .maybeSingle(),
   ]);
@@ -2454,8 +2586,9 @@ app.get("/api/calcom/status", requireAuth, async (req, res) => {
   return res.json({ connected, cal_com_url: calUrl });
 });
 
-app.post("/api/calcom/disconnect", requireAuth, async (req, res) => {
+app.post("/api/calcom/disconnect", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
+    const uid = req.effectiveUserId ?? req.user.id;
     const resetPayload = {
       is_active: false,
       access_token: null,
@@ -2472,7 +2605,7 @@ app.post("/api/calcom/disconnect", requireAuth, async (req, res) => {
     await supabaseAdmin
       .from("integrations")
       .update(resetPayload)
-      .eq("user_id", req.user.id)
+      .eq("user_id", uid)
       .eq("provider", "calcom");
     await supabaseAdmin
       .from("profiles")
@@ -2485,7 +2618,7 @@ app.post("/api/calcom/disconnect", requireAuth, async (req, res) => {
         cal_time_zone: null,
         cal_com_url: null,
       })
-      .eq("user_id", req.user.id);
+      .eq("user_id", uid);
     return res.json({ connected: false });
   } catch (err) {
     return res.status(500).json({ error: "Unable to disconnect calendar" });
@@ -2927,13 +3060,15 @@ app.post(
 
       const wizardMaintenance =
         String(WIZARD_MAINTENANCE_MODE || "").toLowerCase() === "true";
-      if (wizardMaintenance && profile?.role !== "admin") {
+      const adminBypass =
+        profile?.role === "admin" && isAdminViewRequest(req);
+      if (wizardMaintenance && !adminBypass) {
         return res.status(503).json({
           error: "Wizard temporarily disabled. Please contact support.",
         });
       }
 
-      if (profile?.role !== "admin") {
+      if (!adminBypass) {
         const { data: subscriptionRows, error: subError } = await supabaseAdmin
           .from("subscriptions")
           .select("status, plan_type, current_period_end")
@@ -3355,36 +3490,39 @@ app.post(
   }
 );
 
-app.get("/dashboard-stats", requireAuth, async (req, res) => {
+app.get("/dashboard-stats", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
-    const stats = await getDashboardStats(req.user.id);
+    const uid = req.effectiveUserId ?? req.user.id;
+    const stats = await getDashboardStats(uid);
     return res.json(stats);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/api/dashboard/stats", requireAuth, async (req, res) => {
+app.get("/api/dashboard/stats", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
-    const stats = await getDashboardStats(req.user.id);
+    const uid = req.effectiveUserId ?? req.user.id;
+    const stats = await getDashboardStats(uid);
     return res.json(stats);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/leads", requireAuth, async (req, res) => {
+app.get("/leads", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
+    const uid = req.effectiveUserId ?? req.user.id;
     const { data: profile } = await supabaseAdmin
       .from("profiles")
       .select("role")
-      .eq("user_id", req.user.id)
+      .eq("user_id", uid)
       .maybeSingle();
     const role = profile?.role || "owner";
     const { data, error } = await supabaseAdmin
       .from("leads")
       .select("*")
-      .eq(role === "seller" ? "owner_id" : "user_id", req.user.id)
+      .eq(role === "seller" ? "owner_id" : "user_id", uid)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -3414,8 +3552,9 @@ app.get("/admin/leads", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/call-recordings", requireAuth, async (req, res) => {
+app.get("/call-recordings", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
+    const uid = req.effectiveUserId ?? req.user.id;
     const { data, error } = await supabaseAdmin
       .from("call_recordings")
       .select(
@@ -3428,7 +3567,7 @@ app.get("/call-recordings", requireAuth, async (req, res) => {
         lead:leads(id, name, business_name, phone, summary, transcript)
       `
       )
-      .eq("seller_id", req.user.id)
+      .eq("seller_id", uid)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -3525,13 +3664,15 @@ app.post(
 app.post(
   "/leads/update-status",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "leads-status", limit: 30, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { data: profile } = await supabaseAdmin
         .from("profiles")
         .select("role")
-        .eq("user_id", req.user.id)
+        .eq("user_id", uid)
         .maybeSingle();
       const role = profile?.role || "owner";
       const { leadId, status } = req.body || {};
@@ -3548,7 +3689,7 @@ app.post(
         .from("leads")
         .update({ status: normalizedStatus, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq(role === "seller" ? "owner_id" : "user_id", req.user.id)
+        .eq(role === "seller" ? "owner_id" : "user_id", uid)
         .select("*")
         .maybeSingle();
 
@@ -3563,12 +3704,13 @@ app.post(
   }
 );
 
-app.get("/messages", requireAuth, async (req, res) => {
+app.get("/messages", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
+    const uid = req.effectiveUserId ?? req.user.id;
     const { data, error } = await supabaseAdmin
       .from("messages")
       .select("*")
-      .eq("user_id", req.user.id)
+      .eq("user_id", uid)
       .order("timestamp", { ascending: false });
 
     if (error) {
@@ -3584,9 +3726,11 @@ app.get("/messages", requireAuth, async (req, res) => {
 app.post(
   "/send-sms",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "sms", limit: 20, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { leadId, to, body, source } = req.body || {};
       if (!body) {
         return res.status(400).json({ error: "body is required" });
@@ -3598,7 +3742,7 @@ app.post(
           .from("leads")
           .select("phone")
           .eq("id", leadId)
-          .eq("user_id", req.user.id)
+          .eq("user_id", uid)
           .single();
 
         if (leadError || !lead) {
@@ -3614,17 +3758,29 @@ app.post(
 
       const isSandbox =
         String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true";
+      let bypassUsage = false;
+      // No admin bypass when impersonating (effective user !== authenticated user)
+      const isImpersonating = req.effectiveUserId && req.effectiveUserId !== req.user.id;
+      if (!isImpersonating && isAdminViewRequest(req)) {
+        const { data: profile } = await supabaseAdmin
+          .from("profiles")
+          .select("role")
+          .eq("user_id", req.user.id)
+          .maybeSingle();
+        bypassUsage = profile?.role === "admin";
+      }
       const retellResponse = await sendSmsInternal({
-        userId: req.user.id,
+        userId: uid,
         to: destination,
         body,
         leadId,
         source: source || "manual",
         req,
+        bypassUsage,
       });
 
       await supabaseAdmin.from("messages").insert({
-        user_id: req.user.id,
+        user_id: uid,
         lead_id: leadId || null,
         direction: "outbound",
         body,
@@ -3843,9 +3999,11 @@ app.post(
 app.post(
   "/tracking/create",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "tracking-create", limit: 10, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { leadId, customerPhone, etaMinutes } = req.body || {};
       const token = generateToken(12);
       const updateKey = generateToken(16);
@@ -3859,7 +4017,7 @@ app.post(
         .insert({
           token,
           update_key: updateKey,
-          created_by: req.user.id,
+          created_by: uid,
           lead_id: leadId || null,
           customer_phone: customerPhone || null,
           eta_minutes: eta,
@@ -3883,12 +4041,44 @@ app.post(
   }
 );
 
+app.get(
+  "/appointments",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "appointments-list", limit: 60, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      const startTime = req.query.start_time || req.query.start;
+      const endTime = req.query.end_time || req.query.end;
+      if (!startTime || !endTime) {
+        return res.status(400).json({ error: "start_time and end_time are required" });
+      }
+      const { data, error } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", uid)
+        .gte("start_time", startTime)
+        .lte("start_time", endTime)
+        .order("start_time", { ascending: true });
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      return res.json({ appointments: data || [] });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.post(
   "/appointments",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "appointments", limit: 30, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const {
         customer_name,
         customer_phone,
@@ -3919,7 +4109,7 @@ app.post(
       const { data, error } = await supabaseAdmin
         .from("appointments")
         .insert({
-          user_id: req.user.id,
+          user_id: uid,
           customer_name,
           customer_phone: customer_phone || null,
           start_time: startTime.toISOString(),
@@ -3958,9 +4148,11 @@ app.post(
 app.put(
   "/appointments/:id",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "appointments-update", limit: 30, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { id } = req.params || {};
       if (!id) {
         return res.status(400).json({ error: "appointment id is required" });
@@ -3985,7 +4177,7 @@ app.put(
         .from("appointments")
         .select("*")
         .eq("id", id)
-        .eq("user_id", req.user.id)
+        .eq("user_id", uid)
         .maybeSingle();
       if (existingError) {
         return res.status(500).json({ error: existingError.message });
@@ -4043,7 +4235,7 @@ app.put(
           .from("appointments")
           .update(payload)
           .eq("id", id)
-          .eq("user_id", req.user.id)
+          .eq("user_id", uid)
           .select("*")
           .single();
 
@@ -4069,9 +4261,11 @@ app.put(
 app.delete(
   "/appointments/:id",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "appointments-delete", limit: 30, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { id } = req.params || {};
       if (!id) {
         return res.status(400).json({ error: "appointment id is required" });
@@ -4080,7 +4274,7 @@ app.delete(
         .from("appointments")
         .delete()
         .eq("id", id)
-        .eq("user_id", req.user.id)
+        .eq("user_id", uid)
         .select("id")
         .maybeSingle();
       if (error) {
@@ -4216,9 +4410,11 @@ app.post(
 app.post(
   "/create-checkout-session",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "checkout", limit: 8, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { planTier, successUrl, cancelUrl, lookup_key } = req.body || {};
       let priceId = null;
       if (lookup_key) {
@@ -4259,15 +4455,25 @@ app.post(
         `${FRONTEND_URL}/billing?canceled=true`
       );
 
+      const resolvedTier =
+        String(planTier || "").trim().toLowerCase() ||
+        resolvePlanTierFromPriceId(priceId) ||
+        "pro";
+      const caps = getPlanCaps(resolvedTier);
+
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         line_items: [{ price: priceId, quantity: 1 }],
         success_url: safeSuccessUrl,
         cancel_url: safeCancelUrl,
-        client_reference_id: req.user.id,
+        client_reference_id: uid,
         metadata: {
-          user_id: req.user.id,
-          plan_type: planTier,
+          user_id: String(uid),
+          email: String(req.user.email || ""),
+          planTier: resolvedTier,
+          minutesCap: String(caps.minutesCap),
+          smsCap: String(caps.smsCap),
+          plan_type: resolvedTier,
         },
       });
 
@@ -4277,7 +4483,10 @@ app.post(
         entity: "stripe_session",
         entityId: session.id,
         req,
-        metadata: { plan_type: planTier || null, lookup_key: lookup_key || null },
+        metadata: {
+          plan_type: resolvedTier || null,
+          lookup_key: lookup_key || null,
+        },
       });
 
       return res.json({ url: session.url });
@@ -4293,13 +4502,15 @@ app.post(
 app.post(
   "/create-portal-session",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "portal", limit: 8, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { data: subscription, error } = await supabaseAdmin
         .from("subscriptions")
         .select("customer_id")
-        .eq("user_id", req.user.id)
+        .eq("user_id", uid)
         .single();
 
       if (error || !subscription) {
@@ -4329,9 +4540,11 @@ app.post(
 app.post(
   "/create-topup-session",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "topup", limit: 8, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { topupType, successUrl, cancelUrl } = req.body || {};
       const topup = topupPriceMap[topupType];
       if (!topup?.priceId) {
@@ -4357,13 +4570,16 @@ app.post(
         line_items: [{ price: topup.priceId, quantity: 1 }],
         success_url: safeSuccessUrl,
         cancel_url: safeCancelUrl,
-        client_reference_id: req.user.id,
+        client_reference_id: uid,
         metadata: {
           type: "topup",
-          user_id: req.user.id,
+          user_id: String(uid),
+          email: String(req.user.email || ""),
           call_seconds: String(topup.call_seconds),
           sms_count: String(topup.sms_count),
           topup_type: topupType,
+          extra_minutes: String(Math.floor((topup.call_seconds || 0) / 60)),
+          extra_sms: String(topup.sms_count || 0),
         },
       });
 
@@ -4383,12 +4599,13 @@ app.post(
   }
 );
 
-app.get("/subscription-status", requireAuth, async (req, res) => {
+app.get("/subscription-status", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
+    const uid = req.effectiveUserId ?? req.user.id;
     const { data, error } = await supabaseAdmin
       .from("subscriptions")
       .select("status, plan_type, current_period_end")
-      .eq("user_id", req.user.id)
+      .eq("user_id", uid)
       .order("created_at", { ascending: false })
       .limit(1);
 
@@ -5436,6 +5653,69 @@ app.post(
 );
 
 app.post(
+  "/admin/impersonation/start",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-impersonation", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { user_id: impersonatedUserId } = req.body || {};
+      if (!impersonatedUserId) {
+        return res.status(400).json({ error: "user_id is required" });
+      }
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "impersonation_start",
+        actionType: "impersonation_start",
+        entity: "user",
+        entityId: impersonatedUserId,
+        req,
+        metadata: { impersonated_user_id: impersonatedUserId },
+      });
+      console.info("[impersonation] start", {
+        admin_id: req.user.id,
+        impersonated_user_id: impersonatedUserId,
+        timestamp: new Date().toISOString(),
+      });
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/admin/impersonation/end",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-impersonation", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { user_id: impersonatedUserId } = req.body || {};
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "impersonation_end",
+        actionType: "impersonation_end",
+        entity: "user",
+        entityId: impersonatedUserId || null,
+        req,
+        metadata: { impersonated_user_id: impersonatedUserId || null },
+      });
+      console.info("[impersonation] end", {
+        admin_id: req.user.id,
+        impersonated_user_id: impersonatedUserId || null,
+        timestamp: new Date().toISOString(),
+      });
+      return res.json({ ok: true });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
   "/admin/create-account",
   requireAuth,
   requireAdmin,
@@ -6068,16 +6348,18 @@ app.post(
 app.get(
   "/usage/status",
   requireAuth,
+  resolveEffectiveUser,
   rateLimit({ keyPrefix: "usage-status", limit: 30, windowMs: 60_000 }),
   async (req, res) => {
     try {
+      const uid = req.effectiveUserId ?? req.user.id;
       const { data: subscription } = await supabaseAdmin
         .from("subscriptions")
         .select("plan_type, current_period_end")
-        .eq("user_id", req.user.id)
+        .eq("user_id", uid)
         .maybeSingle();
       let usage = await ensureUsageLimits({
-        userId: req.user.id,
+        userId: uid,
         planType: subscription?.plan_type,
         periodEnd: subscription?.current_period_end,
       });

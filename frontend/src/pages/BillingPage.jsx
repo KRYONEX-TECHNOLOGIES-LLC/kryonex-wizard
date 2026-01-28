@@ -120,7 +120,7 @@ export default function BillingPage() {
         >
           BILLING CORE
         </motion.h2>
-        {isAdmin && adminMode === "user" ? (
+        {isAdmin && adminMode === "admin" ? (
           <div className="glass" style={{ padding: "1rem", marginBottom: "1.5rem" }}>
             Admin override active. Billing is optional for admin accounts.
           </div>

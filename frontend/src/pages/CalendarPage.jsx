@@ -7,12 +7,14 @@ import {
   createTrackingSession,
   deleteAppointment,
   updateAppointment,
+  getAppointments,
   getCalcomStatus,
   disconnectCalcom,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { getSavedState, saveState } from "../lib/persistence.js";
 import { normalizePhone } from "../lib/phone.js";
+import { getImpersonation } from "../lib/impersonation.js";
 
 const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
 const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0);
@@ -111,10 +113,23 @@ export default function CalendarPage() {
     setLoading(true);
     const start = startOfMonth(date);
     const end = endOfMonth(date);
+    const impersonation = getImpersonation();
+    if (impersonation.active && impersonation.userId) {
+      try {
+        const res = await getAppointments(start.toISOString(), end.toISOString());
+        setAppointments(res.data?.appointments || []);
+      } catch {
+        setAppointments([]);
+      }
+      setLoading(false);
+      return;
+    }
     const { data: sessionData } = await supabase.auth.getSession();
     const user = sessionData?.session?.user;
-    if (!user) return;
-
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     const { data } = await supabase
       .from("appointments")
       .select("*")

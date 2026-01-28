@@ -6,6 +6,7 @@ import WizardPage from "./pages/WizardPage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
 import CalendarPage from "./pages/CalendarPage.jsx";
 import BillingPage from "./pages/BillingPage.jsx";
+import BillingTiersPage from "./pages/BillingTiersPage.jsx";
 import BlackBoxPage from "./pages/BlackBoxPage.jsx";
 import LeadsPage from "./pages/LeadsPage.jsx";
 import NumbersPage from "./pages/NumbersPage.jsx";
@@ -87,6 +88,16 @@ export default function App() {
           <ProtectedRoute>
             <RequireOnboarding>
               <BillingPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/billing/tiers"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <BillingTiersPage />
             </RequireOnboarding>
           </ProtectedRoute>
         }

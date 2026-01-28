@@ -1,5 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { getImpersonation, IMPERSONATION_EVENT } from "../lib/impersonation";
 
 export default function SideNav({
   eligibleNewAgent,
@@ -18,6 +19,9 @@ export default function SideNav({
       ? "user"
       : window.localStorage.getItem("kryonex_admin_mode") || "user"
   );
+  const [impersonation, setImpersonation] = React.useState(() =>
+    typeof window === "undefined" ? { active: false } : getImpersonation()
+  );
   React.useEffect(() => {
     const updateMode = () => {
       const next =
@@ -32,7 +36,14 @@ export default function SideNav({
       window.removeEventListener("kryonex-admin-mode", updateMode);
     };
   }, []);
-  const adminEnabled = isAdmin && viewMode === "admin";
+  React.useEffect(() => {
+    const update = () => setImpersonation(getImpersonation());
+    update();
+    window.addEventListener(IMPERSONATION_EVENT, update);
+    return () => window.removeEventListener(IMPERSONATION_EVENT, update);
+  }, []);
+  // When impersonating, treat as User View: no admin links, no admin bypass
+  const adminEnabled = isAdmin && viewMode === "admin" && !impersonation.active;
   const statusLabel = String(billingStatus || "none").toUpperCase();
   const tierLabel = tier ? tier.toUpperCase() : "NONE";
   const timeLabel = lastUpdated ? lastUpdated.toLocaleTimeString() : "--";
@@ -80,6 +91,10 @@ export default function SideNav({
         <Link to={adminEnabled ? "/admin/messages" : "/messages"} className="side-nav-link">
           <span className="nav-icon">✉️</span>
           Messages
+        </Link>
+        <Link to="/billing/tiers" className="side-nav-link">
+          <span className="nav-icon">💳</span>
+          Tiers & Top-Ups
         </Link>
         <Link to="/black-box" className="side-nav-link">
           <span className="nav-icon">🎙️</span>
