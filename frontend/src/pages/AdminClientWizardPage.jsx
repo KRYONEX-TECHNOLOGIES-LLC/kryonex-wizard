@@ -117,22 +117,12 @@ export default function AdminClientWizardPage() {
           </motion.div>
 
           <div className="flex-1 overflow-y-auto px-6 py-8">
-            <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-              <div className="min-h-[420px] flex flex-col max-h-[calc(100vh-12rem)] overflow-hidden">
-                <div className="mb-3 shrink-0">
-                  <div className="text-sm font-semibold text-white">
-                    Mini Onboarding Wizard
-                  </div>
-                  <div className="text-xs text-white/50">
-                    Create a client account, then complete identity and plan selection. Use the Stripe link generator to send them a checkout link.
-                  </div>
-                </div>
-                <div className="flex-1 min-h-0 overflow-auto">
-                  <WizardEmbedded onClientCreated={handleClientCreated} />
-                </div>
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <div className="min-h-[540px] flex flex-col lg:min-h-[calc(100vh-10rem)]">
+                <WizardEmbedded onClientCreated={handleClientCreated} />
               </div>
 
-              <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4">
+              <div className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4 shrink-0">
                 <div>
                   <div className="text-sm font-semibold text-white">
                     Tier Picker + Stripe Link

@@ -38,7 +38,7 @@ export default function WizardEmbedded({ onClientCreated }) {
 
   if (!client) {
     return (
-      <div className="rounded-2xl border border-white/10 bg-black/30 overflow-hidden">
+      <div className="rounded-2xl border border-white/10 bg-black/20 overflow-hidden max-w-lg">
         <LoginPage
           embeddedMode
           onEmbeddedSubmit={handleEmbeddedSubmit}
@@ -48,20 +48,20 @@ export default function WizardEmbedded({ onClientCreated }) {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
-        <span className="text-xs uppercase tracking-[0.3em] text-white/50">
+    <div className="flex flex-col h-full min-h-[540px]">
+      <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
+        <span className="text-xs uppercase tracking-[0.2em] text-white/40">
           Client: {client.email}
         </span>
         <button
           type="button"
           onClick={handleStartOver}
-          className="text-xs uppercase tracking-wider text-neon-cyan/80 hover:text-neon-cyan border border-white/10 hover:border-neon-cyan/40 rounded-lg px-2 py-1 transition-colors"
+          className="text-xs uppercase tracking-wider text-neon-cyan/70 hover:text-neon-cyan border border-white/10 hover:border-neon-cyan/40 rounded-lg px-2 py-1 transition-colors"
         >
           Create another
         </button>
       </div>
-      <div className="flex-1 min-h-[480px] overflow-auto rounded-2xl border border-white/10 bg-black/30">
+      <div className="flex-1 min-h-[480px] w-full overflow-auto">
         <WizardPage
           embeddedMode={{
             targetUserId: client.userId,
