@@ -116,11 +116,15 @@ export default function TopMenu() {
   const adminEnabled = canAccessAdmin && (viewMode === "admin" || isOnAdminRoute);
   const items = [];
   if (isSeller) {
+    if (canAccessAdmin) {
+      items.push({ to: "/admin", label: "Admin Command" });
+    }
     items.push({ to: "/console/dialer", label: "Call Center" });
     items.push({ to: "/calendar", label: "Calendar" });
     if (!onboardingComplete && (!wizardMaintenance || isAdmin)) {
       items.push({ to: "/wizard", label: "Wizard" });
     }
+    items.push({ to: "/billing", label: "Billing" });
   } else {
     if (canAccessAdmin) {
       items.push({ to: "/admin", label: "Admin Command" });
