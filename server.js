@@ -6014,6 +6014,45 @@ app.get(
 );
 
 app.post(
+  "/admin/confirm-user-email",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-confirm-email", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const rawEmail = String(req.body?.email ?? "").trim().toLowerCase();
+      if (!isValidEmailFormat(rawEmail)) {
+        return res.status(400).json({ error: "Valid email is required" });
+      }
+      const user = await findAuthUserByEmail(rawEmail);
+      if (!user || !user.id) {
+        return res.status(404).json({ error: "USER_NOT_FOUND" });
+      }
+      const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+        user.id,
+        { email_confirm: true }
+      );
+      if (updateError) {
+        return res.status(500).json({ error: updateError.message });
+      }
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_confirm_user_email",
+        actionType: "admin_confirm_user_email",
+        entity: "user",
+        entityId: user.id,
+        req,
+        metadata: { target_email: rawEmail },
+      });
+      return res.json({ ok: true, user_id: user.id });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
   "/admin/stripe-link",
   requireAuth,
   requireAdmin,
