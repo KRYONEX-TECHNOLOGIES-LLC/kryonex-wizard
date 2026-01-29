@@ -28,10 +28,18 @@ Confirmation and password-reset links must redirect to URLs that Supabase allows
 
 If your login URL isn’t listed, the link will open Supabase’s default page instead of your app.
 
-## 3. Confirm email (Auth provider)
+## 3. Rate limits (“email rate limit exceeded”)
+
+Supabase’s **default** is **2 auth emails per hour per project** (signup, resend, password reset). That limit is for the whole project, so new email addresses don’t help—you hit it after 2 attempts in that hour.
+
+- **Wait**: The limit resets every hour.
+- **Custom SMTP**: If you set up custom SMTP (see §1), you can often configure higher rate limits in **Project Settings** → **Auth** (Supabase dashboard).
+- **Dev workaround**: During development, you can turn **Confirm email** off: **Authentication** → **Providers** → **Email** → disable **Confirm email**. Then signups don’t send an email and users get a session immediately. Turn it back on for production and use custom SMTP.
+
+## 4. Confirm email (Auth provider)
 
 1. In Dashboard → **Authentication** → **Providers** → **Email**.
-2. Ensure **Confirm email** is enabled if you want users to confirm before signing in.
+2. **Confirm email** = on if you want users to confirm before signing in; off for dev if you’re hitting the 2/hour limit.
 
 ## In the app
 

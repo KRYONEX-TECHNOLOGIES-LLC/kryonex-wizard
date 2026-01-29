@@ -126,7 +126,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
         } else if (mode === "login" && /not found|user not found/i.test(message)) {
           setError("No account found for this email. Use Create to add a new client.");
         } else if (/rate limit|rate_limit/i.test(message)) {
-          setError("Too many signup emails sent to this address. Wait about an hour and try again, or use a different email.");
+          setError("Auth email limit reached for this project (Supabase default: 2/hour). Wait up to an hour, or set up custom SMTP in Supabase for higher limits.");
         } else {
           setError(message);
         }
@@ -161,7 +161,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
         setEmailNotConfirmed(true);
         setError("Email not confirmed. Check your inbox (and spam) for the confirmation link, or resend it below.");
       } else if (/rate limit|rate_limit/i.test(message)) {
-        setError("Too many signup emails sent to this address. Wait about an hour and try again, or use a different email.");
+        setError("Auth email limit reached for this project (Supabase default: 2/hour). Wait up to an hour, or set up custom SMTP in Supabase for higher limits.");
       } else {
         setError(message);
       }
@@ -529,7 +529,6 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           ) : null}
         </form>
         )}
-      )}
       </div>
     </div>
   );
