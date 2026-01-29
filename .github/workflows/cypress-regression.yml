@@ -52,8 +52,15 @@ jobs:
       - name: Run Cypress regression suite
         run: |
           npm --prefix frontend run dev -- --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1 &
-          for i in {1..60}; do
-            curl -s http://localhost:5173 >/dev/null && break
+          n=0
+          until curl -sf http://localhost:5173 >/dev/null; do
+            n=$((n + 1))
+            if [ "$n" -ge 60 ]; then
+              echo "Vite did not become ready; dumping log:"
+              tail -100 /tmp/vite.log
+              exit 1
+            fi
             sleep 1
           done
+          echo "Vite ready after ${n}s"
           npm run test:e2e

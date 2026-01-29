@@ -43,6 +43,7 @@ export default function AdminClientWizardPage() {
       const response = await adminGenerateStripeLink({
         email,
         planTier: stripeTier,
+        embedded: true,
       });
       const url = response.data?.url ?? "";
       setStripeLink(url);
@@ -168,6 +169,9 @@ export default function AdminClientWizardPage() {
                     <div className="text-xs uppercase tracking-[0.3em] text-neon-green">
                       Stripe link generated successfully.
                     </div>
+                    <p className="text-xs text-white/70">
+                      After the client pays, this wizard will unlock the deploy step for this client.
+                    </p>
                     <span className="text-xs uppercase tracking-[0.3em] text-white/40">
                       Checkout URL
                     </span>

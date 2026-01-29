@@ -25,6 +25,8 @@ import AdminLeadsPage from "./pages/AdminLeadsPage.jsx";
 import AdminBlackBoxPage from "./pages/AdminBlackBoxPage.jsx";
 import AdminMessagesPage from "./pages/AdminMessagesPage.jsx";
 import AdminCalendarPage from "./pages/AdminCalendarPage.jsx";
+import ThankYouPage from "./pages/ThankYouPage.jsx";
+import AdminStripeSuccessPage from "./pages/AdminStripeSuccessPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import RequireOnboarding from "./components/RequireOnboarding.jsx";
@@ -64,6 +66,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<LandingGate />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/thank-you" element={<ThankYouPage />} />
+      <Route path="/admin/stripe-success" element={<AdminStripeSuccessPage />} />
       <Route
         path="/wizard"
         element={
