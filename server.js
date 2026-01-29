@@ -4699,12 +4699,31 @@ app.post(
   resolveEffectiveUser,
   rateLimit({ keyPrefix: "deploy-agent-self", limit: 6, windowMs: 60_000 }),
   async (req, res) => {
+    const deployRequestId = `deploy-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+    const ts = new Date().toISOString();
+    const uid = req.effectiveUserId ?? req.user.id;
+    console.info("[deploy-agent-self] start", {
+      deployRequestId,
+      userId: uid,
+      timestamp: ts,
+      method: req.method,
+      body: req.body || {},
+      headers: {
+        "content-type": req.headers["content-type"],
+        authorization: req.headers.authorization ? "Bearer ***" : undefined,
+      },
+    });
     try {
-      const uid = req.effectiveUserId ?? req.user.id;
-      const result = await deployAgentForUser(uid);
+      const result = await deployAgentForUser(uid, deployRequestId);
       if (result.error) {
         const status =
           result.error === "AREA_CODE_UNAVAILABLE" ? 400 : 500;
+        console.warn("[deploy-agent-self] deployAgentForUser returned error", {
+          deployRequestId,
+          userId: uid,
+          error: result.error,
+          httpStatus: status,
+        });
         return res.status(status).json({ error: result.error });
       }
       await supabaseAdmin
@@ -4717,6 +4736,17 @@ app.post(
         agent_id: result.agent_id,
       });
     } catch (err) {
+      const errResponse = err.response || {};
+      console.error("[deploy-agent-self] thrown", {
+        deployRequestId,
+        userId: uid,
+        timestamp: new Date().toISOString(),
+        message: err.message,
+        responseStatus: errResponse.status,
+        responseHeaders: errResponse.headers ? JSON.stringify(errResponse.headers) : undefined,
+        responseData: errResponse.data,
+        stack: err.stack?.split("\n").slice(0, 20).join("\n"),
+      });
       return res.status(500).json({ error: err.message });
     }
   }
@@ -5487,11 +5517,26 @@ const ADMIN_ONBOARD_DEFAULTS = {
 const buildAdminScheduleSummary = () =>
   "Standard operating hours are Monday through Friday, 08:00 AM to 05:00 PM. We are closed on weekends. We do NOT offer after-hours service. If they call late, ask them to call back in the morning.";
 
-const createAdminAgent = async ({ userId, businessName, areaCode, industry: industryParam }) => {
+const createAdminAgent = async ({ userId, businessName, areaCode, industry: industryParam, deployRequestId: reqId }) => {
   const industry = industryParam && ["hvac", "plumbing"].includes(String(industryParam).toLowerCase())
     ? String(industryParam).toLowerCase()
     : ADMIN_ONBOARD_DEFAULTS.industry;
   const tone = ADMIN_ONBOARD_DEFAULTS.tone;
+  const providerBaseUrl = (retellClient.defaults?.baseURL || "https://api.retellai.com").replace(/\/$/, "");
+  const providerHeaders = {
+    Authorization: "Bearer ***",
+    "Content-Type": retellClient.defaults?.headers?.["Content-Type"] || "application/json",
+  };
+  console.info("[createAdminAgent] input", {
+    deployRequestId: reqId,
+    userId,
+    businessName,
+    areaCode,
+    industry,
+    profileIndustry: industryParam,
+    providerBaseUrl,
+    providerApiKeyEnvVar: "RETELL_API_KEY",
+  });
   const scheduleSummary = buildAdminScheduleSummary();
   const dispatchBaseLocation = areaCode
     ? `Area Code ${areaCode}`
@@ -5575,13 +5620,39 @@ Business Variables:
   if (!sourceAgentId) {
     throw new Error("Missing master agent id for industry");
   }
+  console.info("[createAdminAgent] template (agent/template selection)", {
+    deployRequestId: reqId,
+    industry,
+    agentTemplateId: sourceAgentId,
+    agentTemplateName: `${industry} master`,
+    llmId,
+    modelId: llmVersion,
+    providerPath: `/copy-agent/${sourceAgentId}`,
+  });
 
   let agentId = null;
+  const copyPath = `/copy-agent/${encodeURIComponent(sourceAgentId)}`;
+  const copyUrl = `${providerBaseUrl}${copyPath}`;
+  const copyBody = {};
+  console.info("[createAdminAgent] provider call about to run", {
+    deployRequestId: reqId,
+    providerUrl: copyUrl,
+    method: "POST",
+    headers: providerHeaders,
+    requestBody: copyBody,
+    userId,
+    profileIndustry: industry,
+    templateId: sourceAgentId,
+    llmId,
+  });
   try {
-    const copyResponse = await retellClient.post(
-      `/copy-agent/${encodeURIComponent(sourceAgentId)}`,
-      {}
-    );
+    const copyResponse = await retellClient.post(copyPath, copyBody);
+    console.info("[createAdminAgent] provider response", {
+      deployRequestId: reqId,
+      call: "copy-agent",
+      status: copyResponse.status,
+      responseBody: copyResponse.data,
+    });
     const copiedAgent = normalizeRetellAgent(copyResponse.data);
     agentId =
       copiedAgent?.agent_id ||
@@ -5590,13 +5661,38 @@ Business Variables:
       copyResponse.data?.id;
   } catch (copyErr) {
     const status = copyErr.response?.status;
+    const responseBody = copyErr.response?.data;
+    console.error("[createAdminAgent] provider call failed", {
+      deployRequestId: reqId,
+      providerUrl: copyUrl,
+      method: "POST",
+      requestBody: copyBody,
+      responseStatus: status,
+      responseBody,
+      stack: copyErr.stack?.split("\n").slice(0, 20).join("\n"),
+    });
     if (status === 404) {
       console.warn("[createAdminAgent] Retell copy-agent 404 – using get-agent + create-agent fallback.", {
         sourceAgentId,
         industry,
       });
+      const getPath = `/get-agent/${encodeURIComponent(sourceAgentId)}`;
+      const getUrl = `${providerBaseUrl}${getPath}`;
+      console.info("[createAdminAgent] provider call about to run", {
+        deployRequestId: reqId,
+        providerUrl: getUrl,
+        method: "GET",
+        headers: providerHeaders,
+        requestBody: null,
+      });
       try {
-        const getRes = await retellClient.get(`/get-agent/${encodeURIComponent(sourceAgentId)}`);
+        const getRes = await retellClient.get(getPath);
+        console.info("[createAdminAgent] provider response", {
+          deployRequestId: reqId,
+          call: "get-agent",
+          status: getRes.status,
+          responseBody: getRes.data,
+        });
         const template = getRes.data?.agent ?? getRes.data;
         if (!template?.response_engine || !template?.voice_id) {
           console.error("[createAdminAgent] Template agent missing response_engine or voice_id.", {
@@ -5613,7 +5709,22 @@ Business Variables:
           voice_id: template.voice_id,
           agent_name: `${businessName} AI Agent`,
         };
-        const createRes = await retellClient.post("/create-agent", createBody);
+        const createPath = "/create-agent";
+        const createUrl = `${providerBaseUrl}${createPath}`;
+        console.info("[createAdminAgent] provider call about to run", {
+          deployRequestId: reqId,
+          providerUrl: createUrl,
+          method: "POST",
+          headers: providerHeaders,
+          requestBody: createBody,
+        });
+        const createRes = await retellClient.post(createPath, createBody);
+        console.info("[createAdminAgent] provider response", {
+          deployRequestId: reqId,
+          call: "create-agent",
+          status: createRes.status,
+          responseBody: createRes.data,
+        });
         agentId =
           createRes.data?.agent_id ?? createRes.data?.agent?.agent_id ?? createRes.data?.id;
         if (!agentId) {
@@ -5621,11 +5732,15 @@ Business Variables:
         }
       } catch (fallbackErr) {
         const fallbackStatus = fallbackErr.response?.status;
+        const fallbackBody = fallbackErr.response?.data;
         const fallbackDetail = fallbackErr.response?.data?.detail ?? fallbackErr.response?.data?.message ?? fallbackErr.message;
-        console.error("[createAdminAgent] Retell get-agent or create-agent fallback failed", {
+        console.error("[createAdminAgent] provider call failed (get-agent or create-agent fallback)", {
+          deployRequestId: reqId,
           sourceAgentId,
-          status: fallbackStatus,
+          responseStatus: fallbackStatus,
+          responseBody: fallbackBody,
           detail: fallbackDetail,
+          stack: fallbackErr.stack?.split("\n").slice(0, 20).join("\n"),
         });
         if (fallbackErr.response?.status === 404) {
           throw new Error(
@@ -5636,7 +5751,7 @@ Business Variables:
       }
     } else {
       const detail = copyErr.response?.data?.detail ?? copyErr.response?.data?.message ?? copyErr.message;
-      console.error("[createAdminAgent] Retell copy-agent error", { status, detail, sourceAgentId });
+      console.error("[createAdminAgent] Retell copy-agent error (non-404)", { status, detail, sourceAgentId, responseBody });
       throw copyErr;
     }
   }
@@ -5654,7 +5769,35 @@ Business Variables:
   if (finalPrompt) {
     updatePayload.prompt = finalPrompt;
   }
-  await retellClient.patch(`/update-agent/${agentId}`, updatePayload);
+  const updatePath = `/update-agent/${agentId}`;
+  const updateUrl = `${providerBaseUrl}${updatePath}`;
+  console.info("[createAdminAgent] provider call about to run", {
+    deployRequestId: reqId,
+    providerUrl: updateUrl,
+    method: "PATCH",
+    headers: providerHeaders,
+    requestBody: updatePayload,
+  });
+  try {
+    await retellClient.patch(updatePath, updatePayload);
+    console.info("[createAdminAgent] provider response", {
+      deployRequestId: reqId,
+      call: "update-agent",
+      status: 200,
+      responseBody: null,
+    });
+  } catch (updateErr) {
+    console.error("[createAdminAgent] provider call failed", {
+      deployRequestId: reqId,
+      providerUrl: updateUrl,
+      method: "PATCH",
+      requestBody: updatePayload,
+      responseStatus: updateErr.response?.status,
+      responseBody: updateErr.response?.data,
+      stack: updateErr.stack?.split("\n").slice(0, 20).join("\n"),
+    });
+    throw updateErr;
+  }
 
   console.info("[retell] admin agent copied", {
     agent_id: agentId,
@@ -5673,7 +5816,39 @@ Business Variables:
     inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
     inbound_sms_enabled: true,
   };
-  const phoneResponse = await retellClient.post("/create-phone-number", phonePayload);
+  const phonePath = "/create-phone-number";
+  const phoneUrl = `${providerBaseUrl}${phonePath}`;
+  console.info("[createAdminAgent] provider call about to run", {
+    deployRequestId: reqId,
+    providerUrl: phoneUrl,
+    method: "POST",
+    headers: providerHeaders,
+    requestBody: phonePayload,
+    areaCode: phonePayload.area_code,
+    plan: null,
+  });
+  let phoneResponse;
+  try {
+    phoneResponse = await retellClient.post(phonePath, phonePayload);
+    console.info("[createAdminAgent] provider response", {
+      deployRequestId: reqId,
+      call: "create-phone-number",
+      status: phoneResponse.status,
+      responseBody: phoneResponse.data,
+      phone_number: phoneResponse.data?.phone_number ?? phoneResponse.data?.number,
+    });
+  } catch (phoneErr) {
+    console.error("[createAdminAgent] provider call failed", {
+      deployRequestId: reqId,
+      providerUrl: phoneUrl,
+      method: "POST",
+      requestBody: phonePayload,
+      responseStatus: phoneErr.response?.status,
+      responseBody: phoneErr.response?.data,
+      stack: phoneErr.stack?.split("\n").slice(0, 20).join("\n"),
+    });
+    throw phoneErr;
+  }
   const phoneNumber = phoneResponse.data.phone_number || phoneResponse.data.number;
 
   const { error: insertError } = await supabaseAdmin.from("agents").insert({
@@ -5707,6 +5882,17 @@ Business Variables:
     entityId: agentId,
   });
 
+  console.info("[createAdminAgent] output (agent/template/LLM selection result)", {
+    deployRequestId: reqId,
+    templateId: sourceAgentId,
+    templateName: `${industry} master`,
+    llmId,
+    llmVersion,
+    agent_id: agentId,
+    phone_number: phoneNumber,
+    functionsAttached: null,
+  });
+
   return { agent_id: agentId, phone_number: phoneNumber };
 };
 
@@ -5714,12 +5900,21 @@ Business Variables:
  * Shared deploy logic: provision agent for a user (used by /admin/deploy-agent and Stripe webhook).
  * Requires: active subscription, consent, business_name. area_code optional but required for provisioning.
  * On area code unavailable or other failure, sets profiles.deploy_error and returns { error }.
+ * @param {string} [deployRequestId] - Optional correlation id for logging.
  */
-const deployAgentForUser = async (userId) => {
+const deployAgentForUser = async (userId, deployRequestId) => {
   const targetUserId = String(userId ?? "").trim();
+  const reqId = deployRequestId || `deploy-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   if (!targetUserId) {
     return { error: "user_id required" };
   }
+  const providerBaseUrl = retellClient.defaults?.baseURL || "https://api.retellai.com";
+  console.info("[deployAgentForUser] context", {
+    deployRequestId: reqId,
+    providerBaseUrl,
+    providerApiKeyEnvVar: "RETELL_API_KEY",
+    userId: targetUserId,
+  });
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
@@ -5727,8 +5922,18 @@ const deployAgentForUser = async (userId) => {
     .eq("user_id", targetUserId)
     .maybeSingle();
   if (profileError || !profile) {
+    console.warn("[deployAgentForUser] profile fetch failed", { targetUserId, error: profileError?.message });
     return { error: profileError?.message || "Profile not found" };
   }
+  console.info("[deployAgentForUser] profile", {
+    deployRequestId: reqId,
+    userId: targetUserId,
+    business_name: profile.business_name,
+    area_code: profile.area_code,
+    industry: profile.industry,
+    hasConsent: !!profile.consent_accepted_at,
+    consent_version: profile.consent_version,
+  });
   if (
     !profile.consent_accepted_at ||
     profile.consent_version !== currentConsentVersion
@@ -5754,6 +5959,7 @@ const deployAgentForUser = async (userId) => {
     String(profile.business_name || "").trim() || "Business";
   const areaCodeRaw = String(profile.area_code ?? "").trim();
   if (!/^\d{3}$/.test(areaCodeRaw)) {
+    console.warn("[deployAgentForUser] area_code invalid", { userId: targetUserId, area_code: profile.area_code, areaCodeRaw, length: areaCodeRaw.length });
     await supabaseAdmin
       .from("profiles")
       .update({ deploy_error: "AREA_CODE_UNAVAILABLE" })
@@ -5782,12 +5988,23 @@ const deployAgentForUser = async (userId) => {
     };
   }
 
+  const industryInput = profile.industry || "hvac";
+  const plan = sub?.plan_type || null;
+  console.info("[deployAgentForUser] calling createAdminAgent", {
+    deployRequestId: reqId,
+    userId: targetUserId,
+    businessName,
+    areaCode,
+    industry: industryInput,
+    plan,
+  });
   try {
     const result = await createAdminAgent({
       userId: targetUserId,
       businessName,
       areaCode,
-      industry: profile.industry || "hvac",
+      industry: industryInput,
+      deployRequestId: reqId,
     });
     await supabaseAdmin
       .from("profiles")
@@ -5807,10 +6024,20 @@ const deployAgentForUser = async (userId) => {
       .from("profiles")
       .update({ deploy_error: deployError })
       .eq("user_id", targetUserId);
+    const providerStatus = err.response?.status;
+    const providerBody = err.response?.data;
+    const providerUrl = err.config?.url || err.config?.baseURL;
     console.error("[deployAgentForUser] failed", {
+      deployRequestId: reqId,
       userId: targetUserId,
       message: err.message,
       deployError,
+      providerUrl,
+      providerStatus,
+      providerBody,
+      responseHeaders: err.response?.headers ? JSON.stringify(err.response.headers) : undefined,
+      isAreaCodeMapped: isAreaCode,
+      stack: err.stack?.split("\n").slice(0, 20).join("\n"),
     });
     return {
       error: isAreaCode ? "AREA_CODE_UNAVAILABLE" : err.message,
