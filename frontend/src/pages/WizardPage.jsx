@@ -20,6 +20,7 @@ import {
   acceptConsent,
   adminAcceptConsent,
   adminDeployAgent,
+  adminGenerateStripeLink,
   adminGetSubscriptionStatus,
   adminSaveOnboardingIdentity,
   createCheckoutSession,
@@ -187,6 +188,10 @@ export default function WizardPage({ embeddedMode }) {
     window.localStorage.getItem("kryonex_admin_mode") || "user"
   );
   const [planTier, setPlanTier] = useState("pro");
+  const [stripeLinkUrl, setStripeLinkUrl] = useState("");
+  const [stripeLinkLoading, setStripeLinkLoading] = useState(false);
+  const [stripeLinkError, setStripeLinkError] = useState("");
+  const [copyNotice, setCopyNotice] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [wizardLocked, setWizardLocked] = useState(false);
   const [wizardLockReason, setWizardLockReason] = useState("");
@@ -638,6 +643,38 @@ export default function WizardPage({ embeddedMode }) {
       setDeployError(err.response?.data?.error || err.message);
     } finally {
       setIsDeploying(false);
+    }
+  };
+
+  const handleGenerateStripeLink = async (selectedTier) => {
+    if (!embeddedMode?.targetEmail) return;
+    setStripeLinkError("");
+    setStripeLinkUrl("");
+    setStripeLinkLoading(true);
+    try {
+      const res = await adminGenerateStripeLink({
+        email: embeddedMode.targetEmail,
+        planTier: (selectedTier || planTier || "pro").toLowerCase(),
+        embedded: true,
+      });
+      const url = res.data?.url ?? "";
+      setStripeLinkUrl(url);
+    } catch (err) {
+      setStripeLinkError(err.response?.data?.error || err.message);
+    } finally {
+      setStripeLinkLoading(false);
+    }
+  };
+
+  const handleCopyStripeLink = async () => {
+    if (!stripeLinkUrl) return;
+    try {
+      await navigator.clipboard.writeText(stripeLinkUrl);
+      setCopyNotice("Copied");
+      setTimeout(() => setCopyNotice(""), 1500);
+    } catch {
+      setCopyNotice("Copy failed");
+      setTimeout(() => setCopyNotice(""), 1500);
     }
   };
 
@@ -1122,14 +1159,20 @@ export default function WizardPage({ embeddedMode }) {
                           type="button"
                           onClick={async () => {
                             setPlanTier(tier.id);
-                            if (!embeddedMode) {
+                            if (embeddedMode) {
+                              await handleGenerateStripeLink(tier.id);
+                            } else {
                               await handleStripeCheckout(tier.id);
                             }
                           }}
-                          disabled={embeddedMode ? false : checkoutLoading}
+                          disabled={embeddedMode ? stripeLinkLoading : checkoutLoading}
                           className="glow-button mt-8 w-full"
                         >
-                          {checkoutLoading && planTier === tier.id && !embeddedMode
+                          {embeddedMode
+                            ? stripeLinkLoading && planTier === tier.id
+                              ? "GENERATING LINK..."
+                              : "Generate Stripe Link"
+                            : checkoutLoading && planTier === tier.id
                             ? "OPENING CHECKOUT..."
                             : "Select Plan"}
                         </button>
@@ -1137,6 +1180,50 @@ export default function WizardPage({ embeddedMode }) {
                     );
                   })}
                 </div>
+
+                {embeddedMode && (
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/50">
+                      Stripe checkout link
+                    </p>
+                    {stripeLinkError ? (
+                      <div className="text-neon-pink text-sm">{stripeLinkError}</div>
+                    ) : null}
+                    {stripeLinkUrl ? (
+                      <>
+                        <div className="text-xs uppercase tracking-[0.3em] text-neon-green">
+                          Stripe link generated successfully
+                        </div>
+                        <div className="flex gap-2 items-center">
+                          <input
+                            readOnly
+                            type="url"
+                            value={stripeLinkUrl}
+                            className="input-field flex-1 text-sm font-mono truncate min-w-0"
+                            aria-label="Stripe checkout URL"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleCopyStripeLink}
+                            className="button-primary shrink-0"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        {copyNotice ? (
+                          <div className="text-xs text-neon-green">{copyNotice}</div>
+                        ) : null}
+                        <p className="text-sm text-white/60">
+                          After the client pays, deployment will unlock.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-white/50">
+                        Select a tier above and click &quot;Generate Stripe Link&quot; to get the checkout URL for this client.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {checkoutError ? (
                   <div className="text-neon-pink text-sm">{checkoutError}</div>
