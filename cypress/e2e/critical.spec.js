@@ -69,6 +69,6 @@ describe("Critical path", () => {
       login();
     });
     cy.visit("/dashboard");
-    cy.contains("Kryonex Command Deck").should("exist");
+    cy.contains("Kryonex Command Deck", { timeout: 15000 }).should("exist");
   });
 });

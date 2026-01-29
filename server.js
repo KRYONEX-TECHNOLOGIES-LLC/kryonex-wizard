@@ -5893,9 +5893,10 @@ app.post(
   rateLimit({ keyPrefix: "admin-stripe-link", limit: 10, windowMs: 60_000 }),
   async (req, res) => {
     try {
-      const { email, planTier } = req.body || {};
+      const { email, planTier, embedded } = req.body || {};
       const rawTier = String(planTier ?? "").trim().toLowerCase();
       const rawEmail = String(email ?? "").trim();
+      const useEmbeddedFlow = Boolean(embedded);
 
       if (!isValidEmailFormat(rawEmail)) {
         return res.status(400).json({
@@ -5941,11 +5942,18 @@ app.post(
         smsCap: String(config.smsCap),
       };
 
+      const successUrl = useEmbeddedFlow
+        ? `${FRONTEND_URL}/admin/stripe-success?user_id=${user.id}`
+        : `${FRONTEND_URL}/login?checkout=success`;
+      const cancelUrl = useEmbeddedFlow
+        ? `${FRONTEND_URL}/thank-you?checkout=canceled`
+        : `${FRONTEND_URL}/login?checkout=canceled`;
+
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         line_items: [{ price: config.priceId, quantity: 1 }],
-        success_url: `${FRONTEND_URL}/login?checkout=success`,
-        cancel_url: `${FRONTEND_URL}/login?checkout=canceled`,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
         client_reference_id: user.id,
         metadata,
       });
@@ -5956,6 +5964,7 @@ app.post(
         planTier: rawTier,
         priceId: config.priceId,
         sessionId: session.id,
+        embedded: useEmbeddedFlow,
       });
 
       await auditLog({
@@ -5972,6 +5981,7 @@ app.post(
           planTier: rawTier,
           priceId: config.priceId,
           sessionId: session.id,
+          embedded: useEmbeddedFlow,
         },
       });
 
@@ -5986,6 +5996,152 @@ app.post(
         error: "INTERNAL_ERROR",
         message,
       });
+    }
+  }
+);
+
+app.get(
+  "/admin/subscription-status",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-sub-status", limit: 60, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const rawUserId = String(req.query.user_id ?? "").trim();
+      if (!rawUserId) {
+        return res.status(400).json({ error: "user_id is required" });
+      }
+      const { data, error } = await supabaseAdmin
+        .from("subscriptions")
+        .select("status, plan_type, current_period_end")
+        .eq("user_id", rawUserId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+      const row = data?.[0] || null;
+      const status = row?.status || "none";
+      const periodEnd = row?.current_period_end || null;
+      const isActive = ["active", "trialing"].includes(
+        String(status || "").toLowerCase()
+      );
+      const periodOk = periodEnd
+        ? new Date(periodEnd).getTime() > Date.now()
+        : false;
+      return res.json({
+        status,
+        plan_type: row?.plan_type || null,
+        current_period_end: periodEnd,
+        is_active: isActive && periodOk,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/admin/deploy-agent",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-deploy-agent", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { for_user_id } = req.body || {};
+      const targetUserId = String(for_user_id ?? "").trim();
+      if (!targetUserId) {
+        return res.status(400).json({ error: "for_user_id is required" });
+      }
+
+      const { data: profile, error: profileError } = await supabaseAdmin
+        .from("profiles")
+        .select("business_name, area_code, consent_accepted_at, consent_version")
+        .eq("user_id", targetUserId)
+        .maybeSingle();
+      if (profileError || !profile) {
+        return res
+          .status(profileError ? 500 : 404)
+          .json({ error: profileError?.message || "Profile not found" });
+      }
+      if (
+        !profile.consent_accepted_at ||
+        profile.consent_version !== currentConsentVersion
+      ) {
+        return res.status(403).json({ error: "Consent required for this user" });
+      }
+
+      const { data: subRows, error: subError } = await supabaseAdmin
+        .from("subscriptions")
+        .select("status, plan_type, current_period_end")
+        .eq("user_id", targetUserId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (subError) {
+        return res.status(500).json({ error: subError.message });
+      }
+      const sub = subRows?.[0] || null;
+      if (!isSubscriptionActive(sub)) {
+        return res.status(402).json({
+          error: "Active subscription required. Have the client pay via the Stripe link first.",
+        });
+      }
+
+      const businessName =
+        String(profile.business_name || "").trim() || "Business";
+      const areaCode = String(profile.area_code || "").trim() || "000";
+
+      const { data: existingAgent } = await supabaseAdmin
+        .from("agents")
+        .select("agent_id, phone_number")
+        .eq("user_id", targetUserId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (existingAgent?.agent_id && existingAgent?.phone_number) {
+        await auditLog({
+          userId: req.user.id,
+          actorId: req.user.id,
+          action: "admin_deploy_agent",
+          actionType: "admin_deploy_agent",
+          entity: "agent",
+          entityId: existingAgent.agent_id,
+          req,
+          metadata: { target_user_id: targetUserId, existing: true },
+        });
+        return res.json({
+          ok: true,
+          phone_number: existingAgent.phone_number,
+          agent_id: existingAgent.agent_id,
+          existing: true,
+        });
+      }
+
+      const result = await createAdminAgent({
+        userId: targetUserId,
+        businessName,
+        areaCode,
+      });
+
+      await auditLog({
+        userId: req.user.id,
+        actorId: req.user.id,
+        action: "admin_deploy_agent",
+        actionType: "admin_deploy_agent",
+        entity: "agent",
+        entityId: result.agent_id,
+        req,
+        metadata: { target_user_id: targetUserId },
+      });
+
+      return res.json({
+        ok: true,
+        phone_number: result.phone_number,
+        agent_id: result.agent_id,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
     }
   }
 );

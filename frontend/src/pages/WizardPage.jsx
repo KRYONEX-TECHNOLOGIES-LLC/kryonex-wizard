@@ -19,6 +19,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   acceptConsent,
   adminAcceptConsent,
+  adminDeployAgent,
+  adminGetSubscriptionStatus,
   adminSaveOnboardingIdentity,
   createCheckoutSession,
   deployAgent,
@@ -81,6 +83,12 @@ const MODERN_STEP_META = [
   },
 ];
 
+const EMBEDDED_STEP_META = [
+  { title: "Identity", description: "Define the business signature.", icon: Building2 },
+  { title: "Plan Selection", description: "Choose the tier; client pays via Stripe link.", icon: CreditCard },
+  { title: "Deploy", description: "Provision agent and get the number.", icon: Terminal },
+];
+
 const stepVariants = {
   initial: { opacity: 0, y: 24, scale: 0.95 },
   animate: {
@@ -139,12 +147,20 @@ const terminalLines = [
 
 
 export default function WizardPage({ embeddedMode }) {
-  const stepMeta = LEGACY_STEPS_ENABLED ? FULL_STEP_META : MODERN_STEP_META;
+  const stepMeta = embeddedMode
+    ? EMBEDDED_STEP_META
+    : LEGACY_STEPS_ENABLED
+    ? FULL_STEP_META
+    : MODERN_STEP_META;
   const maxStep = stepMeta.length;
   const formKey = embeddedMode ? WIZARD_EMBEDDED_FORM_KEY : WIZARD_FORM_KEY;
   const stepKey = embeddedMode ? WIZARD_EMBEDDED_STEP_KEY : WIZARD_STEP_KEY;
   const getInitialStep = () => {
-    const maxStepVal = LEGACY_STEPS_ENABLED ? FULL_STEP_META.length : 2;
+    const maxStepVal = embeddedMode
+      ? EMBEDDED_STEP_META.length
+      : LEGACY_STEPS_ENABLED
+      ? FULL_STEP_META.length
+      : 2;
     const stored = Number(getSavedState(stepKey));
     if (Number.isFinite(stored) && stored >= 1 && stored <= maxStepVal) return stored;
     const fallbackKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
@@ -182,6 +198,7 @@ export default function WizardPage({ embeddedMode }) {
   const wizardMaintenance =
     String(import.meta.env.VITE_WIZARD_MAINTENANCE || "").toLowerCase() === "true";
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
+  const advancedToDeployRef = useRef(false);
 
   useEffect(() => {
     setCalStatusLoading(false);
@@ -337,6 +354,42 @@ export default function WizardPage({ embeddedMode }) {
     const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
     window.localStorage.setItem(lsKey, String(step));
   }, [step, embeddedMode]);
+
+  useEffect(() => {
+    if (!embeddedMode?.targetUserId) return;
+    let mounted = true;
+    let intervalId = null;
+    const poll = async () => {
+      try {
+        const res = await adminGetSubscriptionStatus(embeddedMode.targetUserId);
+        const ok = res.data?.is_active === true;
+        if (mounted && ok) {
+          setPaymentVerified(true);
+          setCheckoutError("");
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    poll();
+    intervalId = setInterval(poll, 5000);
+    return () => {
+      mounted = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [embeddedMode?.targetUserId]);
+
+  useEffect(() => {
+    if (
+      !embeddedMode ||
+      !paymentVerified ||
+      step !== 2 ||
+      advancedToDeployRef.current
+    )
+      return;
+    advancedToDeployRef.current = true;
+    persistStep(3);
+  }, [embeddedMode, paymentVerified, step]);
 
   useEffect(() => {
     if (embeddedMode) return;
@@ -569,6 +622,20 @@ export default function WizardPage({ embeddedMode }) {
       setDeployError(
         status ? `${message} (Code ${status})` : message
       );
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  const handleAdminDeploy = async () => {
+    if (!embeddedMode?.targetUserId) return;
+    setDeployError("");
+    setIsDeploying(true);
+    try {
+      const res = await adminDeployAgent({ for_user_id: embeddedMode.targetUserId });
+      setPhoneNumber(res.data?.phone_number || "");
+    } catch (err) {
+      setDeployError(err.response?.data?.error || err.message);
     } finally {
       setIsDeploying(false);
     }
@@ -891,14 +958,43 @@ export default function WizardPage({ embeddedMode }) {
                   <div>
                     <h2 className="text-3xl font-semibold">Plan Selection</h2>
                     <p className="mt-2 text-white/60">
-                      Choose the deployment tier to activate and proceed to
-                      Stripe checkout.
+                      {embeddedMode
+                        ? "Choose the tier for this client. They will pay via the Stripe link you generate."
+                        : "Choose the deployment tier to activate and proceed to Stripe checkout."}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-xs uppercase tracking-[0.3em] text-white/50">
                     Pricing Updated
                   </div>
                 </div>
+
+                {embeddedMode && (
+                  <div
+                    className={`rounded-2xl border px-4 py-3 text-sm space-y-3 ${
+                      paymentVerified
+                        ? "border-neon-green/30 bg-neon-green/5 text-neon-green"
+                        : "border-neon-cyan/30 bg-neon-cyan/5 text-neon-cyan/90"
+                    }`}
+                  >
+                    {paymentVerified ? (
+                      <>
+                        <p>Payment confirmed. Proceed to deploy.</p>
+                        <button
+                          type="button"
+                          onClick={() => persistStep(3)}
+                          className="glow-button"
+                        >
+                          Proceed to Deploy
+                        </button>
+                      </>
+                    ) : (
+                      <p>
+                        Client will pay via the Stripe link on the right. Once
+                        payment is confirmed, deployment will unlock.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div className="rounded-2xl border border-white/10 bg-black/40 px-6 py-5 text-center">
                   <p
@@ -1045,6 +1141,54 @@ export default function WizardPage({ embeddedMode }) {
                 {checkoutError ? (
                   <div className="text-neon-pink text-sm">{checkoutError}</div>
                 ) : null}
+              </motion.div>
+            )}
+
+            {embeddedMode && step === 3 && (
+              <motion.div
+                key="step-3-deploy"
+                variants={stepVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="space-y-8"
+              >
+                <div>
+                  <h2 className="text-3xl font-semibold">Deploy</h2>
+                  <p className="mt-2 text-white/60">
+                    Provision the agent for this client and get their number.
+                  </p>
+                </div>
+                {phoneNumber ? (
+                  <div className="rounded-2xl border border-neon-green/30 bg-neon-green/5 p-6">
+                    <p className="text-xs uppercase tracking-[0.3em] text-neon-green">
+                      Agent provisioned
+                    </p>
+                    <p className="mt-2 text-2xl font-mono font-semibold text-white">
+                      {phoneNumber}
+                    </p>
+                    <p className="mt-2 text-sm text-white/60">
+                      The client can log in and use this number.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
+                    <p className="text-white/70">
+                      Deploy the AI agent for this client. You’ll get their phone number.
+                    </p>
+                    {deployError ? (
+                      <div className="text-neon-pink text-sm">{deployError}</div>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={handleAdminDeploy}
+                      disabled={isDeploying}
+                      className="glow-button w-full"
+                    >
+                      {isDeploying ? "DEPLOYING…" : "Deploy agent"}
+                    </button>
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -1967,7 +2111,7 @@ export default function WizardPage({ embeddedMode }) {
           <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
             <button
               onClick={() => updateStep((prev) => Math.max(1, prev - 1))}
-              disabled={step === 1 || saving || checkoutLoading}
+              disabled={step === 1 || saving || checkoutLoading || isDeploying}
               className="px-6 py-3 rounded-xl border border-white/10 hover:bg-white/5 hover:border-white/30 text-white/60 disabled:opacity-30 transition-all text-sm font-medium tracking-wide uppercase"
             >
               Back
@@ -1986,6 +2130,10 @@ export default function WizardPage({ embeddedMode }) {
               >
                 {saving ? "SAVING IDENTITY..." : "Continue to Plans"}
               </button>
+            ) : embeddedMode && step === 3 ? (
+              <span className="text-xs text-white/40 uppercase tracking-widest">
+                Deploy above
+              </span>
             ) : (
               <div className="text-xs text-white/50 uppercase tracking-widest">
                 Select a plan to continue
