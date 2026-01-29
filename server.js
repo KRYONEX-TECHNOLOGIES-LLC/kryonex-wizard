@@ -5620,6 +5620,20 @@ Business Variables:
   if (!sourceAgentId) {
     throw new Error("Missing master agent id for industry");
   }
+  // Single line to grep in Railway: exact agent + LLM we're calling
+  console.info("[RETELL_IDS] deploy call", {
+    deployRequestId: reqId,
+    industry,
+    masterAgentIdUsed: sourceAgentId,
+    llmIdUsed: llmId,
+    llmVersionUsed: llmVersion,
+    env_RETELL_MASTER_AGENT_ID_HVAC: RETELL_MASTER_AGENT_ID_HVAC || "(missing)",
+    env_RETELL_MASTER_AGENT_ID_PLUMBING: RETELL_MASTER_AGENT_ID_PLUMBING || "(missing)",
+    env_RETELL_LLM_ID_HVAC: RETELL_LLM_ID_HVAC || "(missing)",
+    env_RETELL_LLM_ID_PLUMBING: RETELL_LLM_ID_PLUMBING || "(missing)",
+    env_RETELL_LLM_VERSION_HVAC: RETELL_LLM_VERSION_HVAC || "(missing)",
+    env_RETELL_LLM_VERSION_PLUMBING: RETELL_LLM_VERSION_PLUMBING || "(missing)",
+  });
   console.info("[createAdminAgent] template (agent/template selection)", {
     deployRequestId: reqId,
     industry,
@@ -5627,148 +5641,108 @@ Business Variables:
     agentTemplateName: `${industry} master`,
     llmId,
     modelId: llmVersion,
-    providerPath: `/copy-agent/${sourceAgentId}`,
+    providerPath: `/get-agent/${sourceAgentId}`,
   });
 
+  // Retell docs: no copy-agent; use GET agent + POST create-agent (https://docs.retellai.com/api-references/create-agent)
   let agentId = null;
-  const copyPath = `/copy-agent/${encodeURIComponent(sourceAgentId)}`;
-  const copyUrl = `${providerBaseUrl}${copyPath}`;
-  const copyBody = {};
+  const getPath = `/get-agent/${encodeURIComponent(sourceAgentId)}`;
+  const getUrl = `${providerBaseUrl}${getPath}`;
   console.info("[createAdminAgent] provider call about to run", {
     deployRequestId: reqId,
-    providerUrl: copyUrl,
-    method: "POST",
+    providerUrl: getUrl,
+    method: "GET",
     headers: providerHeaders,
-    requestBody: copyBody,
-    userId,
-    profileIndustry: industry,
-    templateId: sourceAgentId,
-    llmId,
+    requestBody: null,
   });
+  let getRes;
   try {
-    const copyResponse = await retellClient.post(copyPath, copyBody);
+    getRes = await retellClient.get(getPath);
     console.info("[createAdminAgent] provider response", {
       deployRequestId: reqId,
-      call: "copy-agent",
-      status: copyResponse.status,
-      responseBody: copyResponse.data,
+      call: "get-agent",
+      status: getRes.status,
+      responseBody: getRes.data,
     });
-    const copiedAgent = normalizeRetellAgent(copyResponse.data);
-    agentId =
-      copiedAgent?.agent_id ||
-      copiedAgent?.id ||
-      copyResponse.data?.agent_id ||
-      copyResponse.data?.id;
-  } catch (copyErr) {
-    const status = copyErr.response?.status;
-    const responseBody = copyErr.response?.data;
+  } catch (getErr) {
+    const status = getErr.response?.status;
+    const responseBody = getErr.response?.data;
     console.error("[createAdminAgent] provider call failed", {
       deployRequestId: reqId,
-      providerUrl: copyUrl,
-      method: "POST",
-      requestBody: copyBody,
+      providerUrl: getUrl,
+      method: "GET",
       responseStatus: status,
       responseBody,
-      stack: copyErr.stack?.split("\n").slice(0, 20).join("\n"),
+      stack: getErr.stack?.split("\n").slice(0, 20).join("\n"),
     });
     if (status === 404) {
-      console.warn("[createAdminAgent] Retell copy-agent 404 – using get-agent + create-agent fallback.", {
-        sourceAgentId,
-        industry,
-      });
-      const getPath = `/get-agent/${encodeURIComponent(sourceAgentId)}`;
-      const getUrl = `${providerBaseUrl}${getPath}`;
-      console.info("[createAdminAgent] provider call about to run", {
-        deployRequestId: reqId,
-        providerUrl: getUrl,
-        method: "GET",
-        headers: providerHeaders,
-        requestBody: null,
-      });
-      try {
-        const getRes = await retellClient.get(getPath);
-        console.info("[createAdminAgent] provider response", {
-          deployRequestId: reqId,
-          call: "get-agent",
-          status: getRes.status,
-          responseBody: getRes.data,
-        });
-        const template = getRes.data?.agent ?? getRes.data;
-        if (!template?.response_engine || !template?.voice_id) {
-          console.error("[createAdminAgent] Template agent missing response_engine or voice_id.", {
-            sourceAgentId,
-            hasResponseEngine: !!template?.response_engine,
-            hasVoiceId: !!template?.voice_id,
-          });
-          throw new Error(
-            "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
-          );
-        }
-        const createBody = {
-          response_engine: template.response_engine,
-          voice_id: template.voice_id,
-          agent_name: `${businessName} AI Agent`,
-        };
-        const createPath = "/create-agent";
-        const createUrl = `${providerBaseUrl}${createPath}`;
-        console.info("[createAdminAgent] provider call about to run", {
-          deployRequestId: reqId,
-          providerUrl: createUrl,
-          method: "POST",
-          headers: providerHeaders,
-          requestBody: createBody,
-        });
-        const createRes = await retellClient.post(createPath, createBody);
-        console.info("[createAdminAgent] provider response", {
-          deployRequestId: reqId,
-          call: "create-agent",
-          status: createRes.status,
-          responseBody: createRes.data,
-        });
-        agentId =
-          createRes.data?.agent_id ?? createRes.data?.agent?.agent_id ?? createRes.data?.id;
-        if (!agentId) {
-          throw new Error("Retell create-agent did not return agent_id");
-        }
-      } catch (fallbackErr) {
-        const fallbackStatus = fallbackErr.response?.status;
-        const fallbackBody = fallbackErr.response?.data;
-        const fallbackDetail = fallbackErr.response?.data?.detail ?? fallbackErr.response?.data?.message ?? fallbackErr.message;
-        console.error("[createAdminAgent] provider call failed (get-agent or create-agent fallback)", {
-          deployRequestId: reqId,
-          sourceAgentId,
-          responseStatus: fallbackStatus,
-          responseBody: fallbackBody,
-          detail: fallbackDetail,
-          stack: fallbackErr.stack?.split("\n").slice(0, 20).join("\n"),
-        });
-        if (fallbackErr.response?.status === 404) {
-          throw new Error(
-            "Retell template agent not found (404). Check RETELL_MASTER_AGENT_ID_HVAC in server .env matches an agent in your Retell dashboard."
-          );
-        }
-        throw fallbackErr;
-      }
-    } else {
-      const detail = copyErr.response?.data?.detail ?? copyErr.response?.data?.message ?? copyErr.message;
-      console.error("[createAdminAgent] Retell copy-agent error (non-404)", { status, detail, sourceAgentId, responseBody });
-      throw copyErr;
+      throw new Error(
+        "Retell template agent not found (404). Check RETELL_MASTER_AGENT_ID_HVAC in server .env matches an agent in your Retell dashboard."
+      );
     }
+    throw getErr;
   }
-  if (!agentId) {
-    throw new Error("Retell agent_id missing");
+  const template = getRes.data?.agent ?? getRes.data;
+  if (!template?.response_engine || !template?.voice_id) {
+    console.error("[createAdminAgent] Template agent missing response_engine or voice_id.", {
+      sourceAgentId,
+      hasResponseEngine: !!template?.response_engine,
+      hasVoiceId: !!template?.voice_id,
+    });
+    throw new Error(
+      "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
+    );
+  }
+  const createBody = {
+    response_engine: template.response_engine,
+    voice_id: template.voice_id,
+    agent_name: `${businessName} AI Agent`,
+  };
+  const createPath = "/create-agent";
+  const createUrl = `${providerBaseUrl}${createPath}`;
+  console.info("[createAdminAgent] provider call about to run", {
+    deployRequestId: reqId,
+    providerUrl: createUrl,
+    method: "POST",
+    headers: providerHeaders,
+    requestBody: createBody,
+  });
+  try {
+    const createRes = await retellClient.post(createPath, createBody);
+    console.info("[createAdminAgent] provider response", {
+      deployRequestId: reqId,
+      call: "create-agent",
+      status: createRes.status,
+      responseBody: createRes.data,
+    });
+    agentId =
+      createRes.data?.agent_id ?? createRes.data?.agent?.agent_id ?? createRes.data?.id;
+    if (!agentId) {
+      throw new Error("Retell create-agent did not return agent_id");
+    }
+  } catch (createErr) {
+    const status = createErr.response?.status;
+    const responseBody = createErr.response?.data;
+    console.error("[createAdminAgent] provider call failed", {
+      deployRequestId: reqId,
+      providerUrl: createUrl,
+      method: "POST",
+      requestBody: createBody,
+      responseStatus: status,
+      responseBody,
+      stack: createErr.stack?.split("\n").slice(0, 20).join("\n"),
+    });
+    throw createErr;
   }
 
+  // Retell update-agent: only documented fields (https://docs.retellai.com/api-references/update-agent)
+  // Do not send retell_llm_dynamic_variables or prompt – they cause 400
   const updatePayload = {
     agent_name: `${businessName} AI Agent`,
-    retell_llm_dynamic_variables: dynamicVars,
     webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
     webhook_timeout_ms: 10000,
     voice_id: resolvedVoiceId,
   };
-  if (finalPrompt) {
-    updatePayload.prompt = finalPrompt;
-  }
   const updatePath = `/update-agent/${agentId}`;
   const updateUrl = `${providerBaseUrl}${updatePath}`;
   console.info("[createAdminAgent] provider call about to run", {
@@ -5799,13 +5773,14 @@ Business Variables:
     throw updateErr;
   }
 
-  console.info("[retell] admin agent copied", {
+  console.info("[retell] admin agent created", {
     agent_id: agentId,
     llm_id: llmId,
     llm_version: llmVersionNumber,
     source_agent_id: sourceAgentId,
   });
 
+  // Retell create-phone-number: documented body only (https://docs.retellai.com/api-references/create-phone-number)
   const phonePayload = {
     inbound_agent_id: agentId,
     outbound_agent_id: agentId,
@@ -5814,7 +5789,6 @@ Business Variables:
     country_code: "US",
     nickname: `${businessName} Line`,
     inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
-    inbound_sms_enabled: true,
   };
   const phonePath = "/create-phone-number";
   const phoneUrl = `${providerBaseUrl}${phonePath}`;
