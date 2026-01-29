@@ -884,7 +884,12 @@ export default function WizardPage({ embeddedMode }) {
       if (statusRes?.data) setDeployStatus(statusRes.data);
       navigate("/dashboard");
     } catch (err) {
-      setDeployError(err.response?.data?.error || err.message);
+      let msg = err.response?.data?.error || err.message;
+      const retellErr = err.response?.data?.retell_error;
+      if (retellErr) {
+        msg += " — Retell: " + (typeof retellErr === "object" ? JSON.stringify(retellErr) : String(retellErr));
+      }
+      setDeployError(msg);
     } finally {
       setIsDeploying(false);
     }
@@ -908,7 +913,12 @@ export default function WizardPage({ embeddedMode }) {
       });
       await handleSelfDeploy();
     } catch (err) {
-      setDeployError(err.response?.data?.error || err.message);
+      let msg = err.response?.data?.error || err.message;
+      const retellErr = err.response?.data?.retell_error;
+      if (retellErr) {
+        msg += " — Retell: " + (typeof retellErr === "object" ? JSON.stringify(retellErr) : String(retellErr));
+      }
+      setDeployError(msg);
       setIsDeploying(false);
     }
   };
@@ -1708,7 +1718,12 @@ export default function WizardPage({ embeddedMode }) {
                           const res = await adminGetDeployStatus(embeddedMode.targetUserId);
                           if (res.data) setDeployStatus(res.data);
                         } catch (err) {
-                          setDeployError(err.response?.data?.error || err.message);
+                          let msg = err.response?.data?.error || err.message;
+                          const retellErr = err.response?.data?.retell_error;
+                          if (retellErr) {
+                            msg += " — Retell: " + (typeof retellErr === "object" ? JSON.stringify(retellErr) : String(retellErr));
+                          }
+                          setDeployError(msg);
                         } finally {
                           setIsDeploying(false);
                         }

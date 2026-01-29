@@ -4737,6 +4737,7 @@ app.post(
       });
     } catch (err) {
       const errResponse = err.response || {};
+      const retellBody = errResponse.data;
       console.error("[deploy-agent-self] thrown", {
         deployRequestId,
         userId: uid,
@@ -4744,10 +4745,15 @@ app.post(
         message: err.message,
         responseStatus: errResponse.status,
         responseHeaders: errResponse.headers ? JSON.stringify(errResponse.headers) : undefined,
-        responseData: errResponse.data,
+        responseData: retellBody,
         stack: err.stack?.split("\n").slice(0, 20).join("\n"),
       });
-      return res.status(500).json({ error: err.message });
+      // Surface Retell error so we can see exact cause (which call, what they said)
+      return res.status(500).json({
+        error: err.message,
+        retell_status: errResponse.status,
+        retell_error: retellBody,
+      });
     }
   }
 );
@@ -5693,8 +5699,18 @@ Business Variables:
       "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
     );
   }
+  // Retell create-agent: response_engine with type, llm_id, version only. Use version 0 (latest) so we don't send template v6/deprecated.
+  const re = template.response_engine || {};
+  const response_engine = {
+    type: re.type || "retell-llm",
+    llm_id: re.llm_id,
+    version: 0,
+  };
+  if (!response_engine.llm_id) {
+    throw new Error("Template agent response_engine missing llm_id. Check RETELL_MASTER_AGENT_ID_HVAC points to a Retell-LLM agent.");
+  }
   const createBody = {
-    response_engine: template.response_engine,
+    response_engine,
     voice_id: template.voice_id,
     agent_name: `${businessName} AI Agent`,
   };
@@ -5871,6 +5887,77 @@ Business Variables:
 };
 
 /**
+ * Number-only deploy: create Retell phone number with no agent. Nickname = business name so you can find it in Retell; assign template in Retell later.
+ * Stores number in agents with agent_id 'pending'. DB tracks user + number + usage.
+ */
+const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deployRequestId: reqId }) => {
+  const providerBaseUrl = (retellClient.defaults?.baseURL || "https://api.retellai.com").replace(/\/$/, "");
+  const phonePath = "/create-phone-number";
+  const phoneUrl = `${providerBaseUrl}${phonePath}`;
+  const phonePayload = {
+    inbound_agent_id: null,
+    outbound_agent_id: null,
+    area_code: areaCode && String(areaCode).length === 3 ? Number(areaCode) : undefined,
+    country_code: "US",
+    nickname: String(businessName || "").trim() || "Business",
+  };
+  console.info("[provisionPhoneNumberOnly] provider call", {
+    deployRequestId: reqId,
+    providerUrl: phoneUrl,
+    requestBody: phonePayload,
+  });
+  let phoneResponse;
+  try {
+    phoneResponse = await retellClient.post(phonePath, phonePayload);
+  } catch (err) {
+    console.error("[provisionPhoneNumberOnly] provider call failed", {
+      deployRequestId: reqId,
+      responseStatus: err.response?.status,
+      responseBody: err.response?.data,
+    });
+    throw err;
+  }
+  const phoneNumber = phoneResponse.data?.phone_number || phoneResponse.data?.number;
+  if (!phoneNumber) {
+    throw new Error("Retell create-phone-number did not return phone_number");
+  }
+
+  const pendingAgentId = `pending-${userId}`;
+  const { error: insertError } = await supabaseAdmin.from("agents").insert({
+    user_id: userId,
+    agent_id: pendingAgentId,
+    phone_number: phoneNumber,
+    voice_id: null,
+    llm_id: null,
+    prompt: null,
+    area_code: areaCode || null,
+    tone: null,
+    schedule_summary: null,
+    standard_fee: null,
+    emergency_fee: null,
+    payment_id: "admin_onboarded",
+    transfer_number: null,
+    dispatch_base_location: null,
+    travel_limit_value: null,
+    travel_limit_mode: null,
+    is_active: true,
+  });
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+
+  await auditLog({
+    userId,
+    action: "admin_agent_deployed",
+    entity: "agent",
+    entityId: pendingAgentId,
+  });
+
+  console.info("[provisionPhoneNumberOnly] done", { deployRequestId: reqId, phone_number: phoneNumber, nickname: phonePayload.nickname });
+  return { phone_number: phoneNumber, agent_id: pendingAgentId };
+};
+
+/**
  * Shared deploy logic: provision agent for a user (used by /admin/deploy-agent and Stripe webhook).
  * Requires: active subscription, consent, business_name. area_code optional but required for provisioning.
  * On area code unavailable or other failure, sets profiles.deploy_error and returns { error }.
@@ -5949,7 +6036,7 @@ const deployAgentForUser = async (userId, deployRequestId) => {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (existingAgent?.agent_id && existingAgent?.phone_number) {
+  if (existingAgent?.phone_number) {
     await supabaseAdmin
       .from("profiles")
       .update({ deploy_error: null })
@@ -5962,22 +6049,19 @@ const deployAgentForUser = async (userId, deployRequestId) => {
     };
   }
 
-  const industryInput = profile.industry || "hvac";
   const plan = sub?.plan_type || null;
-  console.info("[deployAgentForUser] calling createAdminAgent", {
+  console.info("[deployAgentForUser] calling provisionPhoneNumberOnly (number only; assign template in Retell later)", {
     deployRequestId: reqId,
     userId: targetUserId,
     businessName,
     areaCode,
-    industry: industryInput,
     plan,
   });
   try {
-    const result = await createAdminAgent({
+    const result = await provisionPhoneNumberOnly({
       userId: targetUserId,
       businessName,
       areaCode,
-      industry: industryInput,
       deployRequestId: reqId,
     });
     await supabaseAdmin
