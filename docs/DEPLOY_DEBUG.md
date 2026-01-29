@@ -31,6 +31,15 @@ For each deploy request the server logs:
 
 Search logs for `deployRequestId` (e.g. `deploy-1738...`) to get all lines for one request.
 
+**Exact agent + LLM we're calling:** Search for `[RETELL_IDS]` in Railway logs. That line shows:
+- `industry` (hvac/plumbing)
+- `masterAgentIdUsed` – Retell template agent ID we call (copy-agent / get-agent)
+- `llmIdUsed` – Retell LLM ID
+- `llmVersionUsed` – Retell LLM version
+- All env vars: `env_RETELL_MASTER_AGENT_ID_HVAC`, `env_RETELL_MASTER_AGENT_ID_PLUMBING`, `env_RETELL_LLM_ID_HVAC`, etc.
+
+Compare those IDs to your Retell dashboard; wrong or missing env = 404/400.
+
 ---
 
 ## 2. Reproduce with curl
