@@ -143,7 +143,7 @@ We use **number-only deploy**: Retell `create-phone-number` with **no agent** (n
 | **Full trace** by `deployRequestId` | ✅ Logged throughout; search Railway for that id | — |
 | **create-phone-number response** logged and persisted | ✅ `[provisionPhoneNumberOnly] provider response` + `done`; we persist `phone_number` in `agents` | — |
 | **Agents row** `user_id`, `phone_number`, `agent_id` | ✅ Yes | We use `agent_id` = `pending-<userId>`, not NULL |
-| **provider_number_id** | ❌ We don’t store it | Retell uses `phone_number` (E.164) as unique id for Get/Update/Delete. Safe to skip. |
+| **provider_number_id** | ✅ After migration | We store Retell’s id (E.164 `phone_number`) for reconciliation and provider API calls. Run `agents_deploy_trace.sql`. |
 | **agents.nickname** | ✅ After migration | We store business name (same as Retell nickname). Run `supabase/agents_deploy_trace.sql`. |
 | **agents.status**, **is_managed_remotely** | ❌ We don’t have these | Skip unless you add them. |
 | **idx_agents_phone_number** | ✅ After migration | Same migration adds the index. |
@@ -163,7 +163,8 @@ We use **number-only deploy**: Retell `create-phone-number` with **no agent** (n
 
 **Verify agents row after deploy:**
 ```sql
-SELECT user_id, phone_number, agent_id, deploy_request_id, nickname, created_at
+SELECT user_id, phone_number, agent_id, deploy_request_id, nickname, provider_number_id, created_at
 FROM agents
 WHERE user_id = '<USER_UUID>';
 ```
+All of `deploy_request_id`, `nickname`, and `provider_number_id` should be set for new number-only deploys.
