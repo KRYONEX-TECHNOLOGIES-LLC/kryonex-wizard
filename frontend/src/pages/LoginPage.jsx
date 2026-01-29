@@ -396,7 +396,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
             : "BIO-METRIC SECURITY GATE"}
         </motion.h2>
         )}
-        {!checkingSession && (
+        {!checkingSession && !recoveryMode && (
         <form className="glass" style={{ padding: "2.5rem" }} onSubmit={handleSubmit}>
           <div
             style={{

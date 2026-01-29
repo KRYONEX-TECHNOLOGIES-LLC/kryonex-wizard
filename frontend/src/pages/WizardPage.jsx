@@ -231,6 +231,11 @@ export default function WizardPage({ embeddedMode }) {
       : LEGACY_STEPS_ENABLED
       ? FULL_STEP_META.length
       : MODERN_STEP_META.length;
+    // After Stripe checkout, land directly on Step 3 (Deploy) — never show Step 1 or 2 again
+    if (!embeddedMode && !LEGACY_STEPS_ENABLED && typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("checkout") === "success" && maxStepVal >= 3) return 3;
+    }
     const stored = Number(getSavedState(stepKey));
     if (Number.isFinite(stored) && stored >= 1 && stored <= maxStepVal) return stored;
     const fallbackKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
@@ -519,6 +524,14 @@ export default function WizardPage({ embeddedMode }) {
       if (intervalId) clearInterval(intervalId);
     };
   }, [embeddedMode, embeddedMode?.targetUserId, step]);
+
+  // After Stripe return: persist Step 3 and clean URL so we never show Step 1 or 2
+  useEffect(() => {
+    if (embeddedMode || LEGACY_STEPS_ENABLED) return;
+    if (searchParams.get("checkout") !== "success") return;
+    persistStep(3);
+    navigate("/wizard", { replace: true });
+  }, [embeddedMode, searchParams]);
 
   useEffect(() => {
     if (embeddedMode) return;
