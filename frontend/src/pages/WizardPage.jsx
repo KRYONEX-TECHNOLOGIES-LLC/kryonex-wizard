@@ -490,16 +490,10 @@ export default function WizardPage({ embeddedMode }) {
   }, [embeddedMode?.targetUserId]);
 
   useEffect(() => {
-    if (
-      !embeddedMode ||
-      !paymentVerified ||
-      step !== 2 ||
-      advancedToDeployRef.current
-    )
-      return;
+    if (!paymentVerified || step !== 2 || advancedToDeployRef.current) return;
     advancedToDeployRef.current = true;
     persistStep(3);
-  }, [embeddedMode, paymentVerified, step]);
+  }, [paymentVerified, step]);
 
   useEffect(() => {
     const shouldPoll =
@@ -529,7 +523,8 @@ export default function WizardPage({ embeddedMode }) {
   useEffect(() => {
     if (embeddedMode) return;
     let mounted = true;
-    const hydrateSubscription = async () => {
+    let pollId = null;
+    const checkSubscription = async () => {
       try {
         const response = await getSubscriptionStatus();
         const status = response?.data?.status;
@@ -546,16 +541,36 @@ export default function WizardPage({ embeddedMode }) {
           if (normalizedTier) {
             setPlanTier(normalizedTier);
           }
+          return true;
         }
       } catch (err) {
         // Silent: user may not have a subscription yet.
       }
+      return false;
     };
-    hydrateSubscription();
+    const run = async () => {
+      const ok = await checkSubscription();
+      if (ok || !mounted) return;
+      const isReturnFromCheckout = searchParams.get("checkout") === "success";
+      if (!isReturnFromCheckout) return;
+      let attempts = 0;
+      const maxAttempts = 30;
+      pollId = setInterval(async () => {
+        if (!mounted || attempts >= maxAttempts) return;
+        attempts += 1;
+        const done = await checkSubscription();
+        if (done && pollId) {
+          clearInterval(pollId);
+          pollId = null;
+        }
+      }, 2000);
+    };
+    run();
     return () => {
       mounted = false;
+      if (pollId) clearInterval(pollId);
     };
-  }, [embeddedMode]);
+  }, [embeddedMode, searchParams]);
 
   useEffect(() => {
     if (embeddedMode) return;
