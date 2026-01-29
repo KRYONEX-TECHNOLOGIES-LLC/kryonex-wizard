@@ -16,6 +16,15 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
   const [notice, setNotice] = React.useState("");
   const [checkingSession, setCheckingSession] = React.useState(!embeddedMode);
   const [adminCode, setAdminCode] = React.useState("");
+  const [recoveryMode, setRecoveryMode] = React.useState(() =>
+    typeof window !== "undefined" && window.location.hash.includes("type=recovery")
+  );
+  const [newPassword, setNewPassword] = React.useState("");
+  const [confirmPassword, setConfirmPassword] = React.useState("");
+  const [setPasswordLoading, setSetPasswordLoading] = React.useState(false);
+  const [setPasswordError, setSetPasswordError] = React.useState("");
+  const [resendLoading, setResendLoading] = React.useState(false);
+  const [emailNotConfirmed, setEmailNotConfirmed] = React.useState(false);
 
   React.useEffect(() => {
     const reason = searchParams.get("reason");
@@ -30,10 +39,20 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
 
   React.useEffect(() => {
     if (embeddedMode) return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+    });
+    return () => subscription?.unsubscribe?.();
+  }, [embeddedMode]);
+
+  React.useEffect(() => {
+    if (embeddedMode) return;
     let mounted = true;
     const bootstrap = async () => {
+      const isRecovery = window.location.hash.includes("type=recovery");
+      if (isRecovery) setRecoveryMode(true);
       const { data } = await supabase.auth.getSession();
-      if (mounted && data?.session) {
+      if (mounted && data?.session && !isRecovery) {
         if (adminCode) {
           try {
             const response = await autoGrantAdmin(adminCode);
@@ -91,6 +110,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
     event.preventDefault();
     setError("");
     setNotice("");
+    setEmailNotConfirmed(false);
     if (embeddedMode && onEmbeddedSubmit) {
       setLoading(true);
       try {
@@ -105,6 +125,8 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           setMode("login");
         } else if (mode === "login" && /not found|user not found/i.test(message)) {
           setError("No account found for this email. Use Create to add a new client.");
+        } else if (/rate limit|rate_limit/i.test(message)) {
+          setError("Too many signup emails sent to this address. Wait about an hour and try again, or use a different email.");
         } else {
           setError(message);
         }
@@ -135,6 +157,11 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
         setMode("login");
       } else if (mode === "login" && /invalid login|credentials|invalid credentials/i.test(message)) {
         setError("Invalid credentials. Use Forgot Password to reset your password, then sign in again.");
+      } else if (mode === "login" && /email not confirmed|not confirmed/i.test(message)) {
+        setEmailNotConfirmed(true);
+        setError("Email not confirmed. Check your inbox (and spam) for the confirmation link, or resend it below.");
+      } else if (/rate limit|rate_limit/i.test(message)) {
+        setError("Too many signup emails sent to this address. Wait about an hour and try again, or use a different email.");
       } else {
         setError(message);
       }
@@ -194,6 +221,28 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
     navigate("/wizard");
   };
 
+  const handleResendConfirmation = async () => {
+    if (!email?.trim()) {
+      setError("Enter your email first.");
+      return;
+    }
+    setError("");
+    setNotice("");
+    setResendLoading(true);
+    const { error: resendError } = await supabase.auth.resend({
+      type: "signup",
+      email: email.trim(),
+      options: { emailRedirectTo: `${window.location.origin}/login` },
+    });
+    setResendLoading(false);
+    if (resendError) {
+      setError(resendError.message);
+      return;
+    }
+    setNotice("Confirmation email sent. Check your inbox and spam, then sign in after clicking the link.");
+    setEmailNotConfirmed(false);
+  };
+
   const handleReset = async () => {
     if (!email) {
       setError("Enter your email first.");
@@ -202,16 +251,42 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
     setError("");
     setNotice("");
     setLoading(true);
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(
-      email,
-      { redirectTo: `${window.location.origin}/login` }
-    );
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/login`,
+    });
     setLoading(false);
     if (resetError) {
       setError(resetError.message);
       return;
     }
-    setNotice("Password reset email sent.");
+    setNotice("Check your email for the reset link. You’ll set a new password when you click it.");
+  };
+
+  const handleSetNewPassword = async (e) => {
+    e.preventDefault();
+    setSetPasswordError("");
+    if (newPassword.length < 8) {
+      setSetPasswordError("Password must be at least 8 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setSetPasswordError("Passwords do not match.");
+      return;
+    }
+    setSetPasswordLoading(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+    setSetPasswordLoading(false);
+    if (updateError) {
+      setSetPasswordError(updateError.message);
+      return;
+    }
+    setRecoveryMode(false);
+    setNewPassword("");
+    setConfirmPassword("");
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setNotice("Password updated. Signing you in…");
+    window.localStorage.setItem("kryonex_admin_mode", "user");
+    navigate("/wizard");
   };
 
   return (
@@ -238,6 +313,73 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           >
             AUTHORIZING...
           </div>
+        ) : recoveryMode ? (
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="glass"
+            style={{ padding: "2.5rem" }}
+          >
+            <h2
+              style={{
+                letterSpacing: "0.2rem",
+                marginBottom: "1rem",
+                textAlign: "center",
+              }}
+            >
+              SET NEW PASSWORD
+            </h2>
+            <p style={{ color: "#9ca3af", fontSize: "0.9rem", marginBottom: "1.5rem", textAlign: "center" }}>
+              Enter and confirm your new password below.
+            </p>
+            <form onSubmit={handleSetNewPassword}>
+              <label style={{ display: "block", marginBottom: "1rem" }}>
+                <span style={{ color: "#9ca3af" }}>New password</span>
+                <input
+                  className="input-field"
+                  type="password"
+                  required
+                  minLength={8}
+                  placeholder="At least 8 characters"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                />
+              </label>
+              <label style={{ display: "block", marginBottom: "1.5rem" }}>
+                <span style={{ color: "#9ca3af" }}>Confirm password</span>
+                <input
+                  className="input-field"
+                  type="password"
+                  required
+                  minLength={8}
+                  placeholder="Same as above"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </label>
+              {setPasswordError ? (
+                <div style={{ color: "#f87171", marginBottom: "1rem" }}>{setPasswordError}</div>
+              ) : null}
+              <button
+                type="submit"
+                disabled={setPasswordLoading}
+                style={{
+                  width: "100%",
+                  padding: "0.9rem",
+                  borderRadius: "999px",
+                  border: "none",
+                  background: "linear-gradient(90deg, rgba(16,185,129,1) 0%, rgba(5,5,5,1) 100%)",
+                  color: "#e5e7eb",
+                  fontWeight: 600,
+                  letterSpacing: "0.15rem",
+                  cursor: setPasswordLoading ? "not-allowed" : "pointer",
+                }}
+              >
+                {setPasswordLoading ? "UPDATING…" : "SET PASSWORD"}
+              </button>
+            </form>
+          </motion.div>
         ) : (
         <motion.h2
           initial={{ opacity: 0, y: 15 }}
@@ -302,7 +444,10 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
               type="email"
               required
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setEmailNotConfirmed(false);
+              }}
             />
           </label>
           <label style={{ display: "block", marginBottom: "1.5rem" }}>
@@ -317,6 +462,25 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           </label>
           {error ? (
             <div style={{ color: "#f87171", marginBottom: "1rem" }}>{error}</div>
+          ) : null}
+          {emailNotConfirmed && email?.trim() ? (
+            <div style={{ marginBottom: "1rem" }}>
+              <button
+                type="button"
+                onClick={handleResendConfirmation}
+                disabled={resendLoading}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#22d3ee",
+                  letterSpacing: "0.08rem",
+                  cursor: resendLoading ? "not-allowed" : "pointer",
+                  textDecoration: "underline",
+                }}
+              >
+                {resendLoading ? "Sending…" : "Resend confirmation email"}
+              </button>
+            </div>
           ) : null}
           {notice ? (
             <div style={{ color: "#10b981", marginBottom: "1rem" }}>
@@ -365,6 +529,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           ) : null}
         </form>
         )}
+      )}
       </div>
     </div>
   );
