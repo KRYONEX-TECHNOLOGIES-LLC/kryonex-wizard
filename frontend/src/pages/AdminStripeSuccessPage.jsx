@@ -94,11 +94,7 @@ export default function AdminStripeSuccessPage() {
             Payment successful
           </h1>
           <p className="mt-3 text-white/60">
-            You're all set. Log in when you're ready to use your account.
-          </p>
-          <p className="mt-4 text-sm text-white/50">
-            If you're an admin, you can now complete deployment in the Admin
-            Client Wizard.
+            Your personal AI assistant is being prepared. Log back in within the hour.
           </p>
           <Link
             to="/login"

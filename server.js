@@ -893,6 +893,26 @@ app.post(
                   plan_type: planType,
                 },
               });
+
+              try {
+                const deployResult = await deployAgentForUser(userId);
+                if (deployResult.error) {
+                  console.warn("[stripe-webhook] deployAgentForUser failed", {
+                    userId,
+                    error: deployResult.error,
+                  });
+                } else {
+                  console.info("[stripe-webhook] agent provisioned", {
+                    userId,
+                    phone_number: deployResult.phone_number,
+                  });
+                }
+              } catch (deployErr) {
+                console.error("[stripe-webhook] deployAgentForUser threw", {
+                  userId,
+                  message: deployErr.message,
+                });
+              }
             }
           }
           const { data: dealRow } = await supabaseAdmin
@@ -5552,6 +5572,113 @@ Business Variables:
   return { agent_id: agentId, phone_number: phoneNumber };
 };
 
+/**
+ * Shared deploy logic: provision agent for a user (used by /admin/deploy-agent and Stripe webhook).
+ * Requires: active subscription, consent, business_name. area_code optional but required for provisioning.
+ * On area code unavailable or other failure, sets profiles.deploy_error and returns { error }.
+ */
+const deployAgentForUser = async (userId) => {
+  const targetUserId = String(userId ?? "").trim();
+  if (!targetUserId) {
+    return { error: "user_id required" };
+  }
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from("profiles")
+    .select("business_name, area_code, consent_accepted_at, consent_version")
+    .eq("user_id", targetUserId)
+    .maybeSingle();
+  if (profileError || !profile) {
+    return { error: profileError?.message || "Profile not found" };
+  }
+  if (
+    !profile.consent_accepted_at ||
+    profile.consent_version !== currentConsentVersion
+  ) {
+    return { error: "Consent required for this user" };
+  }
+
+  const { data: subRows, error: subError } = await supabaseAdmin
+    .from("subscriptions")
+    .select("status, plan_type, current_period_end")
+    .eq("user_id", targetUserId)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (subError) {
+    return { error: subError.message };
+  }
+  const sub = subRows?.[0] || null;
+  if (!isSubscriptionActive(sub)) {
+    return { error: "Active subscription required" };
+  }
+
+  const businessName =
+    String(profile.business_name || "").trim() || "Business";
+  const areaCodeRaw = String(profile.area_code ?? "").trim();
+  if (!/^\d{3}$/.test(areaCodeRaw)) {
+    await supabaseAdmin
+      .from("profiles")
+      .update({ deploy_error: "AREA_CODE_UNAVAILABLE" })
+      .eq("user_id", targetUserId);
+    return { error: "AREA_CODE_UNAVAILABLE" };
+  }
+  const areaCode = areaCodeRaw;
+
+  const { data: existingAgent } = await supabaseAdmin
+    .from("agents")
+    .select("agent_id, phone_number")
+    .eq("user_id", targetUserId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingAgent?.agent_id && existingAgent?.phone_number) {
+    await supabaseAdmin
+      .from("profiles")
+      .update({ deploy_error: null })
+      .eq("user_id", targetUserId);
+    return {
+      ok: true,
+      phone_number: existingAgent.phone_number,
+      agent_id: existingAgent.agent_id,
+      existing: true,
+    };
+  }
+
+  try {
+    const result = await createAdminAgent({
+      userId: targetUserId,
+      businessName,
+      areaCode,
+    });
+    await supabaseAdmin
+      .from("profiles")
+      .update({ deploy_error: null })
+      .eq("user_id", targetUserId);
+    return {
+      ok: true,
+      phone_number: result.phone_number,
+      agent_id: result.agent_id,
+    };
+  } catch (err) {
+    const msg = err.message || "";
+    const isAreaCode =
+      /area|area.?code|unavailable|not available|invalid/i.test(msg);
+    const deployError = isAreaCode ? "AREA_CODE_UNAVAILABLE" : msg.slice(0, 200);
+    await supabaseAdmin
+      .from("profiles")
+      .update({ deploy_error: deployError })
+      .eq("user_id", targetUserId);
+    console.error("[deployAgentForUser] failed", {
+      userId: targetUserId,
+      message: err.message,
+      deployError,
+    });
+    return {
+      error: isAreaCode ? "AREA_CODE_UNAVAILABLE" : err.message,
+    };
+  }
+};
+
 app.post(
   "/admin/quick-onboard",
   requireAuth,
@@ -6042,6 +6169,58 @@ app.get(
   }
 );
 
+app.get(
+  "/admin/deploy-status",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-deploy-status", limit: 60, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const rawUserId = String(req.query.user_id ?? "").trim();
+      if (!rawUserId) {
+        return res.status(400).json({ error: "user_id is required" });
+      }
+      const [profileRes, agentRes, subRes] = await Promise.all([
+        supabaseAdmin
+          .from("profiles")
+          .select("business_name, area_code, deploy_error")
+          .eq("user_id", rawUserId)
+          .maybeSingle(),
+        supabaseAdmin
+          .from("agents")
+          .select("agent_id, phone_number")
+          .eq("user_id", rawUserId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabaseAdmin
+          .from("subscriptions")
+          .select("plan_type, status")
+          .eq("user_id", rawUserId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      const profile = profileRes.data;
+      const agent = agentRes.data;
+      const sub = subRes.data;
+      const has_agent =
+        Boolean(agent?.agent_id) && Boolean(agent?.phone_number);
+      return res.json({
+        has_agent: !!has_agent,
+        phone_number: agent?.phone_number || null,
+        agent_id: agent?.agent_id || null,
+        deploy_error: profile?.deploy_error || null,
+        business_name: profile?.business_name || null,
+        area_code: profile?.area_code || null,
+        plan_type: sub?.plan_type || null,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.post(
   "/admin/deploy-agent",
   requireAuth,
@@ -6055,74 +6234,12 @@ app.post(
         return res.status(400).json({ error: "for_user_id is required" });
       }
 
-      const { data: profile, error: profileError } = await supabaseAdmin
-        .from("profiles")
-        .select("business_name, area_code, consent_accepted_at, consent_version")
-        .eq("user_id", targetUserId)
-        .maybeSingle();
-      if (profileError || !profile) {
-        return res
-          .status(profileError ? 500 : 404)
-          .json({ error: profileError?.message || "Profile not found" });
+      const result = await deployAgentForUser(targetUserId);
+      if (result.error) {
+        const status =
+          result.error === "AREA_CODE_UNAVAILABLE" ? 400 : 500;
+        return res.status(status).json({ error: result.error });
       }
-      if (
-        !profile.consent_accepted_at ||
-        profile.consent_version !== currentConsentVersion
-      ) {
-        return res.status(403).json({ error: "Consent required for this user" });
-      }
-
-      const { data: subRows, error: subError } = await supabaseAdmin
-        .from("subscriptions")
-        .select("status, plan_type, current_period_end")
-        .eq("user_id", targetUserId)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (subError) {
-        return res.status(500).json({ error: subError.message });
-      }
-      const sub = subRows?.[0] || null;
-      if (!isSubscriptionActive(sub)) {
-        return res.status(402).json({
-          error: "Active subscription required. Have the client pay via the Stripe link first.",
-        });
-      }
-
-      const businessName =
-        String(profile.business_name || "").trim() || "Business";
-      const areaCode = String(profile.area_code || "").trim() || "000";
-
-      const { data: existingAgent } = await supabaseAdmin
-        .from("agents")
-        .select("agent_id, phone_number")
-        .eq("user_id", targetUserId)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (existingAgent?.agent_id && existingAgent?.phone_number) {
-        await auditLog({
-          userId: req.user.id,
-          actorId: req.user.id,
-          action: "admin_deploy_agent",
-          actionType: "admin_deploy_agent",
-          entity: "agent",
-          entityId: existingAgent.agent_id,
-          req,
-          metadata: { target_user_id: targetUserId, existing: true },
-        });
-        return res.json({
-          ok: true,
-          phone_number: existingAgent.phone_number,
-          agent_id: existingAgent.agent_id,
-          existing: true,
-        });
-      }
-
-      const result = await createAdminAgent({
-        userId: targetUserId,
-        businessName,
-        areaCode,
-      });
 
       await auditLog({
         userId: req.user.id,
@@ -6132,13 +6249,17 @@ app.post(
         entity: "agent",
         entityId: result.agent_id,
         req,
-        metadata: { target_user_id: targetUserId },
+        metadata: {
+          target_user_id: targetUserId,
+          existing: result.existing || false,
+        },
       });
 
       return res.json({
         ok: true,
         phone_number: result.phone_number,
         agent_id: result.agent_id,
+        existing: result.existing || false,
       });
     } catch (err) {
       return res.status(500).json({ error: err.message });
