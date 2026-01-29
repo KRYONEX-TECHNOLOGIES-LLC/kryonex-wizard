@@ -6,39 +6,31 @@ Use this when **Deploy** fails (e.g. "Request failed with status code 400") to c
 
 ## 1. What the server logs now (after verbose logging)
 
+**Number-only deploy** uses `provisionPhoneNumberOnly` (Retell `create-phone-number` only, no agent). Search logs for `[provisionPhoneNumberOnly]` and `[deploy-agent-self]`.
+
 For each deploy request the server logs:
 
 - **Exact outbound provider call**
-  - Full provider URL (e.g. `https://api.retellai.com/copy-agent/...` or `/create-phone-number`)
+  - Full provider URL (number-only: `https://api.retellai.com/create-phone-number`)
   - HTTP method and headers (Authorization: `Bearer ***`, Content-Type)
   - Exact request body sent to Retell
   - Provider response status and body (including 4xx/5xx body)
 
-- **Variables and env used**
-  - `providerBaseUrl` (Retell base URL)
-  - `providerApiKeyEnvVar`: `RETELL_API_KEY`
-  - `agentTemplateId`, `llmId`, `modelId` (llmVersion)
-  - `userId`, `profile.industry` (HVAC/Plumbing), `areaCode`, `plan`
-  - `deployRequestId` (correlation id) on every log line for that request
+- **Variables and env used** (number-only)
+  - `providerBaseUrl` (Retell base URL), `providerApiKeyEnvVar`: `RETELL_API_KEY`
+  - `userId`, `businessName` (→ nickname), `areaCode`, `deployRequestId` on every log line for that request
 
-- **createAdminAgent output**
-  - `[createAdminAgent] output` logs: `templateId`, `templateName`, `llmId`, `llmVersion`, `agent_id`, `phone_number`
+- **Number-only output**
+  - `[provisionPhoneNumberOnly] provider response` (success) or `provider call failed` (error): `phone_number`, `nickname`, full Retell response body.
 
 - **On failure**
-  - `[deploy-agent-self] thrown` or `[deployAgentForUser] failed` / `[createAdminAgent] provider call failed` with:
+  - `[deploy-agent-self] thrown` or `[deployAgentForUser] failed` / `[provisionPhoneNumberOnly] provider call failed` with:
     - `responseStatus`, `responseBody`, `stack` (first 20 lines)
     - `providerUrl` and `requestBody` for the failing call
 
 Search logs for `deployRequestId` (e.g. `deploy-1738...`) to get all lines for one request.
 
-**Exact agent + LLM we're calling:** Search for `[RETELL_IDS]` in Railway logs. That line shows:
-- `industry` (hvac/plumbing)
-- `masterAgentIdUsed` – Retell template agent ID we call (copy-agent / get-agent)
-- `llmIdUsed` – Retell LLM ID
-- `llmVersionUsed` – Retell LLM version
-- All env vars: `env_RETELL_MASTER_AGENT_ID_HVAC`, `env_RETELL_MASTER_AGENT_ID_PLUMBING`, `env_RETELL_LLM_ID_HVAC`, etc.
-
-Compare those IDs to your Retell dashboard; wrong or missing env = 404/400.
+**Number-only deploy** does not use agents or LLMs; we only call `create-phone-number`. `[RETELL_IDS]` / `createAdminAgent` apply only to other flows (e.g. admin quick-onboard).
 
 ---
 
@@ -130,12 +122,48 @@ To confirm the exact URL the browser hits: Network tab → select the `deploy-ag
 
 ---
 
-## 6. Common causes of 400 on deploy
+## 6. Common causes of 400 on deploy (number-only)
 
-- **Retell returns 400** (e.g. on `create-phone-number` or `update-agent`): Check server logs for `[createAdminAgent] provider call failed` and the **responseBody**. Often:
+- **Retell returns 400** on `create-phone-number`: Check server logs for `[provisionPhoneNumberOnly] provider call failed` and the **responseBody**. Often:
   - Invalid or unsupported `area_code` / region
   - Missing or invalid fields in the request body (e.g. required Retell fields)
-- **Missing industry:** If `profiles.industry` is NULL, the server defaults to `hvac`. If your Retell template or config expects something else, set industry in Identity step or DB.
-- **Wrong env:** Ensure `RETELL_MASTER_AGENT_ID_HVAC` and `RETELL_MASTER_AGENT_ID_PLUMBING` (if used) match existing agents in the Retell dashboard; wrong ID can lead to 404 or downstream 400.
+- **Missing business_name / area_code:** Deploy uses profile `business_name` (nickname in Retell) and `area_code`. Ensure Identity step saved them.
 
-Once you have one failing request, use the **deployRequestId** from the first log line to tie together route → deployAgentForUser → createAdminAgent → provider call → error and response body.
+Once you have one failing request, use the **deployRequestId** from the first log line to tie together route → deployAgentForUser → provisionPhoneNumberOnly → create-phone-number → error and response body.
+
+---
+
+## 7. Checklist vs our setup (number-only deploy)
+
+We use **number-only deploy**: Retell `create-phone-number` with **no agent** (null inbound/outbound). Nickname = business name so you can find it in Retell; you assign the template there later. DB stores `user_id`, `phone_number`, `agent_id` = `pending-<userId>` in `agents`.
+
+| Checklist item | We have / use | Skip / different |
+|----------------|---------------|------------------|
+| **Deploy logs** `[deploy-agent-self] start` + `deployRequestId` | ✅ Yes | — |
+| **Full trace** by `deployRequestId` | ✅ Logged throughout; search Railway for that id | — |
+| **create-phone-number response** logged and persisted | ✅ `[provisionPhoneNumberOnly] provider response` + `done`; we persist `phone_number` in `agents` | — |
+| **Agents row** `user_id`, `phone_number`, `agent_id` | ✅ Yes | We use `agent_id` = `pending-<userId>`, not NULL |
+| **provider_number_id** | ❌ We don’t store it | Retell uses `phone_number` (E.164) as unique id for Get/Update/Delete. Safe to skip. |
+| **agents.nickname** | ✅ After migration | We store business name (same as Retell nickname). Run `supabase/agents_deploy_trace.sql`. |
+| **agents.status**, **is_managed_remotely** | ❌ We don’t have these | Skip unless you add them. |
+| **idx_agents_phone_number** | ✅ After migration | Same migration adds the index. |
+| **Frontend POST body** | We don’t use body | User from JWT, profile (area_code, business_name) from DB. Body optional. |
+| **Provider URL + payload** for create-phone-number | ✅ In `[provisionPhoneNumberOnly] provider call` | — |
+| **Provider status + body** | ✅ In `[provisionPhoneNumberOnly] provider response` (success) or `provider call failed` (error) | — |
+| **Webhook lookup by phone_number** | ✅ Inbound webhook / SMS handlers query `agents` by `phone_number` | Retell webhook uses `agent_id`; with number-only we have no Retell agent until you assign in dashboard. |
+| **webhook_queue** table | ❌ We don’t have it | Skip. Not used in current flow. |
+| **Usage when agent_id pending** | Usage/cap logic often keys off `agent_id` | With `pending-*`, Retell won’t call our webhook until you assign an agent. Usage attribution = follow-up if you need it. |
+| **RETELL_API_KEY**, **base URL** | ✅ Used | — |
+| **INBOUND_WEBHOOK_URL** | We don’t send it for number-only | Null agents ⇒ no inbound webhook for that number until you attach an agent in Retell. |
+| **Curl deploy** | See §2.A | User from JWT; no body required. |
+| **deployRequestId** stored with DB row | ✅ After migration | We persist `deploy_request_id` and `nickname` in `agents` (run `supabase/agents_deploy_trace.sql`). |
+| **idx_agents_phone_number** | ✅ After migration | Same migration adds the index. |
+
+**Bottom line:** Use the checklist for deploy **logs**, **provider call/response**, and **agents** (`user_id`, `phone_number`, `agent_id`, `deploy_request_id`, `nickname`). Ignore **provider_number_id** (Retell uses `phone_number` as unique id) and **webhook_queue** unless you add them. Run `supabase/agents_deploy_trace.sql` in Supabase SQL Editor before deploying the server so `deploy_request_id` and `nickname` are stored.
+
+**Verify agents row after deploy:**
+```sql
+SELECT user_id, phone_number, agent_id, deploy_request_id, nickname, created_at
+FROM agents
+WHERE user_id = '<USER_UUID>';
+```

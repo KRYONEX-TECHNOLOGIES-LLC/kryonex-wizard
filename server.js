@@ -5921,8 +5921,16 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
   if (!phoneNumber) {
     throw new Error("Retell create-phone-number did not return phone_number");
   }
+  console.info("[provisionPhoneNumberOnly] provider response", {
+    deployRequestId: reqId,
+    status: phoneResponse.status,
+    responseBody: phoneResponse.data,
+    phone_number: phoneNumber,
+    nickname: phonePayload.nickname,
+  });
 
   const pendingAgentId = `pending-${userId}`;
+  const nickname = String(phonePayload.nickname || "").trim() || null;
   const { error: insertError } = await supabaseAdmin.from("agents").insert({
     user_id: userId,
     agent_id: pendingAgentId,
@@ -5941,6 +5949,8 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
     travel_limit_value: null,
     travel_limit_mode: null,
     is_active: true,
+    deploy_request_id: reqId || null,
+    nickname: nickname || null,
   });
   if (insertError) {
     throw new Error(insertError.message);
@@ -5953,7 +5963,7 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
     entityId: pendingAgentId,
   });
 
-  console.info("[provisionPhoneNumberOnly] done", { deployRequestId: reqId, phone_number: phoneNumber, nickname: phonePayload.nickname });
+  console.info("[provisionPhoneNumberOnly] done", { deployRequestId: reqId, phone_number: phoneNumber, agent_id: pendingAgentId, nickname: phonePayload.nickname });
   return { phone_number: phoneNumber, agent_id: pendingAgentId };
 };
 
