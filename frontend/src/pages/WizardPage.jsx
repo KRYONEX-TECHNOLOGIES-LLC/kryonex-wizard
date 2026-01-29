@@ -25,6 +25,7 @@ import {
   adminGetSubscriptionStatus,
   adminSaveOnboardingIdentity,
   createCheckoutSession,
+  verifyCheckoutSession,
   deployAgent,
   deployAgentSelf,
   getSubscriptionStatus,
@@ -223,8 +224,17 @@ export default function WizardPage({ embeddedMode }) {
     ? FULL_STEP_META
     : MODERN_STEP_META;
   const maxStep = stepMeta.length;
-  const formKey = embeddedMode ? WIZARD_EMBEDDED_FORM_KEY : WIZARD_FORM_KEY;
-  const stepKey = embeddedMode ? WIZARD_EMBEDDED_STEP_KEY : WIZARD_STEP_KEY;
+  const [wizardUserId, setWizardUserId] = useState(null);
+  const formKey = embeddedMode
+    ? WIZARD_EMBEDDED_FORM_KEY
+    : wizardUserId
+    ? `wizard.form.${wizardUserId}`
+    : WIZARD_FORM_KEY;
+  const stepKey = embeddedMode
+    ? WIZARD_EMBEDDED_STEP_KEY
+    : wizardUserId
+    ? `wizard.step.${wizardUserId}`
+    : WIZARD_STEP_KEY;
   const getInitialStep = () => {
     const maxStepVal = embeddedMode
       ? EMBEDDED_STEP_META.length
@@ -235,6 +245,7 @@ export default function WizardPage({ embeddedMode }) {
     if (!embeddedMode && !LEGACY_STEPS_ENABLED && typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       if (params.get("checkout") === "success" && maxStepVal >= 3) return 3;
+      return 1; // user-scoped step loaded in loadProfile
     }
     const stored = Number(getSavedState(stepKey));
     if (Number.isFinite(stored) && stored >= 1 && stored <= maxStepVal) return stored;
@@ -246,7 +257,9 @@ export default function WizardPage({ embeddedMode }) {
   };
   const [step, setStep] = useState(getInitialStep);
   const navigate = useNavigate();
-  const [form, setForm] = useState(() => getSavedState(formKey) || defaultFormState);
+  const [form, setForm] = useState(() =>
+    embeddedMode ? (getSavedState(WIZARD_EMBEDDED_FORM_KEY) || defaultFormState) : defaultFormState
+  );
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployError, setDeployError] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -307,7 +320,11 @@ export default function WizardPage({ embeddedMode }) {
   const persistStep = (value) => {
     const next = Math.min(Math.max(1, value), maxStep);
     setStep(next);
-    const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+    const lsKey = embeddedMode
+      ? "kryonex_wizard_embedded_step"
+      : wizardUserId
+      ? `kryonex_wizard_step.${wizardUserId}`
+      : "kryonex_wizard_step";
     window.localStorage.setItem(lsKey, next);
     saveState(stepKey, next);
   };
@@ -316,7 +333,11 @@ export default function WizardPage({ embeddedMode }) {
     setStep((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       const clamped = Math.min(Math.max(1, next), maxStep);
-      const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+      const lsKey = embeddedMode
+        ? "kryonex_wizard_embedded_step"
+        : wizardUserId
+        ? `kryonex_wizard_step.${wizardUserId}`
+        : "kryonex_wizard_step";
       window.localStorage.setItem(lsKey, clamped);
       saveState(stepKey, clamped);
       return clamped;
@@ -335,30 +356,48 @@ export default function WizardPage({ embeddedMode }) {
       const { data: sessionData } = await supabase.auth.getSession();
       const user = sessionData?.session?.user;
       if (!user) return;
-      if (mounted) setProfileEmail(user.email || "");
+      if (mounted) {
+        setProfileEmail(user.email || "");
+        setWizardUserId(user.id);
+      }
+      const userFormKey = `wizard.form.${user.id}`;
+      const userStepKey = `wizard.step.${user.id}`;
+      const storedForm = getSavedState(userFormKey);
+      const storedStep = Number(getSavedState(userStepKey));
       const { data: profile } = await supabase
         .from("profiles")
         .select("business_name, area_code, onboarding_step")
         .eq("user_id", user.id)
         .maybeSingle();
-      if (!mounted || !profile) return;
-      setOnboardingStep(profile.onboarding_step ?? null);
-      setForm((prev) => ({
-        ...prev,
-        nameInput: prev.nameInput || profile.business_name || "",
-        areaCodeInput: prev.areaCodeInput || profile.area_code || "",
-      }));
-      if (profile.onboarding_step >= 3 && step < 3) {
-        persistStep(3);
-      } else if (profile.onboarding_step === 2 && step < 2) {
-        persistStep(2);
+      if (!mounted) return;
+      setOnboardingStep(profile?.onboarding_step ?? null);
+      const hasCheckoutSuccess =
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("checkout") === "success";
+      const mergedForm = {
+        ...defaultFormState,
+        ...(storedForm && typeof storedForm === "object" ? storedForm : {}),
+        nameInput:
+          (storedForm?.nameInput ?? profile?.business_name ?? "") || "",
+        areaCodeInput:
+          (storedForm?.areaCodeInput ?? profile?.area_code ?? "") || "",
+      };
+      setForm(mergedForm);
+      if (hasCheckoutSuccess && maxStep >= 3) {
+        setStep(3);
+      } else if (Number.isFinite(storedStep) && storedStep >= 1 && storedStep <= maxStep) {
+        setStep(storedStep);
+      } else if (profile?.onboarding_step >= 3) {
+        setStep(3);
+      } else if (profile?.onboarding_step === 2) {
+        setStep(2);
       }
     };
     loadProfile();
     return () => {
       mounted = false;
     };
-  }, [embeddedMode, step]);
+  }, [embeddedMode]);
 
   const safeStep = Math.min(Math.max(1, step), maxStep);
   const currentStep = stepMeta[safeStep - 1];
@@ -466,9 +505,13 @@ export default function WizardPage({ embeddedMode }) {
   }, [searchParams]);
 
   useEffect(() => {
-    const lsKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
+    const lsKey = embeddedMode
+      ? "kryonex_wizard_embedded_step"
+      : wizardUserId
+      ? `kryonex_wizard_step.${wizardUserId}`
+      : "kryonex_wizard_step";
     window.localStorage.setItem(lsKey, String(step));
-  }, [step, embeddedMode]);
+  }, [step, embeddedMode, wizardUserId]);
 
   useEffect(() => {
     if (!embeddedMode?.targetUserId) return;
@@ -525,12 +568,32 @@ export default function WizardPage({ embeddedMode }) {
     };
   }, [embeddedMode, embeddedMode?.targetUserId, step]);
 
-  // After Stripe return: persist Step 3 and clean URL so we never show Step 1 or 2
+  // After Stripe return: verify with session_id if present (works in test mode without webhook), then persist Step 3 and clean URL
   useEffect(() => {
     if (embeddedMode || LEGACY_STEPS_ENABLED) return;
     if (searchParams.get("checkout") !== "success") return;
-    persistStep(3);
-    navigate("/wizard", { replace: true });
+    let mounted = true;
+    (async () => {
+      const sessionId = searchParams.get("session_id");
+      if (sessionId) {
+        try {
+          const res = await verifyCheckoutSession(sessionId);
+          if (!mounted) return;
+          if (res.data?.verified && ["active", "trialing"].includes(String(res.data?.status || "").toLowerCase())) {
+            setPaymentVerified(true);
+            setCheckoutError("");
+            const planType = res.data?.plan_type;
+            if (planType && normalizePlanTier(planType)) setPlanTier(normalizePlanTier(planType));
+          }
+        } catch {
+          // Fall back to polling / webhook
+        }
+      }
+      if (!mounted) return;
+      persistStep(3);
+      navigate("/wizard", { replace: true });
+    })();
+    return () => { mounted = false; };
   }, [embeddedMode, searchParams]);
 
   useEffect(() => {
@@ -884,7 +947,7 @@ export default function WizardPage({ embeddedMode }) {
       const planTierPayload = String(
         selectedTier || planTier || "pro"
       ).toLowerCase();
-      const successUrl = `${window.location.origin}/wizard?checkout=success`;
+      const successUrl = `${window.location.origin}/wizard?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
       const cancelUrl = `${window.location.origin}/wizard?canceled=true`;
       const response = await createCheckoutSession({
         planTier: planTierPayload,
