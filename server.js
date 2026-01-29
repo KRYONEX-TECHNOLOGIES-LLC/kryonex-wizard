@@ -5571,10 +5571,27 @@ Business Variables:
     throw new Error("Missing master agent id for industry");
   }
 
-  const copyResponse = await retellClient.post(
-    `/copy-agent/${encodeURIComponent(sourceAgentId)}`,
-    {}
-  );
+  let copyResponse;
+  try {
+    copyResponse = await retellClient.post(
+      `/copy-agent/${encodeURIComponent(sourceAgentId)}`,
+      {}
+    );
+  } catch (copyErr) {
+    const status = copyErr.response?.status;
+    const detail = copyErr.response?.data?.detail ?? copyErr.response?.data?.message ?? copyErr.message;
+    if (status === 404) {
+      console.error("[createAdminAgent] Retell copy-agent 404 – master agent not found. Check RETELL_MASTER_AGENT_ID_HVAC (or PLUMBING) in .env matches an existing agent in your Retell dashboard.", {
+        sourceAgentId,
+        industry,
+        detail,
+      });
+      throw new Error(
+        "Retell template agent not found (404). Check RETELL_MASTER_AGENT_ID_HVAC in server .env matches an agent in your Retell dashboard."
+      );
+    }
+    throw copyErr;
+  }
   const copiedAgent = normalizeRetellAgent(copyResponse.data);
   const agentId =
     copiedAgent?.agent_id ||
