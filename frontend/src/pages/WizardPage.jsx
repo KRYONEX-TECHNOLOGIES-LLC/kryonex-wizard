@@ -171,7 +171,7 @@ const stepVariants = {
 const defaultFormState = {
   nameInput: "",
   areaCodeInput: "",
-  industryInput: "",
+  industryInput: "hvac",
   toneInput: "Calm & Professional",
   weekdayOpen: "08:00 AM",
   weekdayClose: "05:00 PM",
@@ -366,7 +366,7 @@ export default function WizardPage({ embeddedMode }) {
       const storedStep = Number(getSavedState(userStepKey));
       const { data: profile } = await supabase
         .from("profiles")
-        .select("business_name, area_code, onboarding_step")
+        .select("business_name, area_code, industry, onboarding_step")
         .eq("user_id", user.id)
         .maybeSingle();
       if (!mounted) return;
@@ -381,6 +381,8 @@ export default function WizardPage({ embeddedMode }) {
           (storedForm?.nameInput ?? profile?.business_name ?? "") || "",
         areaCodeInput:
           (storedForm?.areaCodeInput ?? profile?.area_code ?? "") || "",
+        industryInput:
+          (storedForm?.industryInput ?? profile?.industry ?? "hvac") || "hvac",
       };
       setForm(mergedForm);
       if (hasCheckoutSuccess && maxStep >= 3) {
@@ -405,7 +407,10 @@ export default function WizardPage({ embeddedMode }) {
 
   const areaCodeValid = form.areaCodeInput.length === 3;
   const canContinueIdentity =
-    form.nameInput.trim().length > 0 && areaCodeValid && consentAccepted;
+    form.nameInput.trim().length > 0 &&
+    areaCodeValid &&
+    consentAccepted &&
+    (form.industryInput === "hvac" || form.industryInput === "plumbing");
   const canContinueIndustry = form.industryInput.length > 0;
   const canContinueLogistics =
     form.standardFee.length > 0 && form.emergencyFee.length > 0;
@@ -974,11 +979,13 @@ export default function WizardPage({ embeddedMode }) {
           for_user_id: embeddedMode.targetUserId,
           businessName: form.nameInput,
           areaCode: form.areaCodeInput,
+          industry: form.industryInput || "hvac",
         });
       } else {
         await saveOnboardingIdentity({
           businessName: form.nameInput,
           areaCode: form.areaCodeInput,
+          industry: form.industryInput || "hvac",
         });
       }
       persistStep(2);
@@ -1182,6 +1189,40 @@ export default function WizardPage({ embeddedMode }) {
                       >
                         {areaCodeValid ? "✓ Routing Valid" : "Must be 3 digits"}
                       </p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs uppercase tracking-wider text-white/50">
+                        Protocol
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {INDUSTRIES.map((ind) => {
+                          const isSelected = form.industryInput === ind.id;
+                          const Icon = ind.id === "plumbing" ? Droplet : Wrench;
+                          return (
+                            <button
+                              type="button"
+                              key={ind.id}
+                              onClick={() => updateField("industryInput", ind.id)}
+                              className={`rounded-xl border p-4 text-left transition-all ${
+                                isSelected
+                                  ? ind.accent === "purple"
+                                    ? "border-neon-purple bg-neon-purple/10 text-white"
+                                    : "border-neon-cyan bg-neon-cyan/10 text-white"
+                                  : "border-white/10 bg-white/5 text-white/70 hover:border-white/20"
+                              }`}
+                            >
+                              <Icon size={20} className="mb-2 opacity-80" />
+                              <div className="text-xs font-medium uppercase tracking-wider text-white/60">
+                                {ind.protocol}
+                              </div>
+                              <div className="mt-1 font-semibold">{ind.title}</div>
+                              <div className="mt-0.5 text-xs text-white/60 line-clamp-2">
+                                {ind.description}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                     <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                       <div className="text-xs uppercase tracking-wider text-white/50">

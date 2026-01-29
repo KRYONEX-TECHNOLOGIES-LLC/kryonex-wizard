@@ -4832,9 +4832,11 @@ app.post(
   rateLimit({ keyPrefix: "onboard", limit: 8, windowMs: 60_000 }),
   async (req, res) => {
     try {
-      const { businessName, areaCode } = req.body || {};
+      const { businessName, areaCode, industry } = req.body || {};
       const cleanName = String(businessName || "").trim();
       const cleanArea = String(areaCode || "").trim();
+      const cleanIndustry = String(industry || "hvac").trim().toLowerCase();
+      const allowedIndustry = ["hvac", "plumbing"].includes(cleanIndustry) ? cleanIndustry : "hvac";
       if (!cleanName || cleanName.length < 2 || cleanName.length > 80) {
         return res.status(400).json({ error: "businessName is invalid" });
       }
@@ -4846,6 +4848,7 @@ app.post(
         user_id: req.user.id,
         business_name: cleanName,
         area_code: cleanArea || null,
+        industry: allowedIndustry,
         onboarding_step: 2,
       });
 
@@ -5484,8 +5487,10 @@ const ADMIN_ONBOARD_DEFAULTS = {
 const buildAdminScheduleSummary = () =>
   "Standard operating hours are Monday through Friday, 08:00 AM to 05:00 PM. We are closed on weekends. We do NOT offer after-hours service. If they call late, ask them to call back in the morning.";
 
-const createAdminAgent = async ({ userId, businessName, areaCode }) => {
-  const industry = ADMIN_ONBOARD_DEFAULTS.industry;
+const createAdminAgent = async ({ userId, businessName, areaCode, industry: industryParam }) => {
+  const industry = industryParam && ["hvac", "plumbing"].includes(String(industryParam).toLowerCase())
+    ? String(industryParam).toLowerCase()
+    : ADMIN_ONBOARD_DEFAULTS.industry;
   const tone = ADMIN_ONBOARD_DEFAULTS.tone;
   const scheduleSummary = buildAdminScheduleSummary();
   const dispatchBaseLocation = areaCode
@@ -5571,33 +5576,70 @@ Business Variables:
     throw new Error("Missing master agent id for industry");
   }
 
-  let copyResponse;
+  let agentId = null;
   try {
-    copyResponse = await retellClient.post(
+    const copyResponse = await retellClient.post(
       `/copy-agent/${encodeURIComponent(sourceAgentId)}`,
       {}
     );
+    const copiedAgent = normalizeRetellAgent(copyResponse.data);
+    agentId =
+      copiedAgent?.agent_id ||
+      copiedAgent?.id ||
+      copyResponse.data?.agent_id ||
+      copyResponse.data?.id;
   } catch (copyErr) {
     const status = copyErr.response?.status;
-    const detail = copyErr.response?.data?.detail ?? copyErr.response?.data?.message ?? copyErr.message;
     if (status === 404) {
-      console.error("[createAdminAgent] Retell copy-agent 404 – master agent not found. Check RETELL_MASTER_AGENT_ID_HVAC (or PLUMBING) in .env matches an existing agent in your Retell dashboard.", {
+      console.warn("[createAdminAgent] Retell copy-agent 404 – using get-agent + create-agent fallback.", {
         sourceAgentId,
         industry,
-        detail,
       });
-      throw new Error(
-        "Retell template agent not found (404). Check RETELL_MASTER_AGENT_ID_HVAC in server .env matches an agent in your Retell dashboard."
-      );
+      try {
+        const getRes = await retellClient.get(`/get-agent/${encodeURIComponent(sourceAgentId)}`);
+        const template = getRes.data?.agent ?? getRes.data;
+        if (!template?.response_engine || !template?.voice_id) {
+          console.error("[createAdminAgent] Template agent missing response_engine or voice_id.", {
+            sourceAgentId,
+            hasResponseEngine: !!template?.response_engine,
+            hasVoiceId: !!template?.voice_id,
+          });
+          throw new Error(
+            "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
+          );
+        }
+        const createBody = {
+          response_engine: template.response_engine,
+          voice_id: template.voice_id,
+          agent_name: `${businessName} AI Agent`,
+        };
+        const createRes = await retellClient.post("/create-agent", createBody);
+        agentId =
+          createRes.data?.agent_id ?? createRes.data?.agent?.agent_id ?? createRes.data?.id;
+        if (!agentId) {
+          throw new Error("Retell create-agent did not return agent_id");
+        }
+      } catch (fallbackErr) {
+        const fallbackStatus = fallbackErr.response?.status;
+        const fallbackDetail = fallbackErr.response?.data?.detail ?? fallbackErr.response?.data?.message ?? fallbackErr.message;
+        console.error("[createAdminAgent] Retell get-agent or create-agent fallback failed", {
+          sourceAgentId,
+          status: fallbackStatus,
+          detail: fallbackDetail,
+        });
+        if (fallbackErr.response?.status === 404) {
+          throw new Error(
+            "Retell template agent not found (404). Check RETELL_MASTER_AGENT_ID_HVAC in server .env matches an agent in your Retell dashboard."
+          );
+        }
+        throw fallbackErr;
+      }
+    } else {
+      const detail = copyErr.response?.data?.detail ?? copyErr.response?.data?.message ?? copyErr.message;
+      console.error("[createAdminAgent] Retell copy-agent error", { status, detail, sourceAgentId });
+      throw copyErr;
     }
-    throw copyErr;
   }
-  const copiedAgent = normalizeRetellAgent(copyResponse.data);
-  const agentId =
-    copiedAgent?.agent_id ||
-    copiedAgent?.id ||
-    copyResponse.data?.agent_id ||
-    copyResponse.data?.id;
   if (!agentId) {
     throw new Error("Retell agent_id missing");
   }
@@ -5681,7 +5723,7 @@ const deployAgentForUser = async (userId) => {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
-    .select("business_name, area_code, consent_accepted_at, consent_version")
+    .select("business_name, area_code, industry, consent_accepted_at, consent_version")
     .eq("user_id", targetUserId)
     .maybeSingle();
   if (profileError || !profile) {
@@ -5745,6 +5787,7 @@ const deployAgentForUser = async (userId) => {
       userId: targetUserId,
       businessName,
       areaCode,
+      industry: profile.industry || "hvac",
     });
     await supabaseAdmin
       .from("profiles")
@@ -6002,10 +6045,12 @@ app.post(
   rateLimit({ keyPrefix: "admin-onboard-identity", limit: 20, windowMs: 60_000 }),
   async (req, res) => {
     try {
-      const { for_user_id, businessName, areaCode } = req.body || {};
+      const { for_user_id, businessName, areaCode, industry } = req.body || {};
       const targetUserId = String(for_user_id ?? "").trim();
       const cleanName = String(businessName ?? "").trim();
       const cleanArea = String(areaCode ?? "").trim();
+      const cleanIndustry = String(industry ?? "hvac").trim().toLowerCase();
+      const allowedIndustry = ["hvac", "plumbing"].includes(cleanIndustry) ? cleanIndustry : "hvac";
       if (!targetUserId) {
         return res.status(400).json({ error: "for_user_id is required" });
       }
@@ -6020,6 +6065,7 @@ app.post(
         user_id: targetUserId,
         business_name: cleanName,
         area_code: cleanArea || null,
+        industry: allowedIndustry,
         onboarding_step: 2,
       });
 
