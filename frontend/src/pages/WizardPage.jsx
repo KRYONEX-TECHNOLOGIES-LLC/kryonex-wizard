@@ -26,7 +26,9 @@ import {
   adminSaveOnboardingIdentity,
   createCheckoutSession,
   deployAgent,
+  deployAgentSelf,
   getSubscriptionStatus,
+  getDeployStatus,
   verifyAdminCode,
   saveOnboardingIdentity,
 } from "../lib/api";
@@ -83,12 +85,70 @@ const MODERN_STEP_META = [
     description: "Choose the tier to activate.",
     icon: CreditCard,
   },
+  {
+    title: "Deploy",
+    description: "Provision agent and get the number.",
+    icon: Terminal,
+  },
 ];
 
 const EMBEDDED_STEP_META = [
   { title: "Identity", description: "Define the business signature.", icon: Building2 },
   { title: "Plan Selection", description: "Choose the tier; client pays via Stripe link.", icon: CreditCard },
   { title: "Deploy", description: "Provision agent and get the number.", icon: Terminal },
+];
+
+const PLAN_TIERS = [
+  {
+    id: "pro",
+    title: "PRO",
+    price: "$249/mo",
+    minutes: 500,
+    texts: 800,
+    includesFrom: null,
+    includes: [
+      "Auto calendar booking",
+      "Call recordings & auto SMS follow-up",
+      "SMS reminders & transfer routing",
+      "Core automation, smart routing",
+    ],
+    accentClass: "border-neon-cyan/60",
+    recommended: false,
+  },
+  {
+    id: "elite",
+    title: "ELITE",
+    price: "$497/mo",
+    minutes: 1200,
+    texts: 2000,
+    includesFrom: "PRO",
+    extras: [
+      "1,200 min / 2,000 texts per month",
+      "Auto calendar booking",
+      "Multi-location & VIP onboarding",
+      "ETA texts & live tracking link",
+      "After-hours emergency mode",
+    ],
+    accentClass: "border-neon-purple/60",
+    recommended: true,
+  },
+  {
+    id: "scale",
+    title: "SCALE",
+    price: "$997/mo",
+    minutes: 3000,
+    texts: 5000,
+    includesFrom: "ELITE",
+    extras: [
+      "3,000 min / 5,000 texts per month",
+      "Auto calendar booking",
+      "Enterprise volume & fleet readiness",
+      "Dedicated admin & white-glove setup",
+      "High-volume orchestration",
+    ],
+    accentClass: "border-neon-green/60",
+    recommended: false,
+  },
 ];
 
 const stepVariants = {
@@ -137,6 +197,14 @@ const WIZARD_STEP_KEY = "wizard.step";
 const WIZARD_EMBEDDED_FORM_KEY = "wizard.embedded.form";
 const WIZARD_EMBEDDED_STEP_KEY = "wizard.embedded.step";
 
+const normalizePlanTier = (value) => {
+  const clean = String(value || "").toLowerCase();
+  if (clean.includes("elite")) return "elite";
+  if (clean.includes("scale")) return "scale";
+  if (clean.includes("pro")) return "pro";
+  return null;
+};
+
 const terminalLines = [
   "Securing uplink...",
   "Injecting personality matrix...",
@@ -162,7 +230,7 @@ export default function WizardPage({ embeddedMode }) {
       ? EMBEDDED_STEP_META.length
       : LEGACY_STEPS_ENABLED
       ? FULL_STEP_META.length
-      : 2;
+      : MODERN_STEP_META.length;
     const stored = Number(getSavedState(stepKey));
     if (Number.isFinite(stored) && stored >= 1 && stored <= maxStepVal) return stored;
     const fallbackKey = embeddedMode ? "kryonex_wizard_embedded_step" : "kryonex_wizard_step";
@@ -189,6 +257,8 @@ export default function WizardPage({ embeddedMode }) {
     window.localStorage.getItem("kryonex_admin_mode") || "user"
   );
   const [planTier, setPlanTier] = useState("pro");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [onboardingStep, setOnboardingStep] = useState(null);
   const [stripeLinkUrl, setStripeLinkUrl] = useState("");
   const [stripeLinkLoading, setStripeLinkLoading] = useState(false);
   const [stripeLinkError, setStripeLinkError] = useState("");
@@ -252,6 +322,38 @@ export default function WizardPage({ embeddedMode }) {
     setForm(next);
     saveState(formKey, next);
   };
+
+  useEffect(() => {
+    if (embeddedMode) return;
+    let mounted = true;
+    const loadProfile = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user) return;
+      if (mounted) setProfileEmail(user.email || "");
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("business_name, area_code, onboarding_step")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (!mounted || !profile) return;
+      setOnboardingStep(profile.onboarding_step ?? null);
+      setForm((prev) => ({
+        ...prev,
+        nameInput: prev.nameInput || profile.business_name || "",
+        areaCodeInput: prev.areaCodeInput || profile.area_code || "",
+      }));
+      if (profile.onboarding_step >= 3 && step < 3) {
+        persistStep(3);
+      } else if (profile.onboarding_step === 2 && step < 2) {
+        persistStep(2);
+      }
+    };
+    loadProfile();
+    return () => {
+      mounted = false;
+    };
+  }, [embeddedMode, step]);
 
   const safeStep = Math.min(Math.max(1, step), maxStep);
   const currentStep = stepMeta[safeStep - 1];
@@ -400,12 +502,16 @@ export default function WizardPage({ embeddedMode }) {
   }, [embeddedMode, paymentVerified, step]);
 
   useEffect(() => {
-    if (!embeddedMode?.targetUserId || step !== 3) return;
+    const shouldPoll =
+      step === 3 && (embeddedMode?.targetUserId || !embeddedMode);
+    if (!shouldPoll) return;
     let mounted = true;
     let intervalId = null;
     const fetchDeployStatus = async () => {
       try {
-        const res = await adminGetDeployStatus(embeddedMode.targetUserId);
+        const res = embeddedMode?.targetUserId
+          ? await adminGetDeployStatus(embeddedMode.targetUserId)
+          : await getDeployStatus();
         if (mounted && res.data) setDeployStatus(res.data);
       } catch {
         /* ignore */
@@ -418,7 +524,7 @@ export default function WizardPage({ embeddedMode }) {
       mounted = false;
       if (intervalId) clearInterval(intervalId);
     };
-  }, [embeddedMode?.targetUserId, step]);
+  }, [embeddedMode, embeddedMode?.targetUserId, step]);
 
   useEffect(() => {
     if (embeddedMode) return;
@@ -428,6 +534,7 @@ export default function WizardPage({ embeddedMode }) {
         const response = await getSubscriptionStatus();
         const status = response?.data?.status;
         const periodEnd = response?.data?.current_period_end;
+        const planType = response?.data?.plan_type;
         const isActive = ["active", "trialing"].includes(
           String(status || "").toLowerCase()
         );
@@ -435,18 +542,9 @@ export default function WizardPage({ embeddedMode }) {
         if (mounted && isActive && periodOk) {
           setPaymentVerified(true);
           setCheckoutError("");
-          const { data: sessionData } = await supabase.auth.getSession();
-          const user = sessionData?.session?.user;
-          if (!user) return;
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("business_name, area_code")
-            .eq("user_id", user.id)
-            .maybeSingle();
-          const isOnboarded =
-            Boolean(profile?.business_name) && Boolean(profile?.area_code);
-          if (isOnboarded) {
-            navigate("/dashboard", { replace: true });
+          const normalizedTier = normalizePlanTier(planType);
+          if (normalizedTier) {
+            setPlanTier(normalizedTier);
           }
         }
       } catch (err) {
@@ -457,7 +555,7 @@ export default function WizardPage({ embeddedMode }) {
     return () => {
       mounted = false;
     };
-  }, [navigate, embeddedMode]);
+  }, [embeddedMode]);
 
   useEffect(() => {
     if (embeddedMode) return;
@@ -601,6 +699,16 @@ export default function WizardPage({ embeddedMode }) {
     [form, planTier, baseInputValue, isZipBase, travelLimitValue, travelLimitMode]
   );
 
+  const resolvedPlanTier = useMemo(() => {
+    const fromDeploy = normalizePlanTier(deployStatus?.plan_type);
+    return fromDeploy || planTier;
+  }, [deployStatus?.plan_type, planTier]);
+
+  const resolvedPlan = useMemo(
+    () => PLAN_TIERS.find((tier) => tier.id === resolvedPlanTier) || null,
+    [resolvedPlanTier]
+  );
+
   const handleDeploy = async () => {
     setDeployError("");
     setIsDeploying(true);
@@ -670,6 +778,45 @@ export default function WizardPage({ embeddedMode }) {
     }
   };
 
+  const handleSelfDeploy = async () => {
+    setDeployError("");
+    setIsDeploying(true);
+    try {
+      const res = await deployAgentSelf();
+      setPhoneNumber(res.data?.phone_number || "");
+      const statusRes = await getDeployStatus();
+      if (statusRes?.data) setDeployStatus(statusRes.data);
+      navigate("/dashboard");
+    } catch (err) {
+      setDeployError(err.response?.data?.error || err.message);
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  const handleUpdateAreaCodeAndDeploy = async () => {
+    if (!form.nameInput.trim()) {
+      setDeployError("Business name is required before deploying.");
+      return;
+    }
+    if (!/^\d{3}$/.test(String(form.areaCodeInput || "").trim())) {
+      setDeployError("Area code must be 3 digits.");
+      return;
+    }
+    setDeployError("");
+    setIsDeploying(true);
+    try {
+      await saveOnboardingIdentity({
+        businessName: form.nameInput,
+        areaCode: form.areaCodeInput,
+      });
+      await handleSelfDeploy();
+    } catch (err) {
+      setDeployError(err.response?.data?.error || err.message);
+      setIsDeploying(false);
+    }
+  };
+
   const handleGenerateStripeLink = async (selectedTier) => {
     if (!embeddedMode?.targetEmail) return;
     setStripeLinkError("");
@@ -709,7 +856,7 @@ export default function WizardPage({ embeddedMode }) {
       const planTierPayload = String(
         selectedTier || planTier || "pro"
       ).toLowerCase();
-      const successUrl = `${window.location.origin}/dashboard?checkout=success`;
+      const successUrl = `${window.location.origin}/wizard?checkout=success`;
       const cancelUrl = `${window.location.origin}/wizard?canceled=true`;
       const response = await createCheckoutSession({
         planTier: planTierPayload,
@@ -1070,58 +1217,7 @@ export default function WizardPage({ embeddedMode }) {
                 </div>
 
                 <div className="grid gap-6 lg:grid-cols-3">
-                  {[
-                    {
-                      id: "pro",
-                      title: "PRO",
-                      price: "$249/mo",
-                      minutes: 500,
-                      texts: 800,
-                      includesFrom: null,
-                      includes: [
-                        "Auto calendar booking",
-                        "Call recordings & auto SMS follow-up",
-                        "SMS reminders & transfer routing",
-                        "Core automation, smart routing",
-                      ],
-                      accentClass: "border-neon-cyan/60",
-                      recommended: false,
-                    },
-                    {
-                      id: "elite",
-                      title: "ELITE",
-                      price: "$497/mo",
-                      minutes: 1200,
-                      texts: 2000,
-                      includesFrom: "PRO",
-                      extras: [
-                        "1,200 min / 2,000 texts per month",
-                        "Auto calendar booking",
-                        "Multi-location & VIP onboarding",
-                        "ETA texts & live tracking link",
-                        "After-hours emergency mode",
-                      ],
-                      accentClass: "border-neon-purple/60",
-                      recommended: true,
-                    },
-                    {
-                      id: "scale",
-                      title: "SCALE",
-                      price: "$997/mo",
-                      minutes: 3000,
-                      texts: 5000,
-                      includesFrom: "ELITE",
-                      extras: [
-                        "3,000 min / 5,000 texts per month",
-                        "Auto calendar booking",
-                        "Enterprise volume & fleet readiness",
-                        "Dedicated admin & white-glove setup",
-                        "High-volume orchestration",
-                      ],
-                      accentClass: "border-neon-green/60",
-                      recommended: false,
-                    },
-                  ].map((tier) => {
+                  {PLAN_TIERS.map((tier) => {
                     const isSelected = planTier === tier.id;
                     return (
                       <div
@@ -1252,6 +1348,146 @@ export default function WizardPage({ embeddedMode }) {
                 {checkoutError ? (
                   <div className="text-neon-pink text-sm">{checkoutError}</div>
                 ) : null}
+              </motion.div>
+            )}
+
+            {!embeddedMode && step === 3 && (
+              <motion.div
+                key="step-3-deploy-user"
+                variants={stepVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="space-y-8"
+              >
+                <div>
+                  <h2 className="text-3xl font-semibold">Deploy</h2>
+                  <p className="mt-2 text-white/60">
+                    Review the summary and deploy your agent to get the phone number.
+                  </p>
+                </div>
+                <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/50">
+                      Read-only summary
+                    </p>
+                    <div className="space-y-2 text-sm text-white/70">
+                      <p>
+                        <span className="text-white/50">Business:</span>{" "}
+                        {form.nameInput || deployStatus?.business_name || "—"}
+                      </p>
+                      <p>
+                        <span className="text-white/50">Email:</span>{" "}
+                        {profileEmail || "—"}
+                      </p>
+                      <p>
+                        <span className="text-white/50">Area code:</span>{" "}
+                        {form.areaCodeInput || deployStatus?.area_code || "—"}
+                      </p>
+                      <p>
+                        <span className="text-white/50">Plan:</span>{" "}
+                        {resolvedPlanTier ? resolvedPlanTier.toUpperCase() : "—"}
+                      </p>
+                      <p>
+                        <span className="text-white/50">Minutes / Texts:</span>{" "}
+                        {resolvedPlan
+                          ? `${resolvedPlan.minutes.toLocaleString()} min / ${resolvedPlan.texts.toLocaleString()} texts`
+                          : "—"}
+                      </p>
+                    </div>
+                    {deployStatus?.deploy_error === "AREA_CODE_UNAVAILABLE" && (
+                      <div className="mt-4 space-y-3">
+                        <div className="text-xs uppercase tracking-wider text-white/50">
+                          Update area code
+                        </div>
+                        <input
+                          className="glass-input w-full text-lg tracking-[0.5em] font-mono"
+                          placeholder="___"
+                          value={form.areaCodeInput}
+                          onChange={handleAreaCode}
+                          maxLength={3}
+                        />
+                        <p className="text-xs text-white/50">
+                          Choose a different area code, then redeploy.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
+                    {deployStatusLoading && !deployStatus ? (
+                      <div className="text-white/60 text-center">Loading…</div>
+                    ) : deployStatus?.has_agent ? (
+                      <>
+                        <p className="text-xs uppercase tracking-[0.3em] text-neon-green">
+                          Agent deployed successfully
+                        </p>
+                        <p className="text-2xl font-mono font-semibold text-white">
+                          {deployStatus.phone_number}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => navigate("/dashboard")}
+                          className="glow-button w-full"
+                        >
+                          Go to Dashboard
+                        </button>
+                      </>
+                    ) : deployStatus?.deploy_error === "AREA_CODE_UNAVAILABLE" ? (
+                      <>
+                        <p className="text-neon-pink font-medium">
+                          Area code not available. Please choose a different area code and redeploy.
+                        </p>
+                        {deployError ? (
+                          <div className="text-neon-pink text-sm">{deployError}</div>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={handleUpdateAreaCodeAndDeploy}
+                          disabled={isDeploying}
+                          className="glow-button w-full"
+                        >
+                          {isDeploying ? "DEPLOYING…" : "Redeploy Agent & Get Number"}
+                        </button>
+                      </>
+                    ) : deployStatus?.deploy_error ? (
+                      <>
+                        <p className="text-neon-pink font-medium">
+                          Deployment failed: {deployStatus.deploy_error}
+                        </p>
+                        {deployError ? (
+                          <div className="text-neon-pink text-sm">{deployError}</div>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={handleSelfDeploy}
+                          disabled={isDeploying}
+                          className="glow-button w-full"
+                        >
+                          {isDeploying ? "DEPLOYING…" : "Retry Deploy"}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {!paymentVerified && (
+                          <p className="text-white/60 text-sm">
+                            Payment not verified yet. Complete checkout before deploying.
+                          </p>
+                        )}
+                        {deployError ? (
+                          <div className="text-neon-pink text-sm">{deployError}</div>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={handleSelfDeploy}
+                          disabled={isDeploying || !paymentVerified}
+                          className="glow-button w-full"
+                        >
+                          {isDeploying ? "DEPLOYING…" : "Deploy Agent & Get Number"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
               </motion.div>
             )}
 
@@ -2298,6 +2534,13 @@ export default function WizardPage({ embeddedMode }) {
                 className="glow-button"
               >
                 {saving ? "SAVING IDENTITY..." : "Continue to Plans"}
+              </button>
+            ) : step === 2 && paymentVerified ? (
+              <button
+                onClick={() => persistStep(3)}
+                className="glow-button"
+              >
+                Proceed to Deploy
               </button>
             ) : embeddedMode && step === 3 ? (
               <span className="text-xs text-white/40 uppercase tracking-widest">

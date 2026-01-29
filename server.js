@@ -815,7 +815,7 @@ app.post(
               });
               await supabaseAdmin
                 .from("profiles")
-                .update({ role: "active" })
+                .update({ role: "active", onboarding_step: 3 })
                 .eq("user_id", userId);
 
               if (
@@ -4644,6 +4644,84 @@ app.get("/subscription-status", requireAuth, resolveEffectiveUser, async (req, r
   }
 });
 
+app.get(
+  "/deploy-status",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "deploy-status", limit: 60, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      const [profileRes, agentRes, subRes] = await Promise.all([
+        supabaseAdmin
+          .from("profiles")
+          .select("business_name, area_code, deploy_error")
+          .eq("user_id", uid)
+          .maybeSingle(),
+        supabaseAdmin
+          .from("agents")
+          .select("agent_id, phone_number")
+          .eq("user_id", uid)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabaseAdmin
+          .from("subscriptions")
+          .select("plan_type, status")
+          .eq("user_id", uid)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      const profile = profileRes.data;
+      const agent = agentRes.data;
+      const sub = subRes.data;
+      const has_agent =
+        Boolean(agent?.agent_id) && Boolean(agent?.phone_number);
+      return res.json({
+        has_agent: !!has_agent,
+        phone_number: agent?.phone_number || null,
+        agent_id: agent?.agent_id || null,
+        deploy_error: profile?.deploy_error || null,
+        business_name: profile?.business_name || null,
+        area_code: profile?.area_code || null,
+        plan_type: sub?.plan_type || null,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  "/deploy-agent-self",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "deploy-agent-self", limit: 6, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      const result = await deployAgentForUser(uid);
+      if (result.error) {
+        const status =
+          result.error === "AREA_CODE_UNAVAILABLE" ? 400 : 500;
+        return res.status(status).json({ error: result.error });
+      }
+      await supabaseAdmin
+        .from("profiles")
+        .update({ onboarding_step: 3 })
+        .eq("user_id", uid);
+      return res.json({
+        ok: true,
+        phone_number: result.phone_number,
+        agent_id: result.agent_id,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.post(
   "/verify-checkout-session",
   requireAuth,
@@ -4684,7 +4762,7 @@ app.post(
 
       await supabaseAdmin
         .from("profiles")
-        .update({ role: "active" })
+        .update({ role: "active", onboarding_step: 3 })
         .eq("user_id", req.user.id);
 
       await auditLog({
@@ -4768,6 +4846,7 @@ app.post(
         user_id: req.user.id,
         business_name: cleanName,
         area_code: cleanArea || null,
+        onboarding_step: 2,
       });
 
       await auditLog({
@@ -5924,6 +6003,7 @@ app.post(
         user_id: targetUserId,
         business_name: cleanName,
         area_code: cleanArea || null,
+        onboarding_step: 2,
       });
 
       await auditLog({
