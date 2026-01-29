@@ -21,6 +21,7 @@ import {
   adminAcceptConsent,
   adminDeployAgent,
   adminGenerateStripeLink,
+  adminGetDeployStatus,
   adminGetSubscriptionStatus,
   adminSaveOnboardingIdentity,
   createCheckoutSession,
@@ -192,6 +193,8 @@ export default function WizardPage({ embeddedMode }) {
   const [stripeLinkLoading, setStripeLinkLoading] = useState(false);
   const [stripeLinkError, setStripeLinkError] = useState("");
   const [copyNotice, setCopyNotice] = useState("");
+  const [deployStatus, setDeployStatus] = useState(null);
+  const [deployStatusLoading, setDeployStatusLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [wizardLocked, setWizardLocked] = useState(false);
   const [wizardLockReason, setWizardLockReason] = useState("");
@@ -395,6 +398,27 @@ export default function WizardPage({ embeddedMode }) {
     advancedToDeployRef.current = true;
     persistStep(3);
   }, [embeddedMode, paymentVerified, step]);
+
+  useEffect(() => {
+    if (!embeddedMode?.targetUserId || step !== 3) return;
+    let mounted = true;
+    let intervalId = null;
+    const fetchDeployStatus = async () => {
+      try {
+        const res = await adminGetDeployStatus(embeddedMode.targetUserId);
+        if (mounted && res.data) setDeployStatus(res.data);
+      } catch {
+        /* ignore */
+      }
+    };
+    setDeployStatusLoading(true);
+    fetchDeployStatus().finally(() => setDeployStatusLoading(false));
+    intervalId = setInterval(fetchDeployStatus, 5000);
+    return () => {
+      mounted = false;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [embeddedMode?.targetUserId, step]);
 
   useEffect(() => {
     if (embeddedMode) return;
@@ -1241,39 +1265,97 @@ export default function WizardPage({ embeddedMode }) {
                 className="space-y-8"
               >
                 <div>
-                  <h2 className="text-3xl font-semibold">Deploy</h2>
+                  <h2 className="text-3xl font-semibold">Summary</h2>
                   <p className="mt-2 text-white/60">
-                    Provision the agent for this client and get their number.
+                    Deployment runs automatically after the client pays. View status below.
                   </p>
                 </div>
-                {phoneNumber ? (
-                  <div className="rounded-2xl border border-neon-green/30 bg-neon-green/5 p-6">
+                {deployStatusLoading && !deployStatus ? (
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 text-center text-white/60">
+                    Loading…
+                  </div>
+                ) : deployStatus?.has_agent ? (
+                  <div className="rounded-2xl border border-neon-green/30 bg-neon-green/5 p-6 space-y-4">
                     <p className="text-xs uppercase tracking-[0.3em] text-neon-green">
-                      Agent provisioned
+                      Agent deployed
                     </p>
-                    <p className="mt-2 text-2xl font-mono font-semibold text-white">
-                      {phoneNumber}
+                    <p className="text-2xl font-mono font-semibold text-white">
+                      {deployStatus.phone_number}
                     </p>
-                    <p className="mt-2 text-sm text-white/60">
+                    <div className="mt-4 pt-4 border-t border-white/10 space-y-2 text-sm text-white/70">
+                      <p><span className="text-white/50">Business:</span> {deployStatus.business_name || "—"}</p>
+                      <p><span className="text-white/50">Area code:</span> {deployStatus.area_code || "—"}</p>
+                      <p><span className="text-white/50">Email:</span> {embeddedMode.targetEmail || "—"}</p>
+                      <p><span className="text-white/50">Plan:</span> {deployStatus.plan_type ? String(deployStatus.plan_type).toUpperCase() : "—"}</p>
+                    </div>
+                    <p className="text-sm text-white/60 mt-2">
                       The client can log in and use this number.
                     </p>
                   </div>
-                ) : (
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
-                    <p className="text-white/70">
-                      Deploy the AI agent for this client. You’ll get their phone number.
+                ) : deployStatus?.deploy_error === "AREA_CODE_UNAVAILABLE" ? (
+                  <div className="rounded-2xl border border-neon-pink/30 bg-neon-pink/5 p-6 space-y-4">
+                    <p className="text-neon-pink font-medium">
+                      Area code not available. Choose a different area code and redeploy.
+                    </p>
+                    <p className="text-sm text-white/60">
+                      Go back to Identity (step 1), update the area code, then return here and click Retry deploy.
                     </p>
                     {deployError ? (
                       <div className="text-neon-pink text-sm">{deployError}</div>
                     ) : null}
                     <button
                       type="button"
-                      onClick={handleAdminDeploy}
+                      onClick={async () => {
+                        setDeployError("");
+                        setIsDeploying(true);
+                        try {
+                          const res = await adminDeployAgent({ for_user_id: embeddedMode.targetUserId });
+                          if (res.data?.phone_number) {
+                            setDeployStatus((prev) => prev ? { ...prev, has_agent: true, phone_number: res.data.phone_number } : prev);
+                          }
+                        } catch (err) {
+                          setDeployError(err.response?.data?.error || err.message);
+                        } finally {
+                          setIsDeploying(false);
+                        }
+                      }}
                       disabled={isDeploying}
                       className="glow-button w-full"
                     >
-                      {isDeploying ? "DEPLOYING…" : "Deploy agent"}
+                      {isDeploying ? "DEPLOYING…" : "Retry deploy"}
                     </button>
+                  </div>
+                ) : deployStatus?.deploy_error ? (
+                  <div className="rounded-2xl border border-neon-pink/30 bg-neon-pink/5 p-6 space-y-4">
+                    <p className="text-neon-pink font-medium">
+                      Deployment failed: {deployStatus.deploy_error}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setDeployError("");
+                        setIsDeploying(true);
+                        try {
+                          await adminDeployAgent({ for_user_id: embeddedMode.targetUserId });
+                          const res = await adminGetDeployStatus(embeddedMode.targetUserId);
+                          if (res.data) setDeployStatus(res.data);
+                        } catch (err) {
+                          setDeployError(err.response?.data?.error || err.message);
+                        } finally {
+                          setIsDeploying(false);
+                        }
+                      }}
+                      disabled={isDeploying}
+                      className="glow-button w-full"
+                    >
+                      {isDeploying ? "DEPLOYING…" : "Retry deploy"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
+                    <p className="text-white/70">
+                      Preparing your agent… The system provisions the number after payment. This may take a minute.
+                    </p>
                   </div>
                 )}
               </motion.div>

@@ -71,6 +71,8 @@ export const adminGetUserByEmail = (email) =>
   api.get("/admin/user-by-email", { params: { email } });
 export const adminGetSubscriptionStatus = (userId) =>
   api.get("/admin/subscription-status", { params: { user_id: userId } });
+export const adminGetDeployStatus = (userId) =>
+  api.get("/admin/deploy-status", { params: { user_id: userId } });
 export const adminDeployAgent = (data) =>
   api.post("/admin/deploy-agent", data);
 export const adminGenerateStripeLink = (data) =>
