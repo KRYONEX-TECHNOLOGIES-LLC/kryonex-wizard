@@ -5951,6 +5951,7 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
     is_active: true,
     deploy_request_id: reqId || null,
     nickname: nickname || null,
+    provider_number_id: phoneNumber || null,
   });
   if (insertError) {
     throw new Error(insertError.message);
