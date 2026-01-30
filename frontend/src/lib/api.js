@@ -78,7 +78,8 @@ export const adminDeployAgent = (data) =>
 export const adminGenerateStripeLink = (data) =>
   api.post("/admin/stripe-link", data);
 export const getDeployStatus = () => api.get("/deploy-status");
-export const deployAgentSelf = () => api.post("/deploy-agent-self");
+export const deployAgentSelf = (data) =>
+  api.post("/deploy-agent-self", data || {});
 export const logImpersonationStart = (userId) =>
   api.post("/admin/impersonation/start", { user_id: userId });
 export const logImpersonationEnd = (userId) =>

@@ -3878,17 +3878,22 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
 app.post("/webhooks/retell-inbound", async (req, res) => {
   try {
     const payload = req.body || {};
+    const inbound = payload.call_inbound || payload;
     const toNumber =
+      inbound.to_number ||
       payload.to_number ||
+      inbound.to ||
       payload.to ||
+      inbound.called_number ||
       payload.called_number ||
+      inbound.phone_number ||
       payload.phone_number;
     if (!toNumber) {
       return res.status(400).json({ error: "to_number required" });
     }
     const { data: agentRow } = await supabaseAdmin
       .from("agents")
-      .select("user_id, agent_id, transfer_number")
+      .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
       .eq("phone_number", toNumber)
       .maybeSingle();
     if (!agentRow?.user_id) {
@@ -3936,13 +3941,21 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     const businessName = profile?.business_name || "your business";
     const bookingUrl = profile?.cal_com_url || integration?.booking_url || "";
     const transferNumber = agentRow.transfer_number || "";
+    // Retell inbound webhook expects response under call_inbound with dynamic_variables (all values must be strings)
+    const dynamicVariables = {
+      business_name: String(businessName || ""),
+      cal_com_link: String(bookingUrl || ""),
+      transfer_number: String(transferNumber || ""),
+      agent_tone: String(agentRow.tone || "Calm & Professional"),
+      schedule_summary: String(agentRow.schedule_summary || ""),
+      standard_fee: String(agentRow.standard_fee ?? ""),
+      emergency_fee: String(agentRow.emergency_fee ?? ""),
+    };
 
     return res.json({
-      agent_id: agentRow.agent_id,
-      retell_llm_dynamic_variables: {
-        business_name: String(businessName || ""),
-        cal_com_link: String(bookingUrl || ""),
-        transfer_number: String(transferNumber || ""),
+      call_inbound: {
+        override_agent_id: agentRow.agent_id,
+        dynamic_variables: dynamicVariables,
       },
     });
   } catch (err) {
@@ -4714,7 +4727,13 @@ app.post(
       },
     });
     try {
-      const result = await deployAgentForUser(uid, deployRequestId);
+      const transferNumber =
+        req.body && typeof req.body.transfer_number !== "undefined"
+          ? String(req.body.transfer_number || "").trim() || null
+          : null;
+      const result = await deployAgentForUser(uid, deployRequestId, {
+        transferNumber,
+      });
       if (result.error) {
         const status =
           result.error === "AREA_CODE_UNAVAILABLE" ? 400 : 500;
@@ -5890,7 +5909,13 @@ Business Variables:
  * Number-only deploy: create Retell phone number with no agent. Nickname = business name so you can find it in Retell; assign template in Retell later.
  * Stores number in agents with agent_id 'pending'. DB tracks user + number + usage.
  */
-const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deployRequestId: reqId }) => {
+const provisionPhoneNumberOnly = async ({
+  userId,
+  businessName,
+  areaCode,
+  deployRequestId: reqId,
+  transferNumber: transferNumberRaw,
+}) => {
   const providerBaseUrl = (retellClient.defaults?.baseURL || "https://api.retellai.com").replace(/\/$/, "");
   const phonePath = "/create-phone-number";
   const phoneUrl = `${providerBaseUrl}${phonePath}`;
@@ -5915,6 +5940,15 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
       responseStatus: err.response?.status,
       responseBody: err.response?.data,
     });
+    // Check for "no numbers available" error from Retell
+    const retellMsg = err.response?.data?.message || "";
+    if (err.response?.status === 404 && retellMsg.toLowerCase().includes("no phone numbers")) {
+      const userError = new Error(`No phone numbers available for area code ${areaCode}. Please choose a different area code and try again.`);
+      userError.retellStatus = err.response.status;
+      userError.retellError = err.response.data;
+      userError.isAreaCodeUnavailable = true;
+      throw userError;
+    }
     throw err;
   }
   const phoneNumber = phoneResponse.data?.phone_number || phoneResponse.data?.number;
@@ -5931,6 +5965,10 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
 
   const pendingAgentId = `pending-${userId}`;
   const nickname = String(phonePayload.nickname || "").trim() || null;
+  const transferNumber =
+    transferNumberRaw != null
+      ? String(transferNumberRaw).replace(/[^\d+]/g, "").trim() || null
+      : null;
   const { error: insertError } = await supabaseAdmin.from("agents").insert({
     user_id: userId,
     agent_id: pendingAgentId,
@@ -5944,7 +5982,7 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
     standard_fee: null,
     emergency_fee: null,
     payment_id: "admin_onboarded",
-    transfer_number: null,
+    transfer_number: transferNumber || null,
     dispatch_base_location: null,
     travel_limit_value: null,
     travel_limit_mode: null,
@@ -5974,7 +6012,7 @@ const provisionPhoneNumberOnly = async ({ userId, businessName, areaCode, deploy
  * On area code unavailable or other failure, sets profiles.deploy_error and returns { error }.
  * @param {string} [deployRequestId] - Optional correlation id for logging.
  */
-const deployAgentForUser = async (userId, deployRequestId) => {
+const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
   const targetUserId = String(userId ?? "").trim();
   const reqId = deployRequestId || `deploy-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   if (!targetUserId) {
@@ -6068,12 +6106,17 @@ const deployAgentForUser = async (userId, deployRequestId) => {
     areaCode,
     plan,
   });
+  const transferNumber =
+    options.transferNumber != null
+      ? String(options.transferNumber || "").trim().replace(/[^\d+]/g, "") || null
+      : null;
   try {
     const result = await provisionPhoneNumberOnly({
       userId: targetUserId,
       businessName,
       areaCode,
       deployRequestId: reqId,
+      transferNumber: transferNumber || undefined,
     });
     await supabaseAdmin
       .from("profiles")
