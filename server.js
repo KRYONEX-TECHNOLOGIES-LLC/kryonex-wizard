@@ -3981,17 +3981,20 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     };
 
     const isPendingAgent = String(agentRow.agent_id || "").startsWith("pending-");
+    const requestAgentId = inbound.agent_id || payload.agent_id || null;
     const callInbound = {
       dynamic_variables: dynamicVariables,
     };
     if (!isPendingAgent && agentRow.agent_id) {
       callInbound.override_agent_id = agentRow.agent_id;
+    } else if (isPendingAgent && requestAgentId) {
+      callInbound.override_agent_id = requestAgentId;
     }
     console.info("[retell-inbound] ok", {
       to_number: toNumber,
       agent_id: agentRow.agent_id,
       business_name: businessName,
-      override_sent: !isPendingAgent,
+      override_agent_id: callInbound.override_agent_id || null,
     });
     return res.json({ call_inbound: callInbound });
   } catch (err) {
