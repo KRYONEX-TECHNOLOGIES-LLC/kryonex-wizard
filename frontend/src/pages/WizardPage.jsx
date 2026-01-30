@@ -1010,24 +1010,33 @@ export default function WizardPage({ embeddedMode }) {
     setSaveError("");
     setCheckoutError("");
     setSaving(true);
+    const businessName = (form.nameInput || "").trim();
+    const areaCode = (form.areaCodeInput || "").trim();
+    if (!businessName || businessName.length < 2) {
+      setSaveError("Business name is required (at least 2 characters).");
+      setSaving(false);
+      return;
+    }
     try {
       if (embeddedMode?.targetUserId) {
         await adminSaveOnboardingIdentity({
           for_user_id: embeddedMode.targetUserId,
-          businessName: form.nameInput,
-          areaCode: form.areaCodeInput,
+          businessName,
+          areaCode,
           industry: form.industryInput || "hvac",
         });
       } else {
         await saveOnboardingIdentity({
-          businessName: form.nameInput,
-          areaCode: form.areaCodeInput,
+          businessName,
+          areaCode,
           industry: form.industryInput || "hvac",
         });
       }
       persistStep(2);
     } catch (err) {
-      setSaveError(err.response?.data?.error || err.message);
+      const msg = err.response?.data?.error || err.message;
+      const details = err.response?.data?.details;
+      setSaveError(details ? `${msg}: ${details}` : msg);
     } finally {
       setSaving(false);
     }

@@ -4958,13 +4958,22 @@ app.post(
         return res.status(400).json({ error: "areaCode must be 3 digits" });
       }
 
-      await supabaseAdmin.from("profiles").upsert({
-        user_id: req.user.id,
-        business_name: cleanName,
-        area_code: cleanArea || null,
-        industry: allowedIndustry,
-        onboarding_step: 2,
-      });
+      const { error: upsertError } = await supabaseAdmin
+        .from("profiles")
+        .upsert(
+          {
+            user_id: req.user.id,
+            business_name: cleanName,
+            area_code: cleanArea || null,
+            industry: allowedIndustry,
+            onboarding_step: 2,
+          },
+          { onConflict: "user_id" }
+        );
+      if (upsertError) {
+        console.error("[onboarding/identity] profiles upsert failed", { userId: req.user.id, error: upsertError });
+        return res.status(500).json({ error: "Failed to save business name", details: upsertError.message });
+      }
 
       await auditLog({
         userId: req.user.id,
