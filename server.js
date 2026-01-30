@@ -3879,7 +3879,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
   try {
     const payload = req.body || {};
     const inbound = payload.call_inbound || payload;
-    const toNumber =
+    const rawTo =
       inbound.to_number ||
       payload.to_number ||
       inbound.to ||
@@ -3888,15 +3888,35 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       payload.called_number ||
       inbound.phone_number ||
       payload.phone_number;
-    if (!toNumber) {
+    if (!rawTo) {
       return res.status(400).json({ error: "to_number required" });
     }
-    const { data: agentRow } = await supabaseAdmin
-      .from("agents")
-      .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
-      .eq("phone_number", toNumber)
-      .maybeSingle();
+    // Normalize to E.164 so lookup matches DB (e.g. +15045021309)
+    const digits = String(rawTo).replace(/\D/g, "");
+    const toNumber =
+      digits.length === 10
+        ? `+1${digits}`
+        : digits.length === 11 && digits.startsWith("1")
+          ? `+${digits}`
+          : String(rawTo).trim();
+    let agentRow = (
+      await supabaseAdmin
+        .from("agents")
+        .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
+        .eq("phone_number", toNumber)
+        .maybeSingle()
+    ).data;
     if (!agentRow?.user_id) {
+      agentRow = (
+        await supabaseAdmin
+          .from("agents")
+          .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
+          .eq("phone_number", rawTo)
+          .maybeSingle()
+      ).data;
+    }
+    if (!agentRow?.user_id) {
+      console.warn("[retell-inbound] agent not found", { to_number: toNumber, rawTo });
       return res.status(404).json({ error: "Agent not found for number" });
     }
 
@@ -3952,6 +3972,11 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       emergency_fee: String(agentRow.emergency_fee ?? ""),
     };
 
+    console.info("[retell-inbound] ok", {
+      to_number: toNumber,
+      agent_id: agentRow.agent_id,
+      business_name: businessName,
+    });
     return res.json({
       call_inbound: {
         override_agent_id: agentRow.agent_id,
