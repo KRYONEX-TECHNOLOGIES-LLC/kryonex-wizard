@@ -878,7 +878,9 @@ export default function WizardPage({ embeddedMode }) {
     setDeployError("");
     setIsDeploying(true);
     try {
-      const res = await deployAgentSelf();
+      const res = await deployAgentSelf({
+        transfer_number: form.transferNumber || null,
+      });
       setPhoneNumber(res.data?.phone_number || "");
       const statusRes = await getDeployStatus();
       if (statusRes?.data) setDeployStatus(statusRes.data);
@@ -886,10 +888,18 @@ export default function WizardPage({ embeddedMode }) {
     } catch (err) {
       let msg = err.response?.data?.error || err.message;
       const retellErr = err.response?.data?.retell_error;
-      if (retellErr) {
+      
+      // Check if it's an area code availability issue
+      if (msg && msg.toLowerCase().includes("no phone numbers available")) {
+        // User-friendly message is already in the error
+        setDeployError(msg);
+      } else if (retellErr) {
+        // Other Retell errors - show full details
         msg += " — Retell: " + (typeof retellErr === "object" ? JSON.stringify(retellErr) : String(retellErr));
+        setDeployError(msg);
+      } else {
+        setDeployError(msg);
       }
-      setDeployError(msg);
     } finally {
       setIsDeploying(false);
     }
@@ -915,10 +925,18 @@ export default function WizardPage({ embeddedMode }) {
     } catch (err) {
       let msg = err.response?.data?.error || err.message;
       const retellErr = err.response?.data?.retell_error;
-      if (retellErr) {
+      
+      // Check if it's an area code availability issue
+      if (msg && msg.toLowerCase().includes("no phone numbers available")) {
+        // User-friendly message is already in the error
+        setDeployError(msg);
+      } else if (retellErr) {
+        // Other Retell errors - show full details
         msg += " — Retell: " + (typeof retellErr === "object" ? JSON.stringify(retellErr) : String(retellErr));
+        setDeployError(msg);
+      } else {
+        setDeployError(msg);
       }
-      setDeployError(msg);
       setIsDeploying(false);
     }
   };
