@@ -4781,14 +4781,22 @@ app.post(
           : null;
       const businessNameRaw = req.body && req.body.business_name != null ? String(req.body.business_name || "").trim() : null;
       const areaCodeRaw = req.body && req.body.area_code != null ? String(req.body.area_code || "").trim() : null;
+      console.info("[deploy-agent-self] identity payload", { business_name: businessNameRaw || "(empty)", area_code: areaCodeRaw || "(empty)" });
       if (businessNameRaw && businessNameRaw.length >= 2 && businessNameRaw.length <= 80) {
-        await supabaseAdmin.from("profiles").upsert({
+        const { error: upsertErr } = await supabaseAdmin.from("profiles").upsert({
           user_id: uid,
           business_name: businessNameRaw,
           ...(areaCodeRaw && /^\d{3}$/.test(areaCodeRaw) ? { area_code: areaCodeRaw } : {}),
         }, { onConflict: "user_id" });
+        if (upsertErr) {
+          console.error("[deploy-agent-self] profiles upsert failed", { userId: uid, error: upsertErr.message });
+        } else {
+          console.info("[deploy-agent-self] profiles updated", { userId: uid, business_name: businessNameRaw });
+        }
       } else if (areaCodeRaw && /^\d{3}$/.test(areaCodeRaw)) {
         await supabaseAdmin.from("profiles").update({ area_code: areaCodeRaw }).eq("user_id", uid);
+      } else if (!businessNameRaw || businessNameRaw.length < 2) {
+        console.warn("[deploy-agent-self] no valid business_name in request — profile not updated");
       }
       const result = await deployAgentForUser(uid, deployRequestId, {
         transferNumber,
