@@ -876,18 +876,26 @@ export default function WizardPage({ embeddedMode }) {
 
   const handleSelfDeploy = async () => {
     setDeployError("");
+    const businessName = (form.nameInput || deployStatus?.business_name || "").trim();
+    const areaCode = (form.areaCodeInput || deployStatus?.area_code || "").trim();
+    if (!businessName || businessName.length < 2) {
+      setDeployError("Enter your business name above before deploying.");
+      return;
+    }
+    if (!/^\d{3}$/.test(areaCode)) {
+      setDeployError("Area code must be 3 digits.");
+      return;
+    }
     setIsDeploying(true);
     try {
-      // Always persist business name and area code from wizard before deploy so inbound webhook has them
-      if (form.nameInput?.trim() || form.areaCodeInput?.trim()) {
-        await saveOnboardingIdentity({
-          businessName: form.nameInput?.trim() || "",
-          areaCode: form.areaCodeInput?.trim() || "",
-        }).catch(() => {});
-      }
+      await saveOnboardingIdentity({
+        businessName,
+        areaCode,
+        industry: form.industryInput || "hvac",
+      }).catch(() => {});
       const res = await deployAgentSelf({
-        business_name: form.nameInput?.trim() || null,
-        area_code: form.areaCodeInput?.trim() || null,
+        business_name: businessName,
+        area_code: areaCode,
         transfer_number: form.transferNumber || null,
       });
       setPhoneNumber(res.data?.phone_number || "");
@@ -1547,20 +1555,32 @@ export default function WizardPage({ embeddedMode }) {
                 <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
                   <div className="rounded-2xl border border-white/10 bg-black/40 p-6 space-y-4">
                     <p className="text-xs uppercase tracking-[0.3em] text-white/50">
-                      Read-only summary
+                      Deploy summary
                     </p>
-                    <div className="space-y-2 text-sm text-white/70">
-                      <p>
-                        <span className="text-white/50">Business:</span>{" "}
-                        {form.nameInput || deployStatus?.business_name || "—"}
-                      </p>
-                      <p>
-                        <span className="text-white/50">Email:</span>{" "}
-                        {profileEmail || "—"}
-                      </p>
-                      <p>
-                        <span className="text-white/50">Area code:</span>{" "}
-                        {form.areaCodeInput || deployStatus?.area_code || "—"}
+                    <div className="space-y-3 text-sm">
+                      <div>
+                        <label className="text-white/50 block mb-1">Business name</label>
+                        <input
+                          type="text"
+                          className="glass-input w-full"
+                          placeholder="Your business name"
+                          value={form.nameInput || deployStatus?.business_name || ""}
+                          onChange={(e) => updateField("nameInput", e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-white/50 block mb-1">Area code</label>
+                        <input
+                          type="text"
+                          className="glass-input w-full font-mono tracking-[0.3em]"
+                          placeholder="e.g. 215"
+                          maxLength={3}
+                          value={form.areaCodeInput || deployStatus?.area_code || ""}
+                          onChange={(e) => updateField("areaCodeInput", e.target.value.replace(/\D/g, "").slice(0, 3))}
+                        />
+                      </div>
+                      <p className="text-white/50">
+                        <span className="text-white/70">Email:</span> {profileEmail || "—"}
                       </p>
                       <p>
                         <span className="text-white/50">Plan:</span>{" "}
