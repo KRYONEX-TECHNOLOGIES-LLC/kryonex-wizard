@@ -878,7 +878,16 @@ export default function WizardPage({ embeddedMode }) {
     setDeployError("");
     setIsDeploying(true);
     try {
+      // Always persist business name and area code from wizard before deploy so inbound webhook has them
+      if (form.nameInput?.trim() || form.areaCodeInput?.trim()) {
+        await saveOnboardingIdentity({
+          businessName: form.nameInput?.trim() || "",
+          areaCode: form.areaCodeInput?.trim() || "",
+        }).catch(() => {});
+      }
       const res = await deployAgentSelf({
+        business_name: form.nameInput?.trim() || null,
+        area_code: form.areaCodeInput?.trim() || null,
         transfer_number: form.transferNumber || null,
       });
       setPhoneNumber(res.data?.phone_number || "");
