@@ -3875,18 +3875,21 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
   }
 });
 
+// Retell Inbound Webhook: POST with body { event: "call_inbound", call_inbound: { agent_id?, agent_version?, from_number, to_number } }
+// Response: 2xx + { call_inbound: { override_agent_id?, override_agent_version?, dynamic_variables?, metadata?, agent_override? } }
 app.post("/webhooks/retell-inbound", async (req, res) => {
   try {
     const payload = req.body || {};
     const inbound = payload.call_inbound || payload;
+    // Doc: to_number always in payload (receiver); from_number always (caller)
     const rawTo =
-      inbound.to_number ||
-      payload.to_number ||
-      inbound.to ||
-      payload.to ||
-      inbound.called_number ||
-      payload.called_number ||
-      inbound.phone_number ||
+      inbound.to_number ??
+      payload.to_number ??
+      inbound.to ??
+      payload.to ??
+      inbound.called_number ??
+      payload.called_number ??
+      inbound.phone_number ??
       payload.phone_number;
     if (!rawTo) {
       return res.status(400).json({ error: "to_number required" });
@@ -3966,42 +3969,34 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
         .maybeSingle(),
     ]);
 
-    const businessName = profile?.business_name || "your business";
-    const bookingUrl = profile?.cal_com_url || integration?.booking_url || "";
-    const transferNumber = agentRow.transfer_number || "";
-    // Retell inbound webhook expects response under call_inbound with dynamic_variables (all values must be strings)
+    // Doc: dynamic_variables values must be strings; empty/unset leaves {{var}} in prompt
+    const businessName = (profile?.business_name && profile.business_name.trim()) ? profile.business_name.trim() : "your business";
     const dynamicVariables = {
-      business_name: String(businessName || ""),
-      cal_com_link: String(bookingUrl || ""),
-      transfer_number: String(transferNumber || ""),
+      business_name: businessName,
+      cal_com_link: String(profile?.cal_com_url || integration?.booking_url || ""),
+      transfer_number: String(agentRow.transfer_number || ""),
       agent_tone: String(agentRow.tone || "Calm & Professional"),
       schedule_summary: String(agentRow.schedule_summary || ""),
-      standard_fee: String(agentRow.standard_fee ?? ""),
-      emergency_fee: String(agentRow.emergency_fee ?? ""),
+      standard_fee: String(agentRow.standard_fee != null ? agentRow.standard_fee : ""),
+      emergency_fee: String(agentRow.emergency_fee != null ? agentRow.emergency_fee : ""),
     };
 
     const isPendingAgent = String(agentRow.agent_id || "").startsWith("pending-");
-    const requestAgentId = inbound.agent_id || payload.agent_id || null;
+    const requestAgentId = inbound.agent_id ?? payload.agent_id;
+    const overrideId = !isPendingAgent && agentRow.agent_id ? agentRow.agent_id : (isPendingAgent && requestAgentId ? requestAgentId : null);
+
+    // Doc: response under call_inbound; order per sample: override_agent_id, override_agent_version, agent_override, dynamic_variables
     const callInbound = {
-      dynamic_variables: dynamicVariables,
+      ...(overrideId && { override_agent_id: overrideId, override_agent_version: 1 }),
       agent_override: {
         retell_llm: {
           begin_message: `Thanks for calling {{business_name}}, this is Grace. How can I help you?`,
         },
       },
+      dynamic_variables: dynamicVariables,
     };
-    if (!isPendingAgent && agentRow.agent_id) {
-      callInbound.override_agent_id = agentRow.agent_id;
-    } else if (isPendingAgent && requestAgentId) {
-      callInbound.override_agent_id = requestAgentId;
-    }
-    console.info("[retell-inbound] ok", {
-      to_number: toNumber,
-      agent_id: agentRow.agent_id,
-      business_name: businessName,
-      override_agent_id: callInbound.override_agent_id || null,
-    });
-    return res.json({ call_inbound: callInbound });
+    console.info("[retell-inbound] ok", { to_number: toNumber, business_name: businessName, override_agent_id: overrideId || null });
+    return res.status(200).json({ call_inbound: callInbound });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
