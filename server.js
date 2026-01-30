@@ -3915,8 +3915,16 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
           .maybeSingle()
       ).data;
     }
+    if (!agentRow?.user_id && digits.length >= 10) {
+      const last10 = digits.slice(-10);
+      const { data: rows } = await supabaseAdmin
+        .from("agents")
+        .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
+        .like("phone_number", `%${last10}`);
+      agentRow = rows?.[0] || null;
+    }
     if (!agentRow?.user_id) {
-      console.warn("[retell-inbound] agent not found", { to_number: toNumber, rawTo });
+      console.warn("[retell-inbound] agent not found", { to_number: toNumber, rawTo, digits });
       return res.status(404).json({ error: "Agent not found for number" });
     }
 
@@ -3972,17 +3980,20 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       emergency_fee: String(agentRow.emergency_fee ?? ""),
     };
 
+    const isPendingAgent = String(agentRow.agent_id || "").startsWith("pending-");
+    const callInbound = {
+      dynamic_variables: dynamicVariables,
+    };
+    if (!isPendingAgent && agentRow.agent_id) {
+      callInbound.override_agent_id = agentRow.agent_id;
+    }
     console.info("[retell-inbound] ok", {
       to_number: toNumber,
       agent_id: agentRow.agent_id,
       business_name: businessName,
+      override_sent: !isPendingAgent,
     });
-    return res.json({
-      call_inbound: {
-        override_agent_id: agentRow.agent_id,
-        dynamic_variables: dynamicVariables,
-      },
-    });
+    return res.json({ call_inbound: callInbound });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
