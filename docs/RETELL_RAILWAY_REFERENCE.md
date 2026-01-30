@@ -97,4 +97,23 @@ Quick reference from **Retell AI** and **Railway** docs so we stay aligned.
 
 ---
 
+## Test inbound dynamic variables (checklist)
+
+1. **Retell dashboard**
+   - Phone number → **Inbound Webhook URL** = `https://<your-railway-domain>/webhooks/retell-inbound`
+   - Agent → prompt uses `{{business_name}}` (and other variables); begin message can be `Thanks for calling {{business_name}}, this is Grace. How can I help you?`
+   - Number has an **Inbound Call Agent** set (or webhook returns `override_agent_id` so Retell knows which agent to use).
+
+2. **Our app**
+   - Wizard / profile has **business name** (and tone, schedule, fees, transfer number) saved so DB has values for that user.
+
+3. **Place a test call** to the number.
+
+4. **Check server logs** (Railway → Logs or Log Explorer):
+   - Search for `[retell-inbound] ok` → webhook was hit and we returned 200.
+   - Search for `[retell-inbound] response payload` → exact JSON we sent to Retell (includes `dynamic_variables.business_name`).
+   - If you see those, our side is correct; if the agent still doesn’t say the business name, the issue is on Retell’s side (config or product).
+
+---
+
 *Last updated from Retell and Railway docs; links above are canonical.*
