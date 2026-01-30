@@ -3984,6 +3984,11 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     const requestAgentId = inbound.agent_id || payload.agent_id || null;
     const callInbound = {
       dynamic_variables: dynamicVariables,
+      agent_override: {
+        retell_llm: {
+          begin_message: `Thanks for calling {{business_name}}, this is Grace. How can I help you?`,
+        },
+      },
     };
     if (!isPendingAgent && agentRow.agent_id) {
       callInbound.override_agent_id = agentRow.agent_id;
