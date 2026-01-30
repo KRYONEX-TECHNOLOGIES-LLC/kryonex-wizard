@@ -3878,6 +3878,8 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
 // Retell Inbound Webhook: POST with body { event: "call_inbound", call_inbound: { agent_id?, agent_version?, from_number, to_number } }
 // Response: 2xx + { call_inbound: { override_agent_id?, override_agent_version?, dynamic_variables?, metadata?, agent_override? } }
 app.post("/webhooks/retell-inbound", async (req, res) => {
+  const startMs = Date.now();
+  console.log("📞 [retell-inbound] hit", JSON.stringify(req.body?.call_inbound ?? req.body, null, 2));
   try {
     const payload = req.body || {};
     const inbound = payload.call_inbound || payload;
@@ -3985,9 +3987,11 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     const requestAgentId = inbound.agent_id ?? payload.agent_id;
     const overrideId = !isPendingAgent && agentRow.agent_id ? agentRow.agent_id : (isPendingAgent && requestAgentId ? requestAgentId : null);
 
-    // Doc: response under call_inbound; order per sample: override_agent_id, override_agent_version, agent_override, dynamic_variables
+    // Only send override_agent_id when it actually changes the agent. If same as request, omit so Retell applies vars without "resetting".
+    const sendOverride = overrideId && overrideId !== requestAgentId;
+
     const callInbound = {
-      ...(overrideId && { override_agent_id: overrideId, override_agent_version: 1 }),
+      ...(sendOverride && { override_agent_id: overrideId, override_agent_version: 1 }),
       agent_override: {
         retell_llm: {
           begin_message: `Thanks for calling {{business_name}}, this is Grace. How can I help you?`,
@@ -3995,9 +3999,14 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       },
       dynamic_variables: dynamicVariables,
     };
-    console.info("[retell-inbound] ok", { to_number: toNumber, business_name: businessName, override_agent_id: overrideId || null });
-    return res.status(200).json({ call_inbound: callInbound });
+    const responsePayload = { call_inbound: callInbound };
+    const elapsed = Date.now() - startMs;
+    console.log("📤 [retell-inbound] response", JSON.stringify(responsePayload, null, 2));
+    console.log(`⏱️ [retell-inbound] ${elapsed}ms`);
+    if (elapsed > 5000) console.warn("⚠️ [retell-inbound] Slow: Retell timeout ~10s.");
+    return res.status(200).json(responsePayload);
   } catch (err) {
+    console.error("🔥 [retell-inbound] error", err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -4770,6 +4779,17 @@ app.post(
         req.body && typeof req.body.transfer_number !== "undefined"
           ? String(req.body.transfer_number || "").trim() || null
           : null;
+      const businessNameRaw = req.body && req.body.business_name != null ? String(req.body.business_name || "").trim() : null;
+      const areaCodeRaw = req.body && req.body.area_code != null ? String(req.body.area_code || "").trim() : null;
+      if (businessNameRaw && businessNameRaw.length >= 2 && businessNameRaw.length <= 80) {
+        await supabaseAdmin.from("profiles").upsert({
+          user_id: uid,
+          business_name: businessNameRaw,
+          ...(areaCodeRaw && /^\d{3}$/.test(areaCodeRaw) ? { area_code: areaCodeRaw } : {}),
+        }, { onConflict: "user_id" });
+      } else if (areaCodeRaw && /^\d{3}$/.test(areaCodeRaw)) {
+        await supabaseAdmin.from("profiles").update({ area_code: areaCodeRaw }).eq("user_id", uid);
+      }
       const result = await deployAgentForUser(uid, deployRequestId, {
         transferNumber,
       });
