@@ -3674,7 +3674,7 @@ const retellWebhookHandler = async (req, res) => {
       if (normalizedToNumber) {
         const { data: phoneRow } = await supabaseAdmin
           .from("agents")
-          .select("user_id, agent_id, phone_number")
+          .select("user_id, agent_id, phone_number, post_call_sms_enabled, post_call_sms_template, post_call_sms_delay_seconds")
           .eq("phone_number", normalizedToNumber)
           .maybeSingle();
         
