@@ -4393,8 +4393,10 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
   }
 });
 
-app.post("/retell-webhook", enforceIpAllowlist, retellWebhookHandler);
-app.post("/api/retell/webhook", enforceIpAllowlist, retellWebhookHandler);
+// Note: Retell webhooks should NOT use IP allowlist - they come from Retell's servers
+// Security is handled via RETELL_WEBHOOK_SECRET signature verification in retellWebhookHandler
+app.post("/retell-webhook", retellWebhookHandler);
+app.post("/api/retell/webhook", retellWebhookHandler);
 
 app.post(
   "/retell/demo-call",
