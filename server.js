@@ -6177,12 +6177,12 @@ Business Variables:
       "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
     );
   }
-  // Retell create-agent: response_engine with type, llm_id, version. Copy version from master template so functions/KB are included.
+  // Retell create-agent: response_engine with type and llm_id. Don't specify version - Retell uses latest LLM version automatically.
   const re = template.response_engine || {};
   const response_engine = {
     type: re.type || "retell-llm",
     llm_id: re.llm_id,
-    version: re.version ?? 0,  // Use master's version (has functions), fallback to 0 only if not set
+    // version omitted - new agents can't specify version > 0, Retell uses latest
   };
   if (!response_engine.llm_id) {
     throw new Error("Template agent response_engine missing llm_id. Check RETELL_MASTER_AGENT_ID_HVAC points to a Retell-LLM agent.");
@@ -6414,12 +6414,13 @@ const provisionPhoneNumberOnly = async ({
     throw new Error("Master agent template missing response_engine or voice_id");
   }
   
-  // Step 2: Create agent clone with correct LLM version (includes functions/KB)
+  // Step 2: Create agent clone pointing to master's LLM (includes functions/KB)
+  // Note: Don't specify version for new agents - Retell uses latest LLM version automatically
   const re = template.response_engine || {};
   const response_engine = {
     type: re.type || "retell-llm",
     llm_id: re.llm_id,
-    version: re.version ?? 0,  // Use master's version (has functions)
+    // version omitted - new agents can't specify version > 0, Retell uses latest
   };
   
   if (!response_engine.llm_id) {
