@@ -2921,6 +2921,19 @@ const retellWebhookHandler = async (req, res) => {
       payload.event_type || payload.event || payload.type || "unknown";
     const call = payload.call || payload.data || {};
 
+    // Debug logging - see exactly what Retell sends
+    console.log("📞 [retell-webhook] received:", {
+      eventType,
+      call_id: call.call_id || payload.call_id,
+      agent_id: call.agent_id || payload.agent_id,
+      duration_ms: call.duration_ms || payload.duration_ms,
+      duration_seconds: call.duration_seconds || payload.duration_seconds,
+      from_number: call.from_number || payload.from_number,
+      to_number: call.to_number || payload.to_number,
+      payload_keys: Object.keys(payload),
+      call_keys: Object.keys(call),
+    });
+
     if (eventType === "call_started" || eventType === "call_initiated") {
       const agentId = call.agent_id || payload.agent_id;
       const callId = call.call_id || payload.call_id || payload.id || null;
@@ -3002,6 +3015,7 @@ const retellWebhookHandler = async (req, res) => {
     }
 
     if (eventType === "call_ended") {
+      console.log("📞 [call_ended] processing call_ended event...");
       const transcript = call.transcript || payload.transcript || "";
       const extractedVars =
         payload.variables ||
@@ -3039,11 +3053,26 @@ const retellWebhookHandler = async (req, res) => {
         payload.cost_cents ||
         null;
 
+      console.log("📞 [call_ended] parsed values:", {
+        agentId,
+        callId,
+        durationSeconds,
+        disposition,
+        hasTranscript: transcript.length > 0,
+      });
+
       const { data: agentRow, error: agentError } = await supabaseAdmin
         .from("agents")
         .select("user_id")
         .eq("agent_id", agentId)
-        .single();
+        .maybeSingle();
+
+      console.log("📞 [call_ended] agent lookup:", {
+        agentId,
+        found: !!agentRow,
+        user_id: agentRow?.user_id || null,
+        error: agentError?.message || null,
+      });
 
       if (agentError || !agentRow) {
         return res.status(404).json({ error: "Agent not found" });
@@ -3113,7 +3142,10 @@ const retellWebhookHandler = async (req, res) => {
         },
       });
 
+      console.log("📞 [call_ended] checking durationSeconds:", { durationSeconds, willUpdateUsage: durationSeconds > 0 });
+
       if (durationSeconds > 0) {
+        console.log("📞 [call_ended] updating usage for user:", agentRow.user_id);
         const { data: subscription } = await supabaseAdmin
           .from("subscriptions")
           .select("plan_type, current_period_end")
@@ -3129,6 +3161,12 @@ const retellWebhookHandler = async (req, res) => {
           subscription?.plan_type,
           subscription?.current_period_end
         );
+
+        console.log("📞 [call_ended] current usage:", {
+          call_used_seconds: usage.call_used_seconds,
+          call_cap_seconds: usage.call_cap_seconds,
+          addingSeconds: durationSeconds,
+        });
 
         const updatedUsed = (usage.call_used_seconds || 0) + durationSeconds;
         const capSeconds = usage.call_cap_seconds || 0;
@@ -3174,7 +3212,7 @@ const retellWebhookHandler = async (req, res) => {
           cost_cents: 0,
         });
 
-        await supabaseAdmin
+        const { error: updateError } = await supabaseAdmin
           .from("usage_limits")
           .update({
             call_used_seconds: updatedUsed,
@@ -3185,6 +3223,13 @@ const retellWebhookHandler = async (req, res) => {
             updated_at: new Date().toISOString(),
           })
           .eq("user_id", agentRow.user_id);
+
+        console.log("📞 [call_ended] usage_limits updated:", {
+          user_id: agentRow.user_id,
+          newCallUsedSeconds: updatedUsed,
+          newCallUsedMinutes: Math.ceil(updatedUsed / 60),
+          error: updateError?.message || null,
+        });
 
         await supabaseAdmin.from("usage_snapshots").insert({
           user_id: agentRow.user_id,
