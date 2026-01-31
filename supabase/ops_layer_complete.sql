@@ -2,7 +2,7 @@
 -- Run this in Supabase SQL Editor to add all missing columns/tables
 
 -- ============================================
--- 1. LEADS TABLE - Add columns for call recording storage
+-- 1. LEADS TABLE - Add columns for call recording storage & post-call analysis
 -- ============================================
 ALTER TABLE public.leads 
 ADD COLUMN IF NOT EXISTS recording_url text,
@@ -11,7 +11,15 @@ ADD COLUMN IF NOT EXISTS summary text,
 ADD COLUMN IF NOT EXISTS transcript text,
 ADD COLUMN IF NOT EXISTS sentiment text,
 ADD COLUMN IF NOT EXISTS call_duration_seconds integer,
-ADD COLUMN IF NOT EXISTS agent_id text;
+ADD COLUMN IF NOT EXISTS agent_id text,
+ADD COLUMN IF NOT EXISTS status text DEFAULT 'New',
+ADD COLUMN IF NOT EXISTS service_address text,
+ADD COLUMN IF NOT EXISTS issue_type text,
+ADD COLUMN IF NOT EXISTS call_outcome text,
+ADD COLUMN IF NOT EXISTS appointment_booked boolean DEFAULT false,
+ADD COLUMN IF NOT EXISTS metadata jsonb,
+ADD COLUMN IF NOT EXISTS flagged_for_review boolean DEFAULT false,
+ADD COLUMN IF NOT EXISTS flagged_at timestamptz;
 
 -- ============================================
 -- 2. USAGE_ALERTS TABLE - For tracking usage threshold alerts
@@ -52,6 +60,12 @@ WHERE cal_booking_uid IS NOT NULL;
 -- ============================================
 ALTER TABLE public.usage_limits 
 ADD COLUMN IF NOT EXISTS hard_stop_active boolean DEFAULT false;
+
+-- ============================================
+-- 5. AGENTS TABLE - Add industry column for master agent selection
+-- ============================================
+ALTER TABLE public.agents 
+ADD COLUMN IF NOT EXISTS industry text DEFAULT 'hvac';
 
 -- ============================================
 -- Done! Verify by running:

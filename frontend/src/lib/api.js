@@ -28,10 +28,17 @@ api.interceptors.request.use(async (config) => {
 
 export const deployAgent = (data) => api.post("/deploy-agent", data);
 export const getStats = () => api.get("/api/dashboard/stats");
-export const getLeads = () => api.get("/leads");
+export const getEnhancedStats = () => api.get("/api/dashboard/stats-enhanced");
+export const getAnalytics = (period = "7d") => api.get("/api/analytics", { params: { period } });
+export const getSettings = () => api.get("/api/settings");
+export const updateSettings = (data) => api.put("/api/settings", data);
+export const getLeads = (filters = {}) => api.get("/leads", { params: filters });
+export const getFilteredLeads = (filters) => api.get("/leads", { params: filters });
 export const getAdminLeads = () => api.get("/admin/leads");
 export const updateLeadStatus = (leadId, status) =>
   api.post("/leads/update-status", { leadId, status });
+export const flagLead = (leadId, flagged) =>
+  api.post(`/leads/${leadId}/flag`, { flagged });
 export const getMessages = () => api.get("/messages");
 export const createCheckoutSession = (data) =>
   api.post("/create-checkout-session", data);
@@ -48,6 +55,7 @@ export const getAuditLogs = () => api.get("/admin/audit-logs");
 export const autoGrantAdmin = (code) =>
   api.post("/admin/auto-grant", { code });
 export const getAdminMetrics = () => api.get("/admin/metrics");
+export const getAdminMetricsEnhanced = () => api.get("/admin/metrics-enhanced");
 export const getAdminHealth = () => api.get("/admin/health");
 export const getAdminUsers = () => api.get("/admin/users");
 export const getAdminUserProfile = (userId) =>
@@ -130,5 +138,38 @@ export const transferLeadsToDialer = (leadIds) =>
 export const triggerDemoCall = (data) => api.post("/retell/demo-call", data);
 export const logBlackBoxEvent = (action_type, meta_data) =>
   api.post("/black-box/event", { action_type, meta_data });
+
+// Referral System
+export const getReferralCode = () => api.get("/referral/my-code");
+export const getReferralStats = () => api.get("/referral/stats");
+export const getReferralHistory = () => api.get("/referral/history");
+export const requestReferralPayout = () => api.post("/referral/request-payout");
+export const recordReferralSignup = (referralCode) => 
+  api.post("/referral/record-signup", { referral_code: referralCode });
+
+// Admin Referral Management
+export const getAdminReferrals = (params) => api.get("/admin/referrals", { params });
+export const approveReferralPayout = (referralId) => 
+  api.post(`/admin/referrals/${referralId}/approve`);
+export const rejectReferralPayout = (referralId, reason) => 
+  api.post(`/admin/referrals/${referralId}/reject`, { reason });
+export const getReferralSettings = () => api.get("/admin/referral-settings");
+export const updateReferralSettings = (settings) => 
+  api.put("/admin/referral-settings", settings);
+
+// Review Requests
+export const requestAppointmentReview = (appointmentId) =>
+  api.post(`/appointments/${appointmentId}/request-review`);
+
+// Customers CRM
+export const getCustomers = (params) => api.get("/api/customers", { params });
+export const getCustomerHistory = (phone) => api.get(`/api/customers/${encodeURIComponent(phone)}/history`);
+
+// Webhooks (Zapier Integration)
+export const getWebhooks = () => api.get("/api/webhooks");
+export const createWebhook = (data) => api.post("/api/webhooks", data);
+export const updateWebhook = (id, data) => api.put(`/api/webhooks/${id}`, data);
+export const deleteWebhook = (id) => api.delete(`/api/webhooks/${id}`);
+export const testWebhook = (id) => api.post(`/api/webhooks/${id}/test`);
 
 export default api;

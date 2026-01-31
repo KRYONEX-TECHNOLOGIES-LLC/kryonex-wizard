@@ -8,10 +8,36 @@ import {
   createTopupSession,
   getCalcomStatus,
   disconnectCalcom,
+  getEnhancedStats,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
+import UpsellModal from "../components/UpsellModal.jsx";
+
+// Format seconds to MM:SS
+const formatDuration = (seconds) => {
+  if (!seconds || seconds <= 0) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+};
+
+// Format relative time (e.g., "2 mins ago")
+const formatRelativeTime = (dateStr) => {
+  if (!dateStr) return "No calls yet";
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+  
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins} min${diffMins > 1 ? "s" : ""} ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+  return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+};
 
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -21,6 +47,21 @@ export default function DashboardPage() {
     booked_leads: 0,
     call_volume: 0,
   });
+  const [enhancedStats, setEnhancedStats] = React.useState({
+    calls_today: 0,
+    calls_this_week: 0,
+    calls_all_time: 0,
+    appointments_today: 0,
+    appointments_this_week: 0,
+    appointments_all_time: 0,
+    booking_rate_percent: 0,
+    avg_call_duration_seconds: 0,
+    last_call_at: null,
+    last_call_name: null,
+    last_call_summary: null,
+    pipeline_value: 0,
+  });
+  const [currentTime, setCurrentTime] = React.useState(new Date());
   const [leads, setLeads] = React.useState([]);
   const [subscription, setSubscription] = React.useState({
     status: "none",
@@ -46,19 +87,30 @@ export default function DashboardPage() {
       ? false
       : window.localStorage.getItem("kryonex_low_usage_dismissed") === "true"
   );
+  const [showUpsellModal, setShowUpsellModal] = React.useState(false);
+
+  // Live clock effect
+  React.useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   React.useEffect(() => {
     let mounted = true;
     const load = async (isInitial = false) => {
       try {
-        const [statsRes, leadsRes, subRes, usageRes] = await Promise.all([
+        const [statsRes, enhancedRes, leadsRes, subRes, usageRes] = await Promise.all([
           getStats(),
+          getEnhancedStats().catch(() => ({ data: {} })),
           getLeads(),
           getSubscriptionStatus(),
           getUsageStatus(),
         ]);
         if (mounted) {
           setStats(statsRes.data);
+          if (enhancedRes.data) {
+            setEnhancedStats(prev => ({ ...prev, ...enhancedRes.data }));
+          }
           setLeads(leadsRes.data.leads || []);
           setSubscription(subRes.data || { status: "none", plan_type: null });
           setUsage(usageRes.data || null);
@@ -187,6 +239,29 @@ export default function DashboardPage() {
     }
   }, [isLowUsage]);
 
+  // Show upsell modal at 80%+ usage (after initial load)
+  React.useEffect(() => {
+    const limitState = usage?.limit_state || "ok";
+    const shouldShowModal = 
+      !loading && 
+      (limitState === "warning" || limitState === "blocked" || callPercent >= 80 || smsPercent >= 80);
+    
+    if (shouldShowModal) {
+      // Check if modal was recently dismissed
+      const dismissedTime = localStorage.getItem("kryonex_upsell_modal_dismissed_time");
+      if (dismissedTime) {
+        const elapsed = Date.now() - parseInt(dismissedTime, 10);
+        const dismissDuration = 24 * 60 * 60 * 1000; // 24 hours
+        if (elapsed < dismissDuration) {
+          return; // Don't show if dismissed recently
+        }
+      }
+      // Small delay so dashboard loads first
+      const timer = setTimeout(() => setShowUpsellModal(true), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, usage, callPercent, smsPercent]);
+
   const handleTopup = async () => {
     try {
       const successUrl = `${window.location.origin}/billing?topup=success`;
@@ -235,7 +310,7 @@ export default function DashboardPage() {
     }
   };
 
-  const activityFeed = leads.slice(0, 3).map((lead) => ({
+  const activityFeed = leads.slice(0, 5).map((lead) => ({
     id: lead.id,
     time: lead.created_at
       ? new Date(lead.created_at).toLocaleTimeString([], {
@@ -244,6 +319,10 @@ export default function DashboardPage() {
         })
       : "--",
     text: lead.summary || lead.business_name || lead.name || "Lead activity",
+    status: lead.status || "New",
+    sentiment: lead.sentiment || "neutral",
+    duration: lead.call_duration_seconds || 0,
+    outcome: lead.call_outcome || lead.status || "New",
   }));
 
   return (
@@ -278,7 +357,12 @@ export default function DashboardPage() {
             </div>
           ) : null}
           <div className="top-bar glass-panel">
-            <div className="status-indicator">🟢 SYSTEM ONLINE</div>
+            <div className="status-indicator">
+              <span>🟢 SYSTEM ONLINE</span>
+              <span className="live-clock">
+                {currentTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </span>
+            </div>
             <div className="usage-pill">
               {callTotal ? `${100 - callPercent}% GAS LEFT` : "GAS LEFT --"}
             </div>
@@ -310,19 +394,55 @@ export default function DashboardPage() {
           </div>
 
           <div className="war-room-grid">
-            <div className="kpi-hero glass-panel">
+            {/* Enhanced KPI Cards */}
+            <div className="kpi-hero glass-panel enhanced">
               <div className="kpi-card">
                 <div className="kpi-label">Calls Handled</div>
-                <div className="kpi-value">{stats.call_volume || 0}</div>
+                <div className="kpi-value">{enhancedStats.calls_all_time || stats.call_volume || 0}</div>
+                <div className="kpi-breakdown">
+                  <span>Today: {enhancedStats.calls_today || 0}</span>
+                  <span>This Week: {enhancedStats.calls_this_week || 0}</span>
+                </div>
               </div>
               <div className="kpi-card">
-                <div className="kpi-label">Appointments Locked</div>
-                <div className="kpi-value">{stats.booked_leads || 0}</div>
+                <div className="kpi-label">Appointments</div>
+                <div className="kpi-value">{enhancedStats.appointments_all_time || stats.booked_leads || 0}</div>
+                <div className="kpi-breakdown">
+                  <span>Today: {enhancedStats.appointments_today || 0}</span>
+                  <span>This Week: {enhancedStats.appointments_this_week || 0}</span>
+                </div>
+              </div>
+              <div className="kpi-card">
+                <div className="kpi-label">Booking Rate</div>
+                <div className="kpi-value">{enhancedStats.booking_rate_percent || 0}%</div>
+                <div className="kpi-breakdown">
+                  <span className={enhancedStats.booking_rate_percent >= 30 ? "text-green" : "text-yellow"}>
+                    {enhancedStats.booking_rate_percent >= 30 ? "▲ Good" : "▼ Improve"}
+                  </span>
+                </div>
+              </div>
+              <div className="kpi-card">
+                <div className="kpi-label">Avg Call Duration</div>
+                <div className="kpi-value">{formatDuration(enhancedStats.avg_call_duration_seconds)}</div>
+                <div className="kpi-breakdown">
+                  <span>{enhancedStats.avg_call_duration_seconds > 0 ? "per call" : "no data"}</span>
+                </div>
               </div>
               <div className="kpi-card glow-green">
                 <div className="kpi-label">Estimated Revenue</div>
-                <div className="kpi-value">{formatCurrency(pipelineValue)}</div>
+                <div className="kpi-value">{formatCurrency(enhancedStats.pipeline_value || pipelineValue)}</div>
                 <div className="kpi-note">(Based on $450 avg. ticket)</div>
+              </div>
+              <div className="kpi-card last-call-card">
+                <div className="kpi-label">Last Call</div>
+                <div className="kpi-value last-call-time">
+                  {formatRelativeTime(enhancedStats.last_call_at)}
+                </div>
+                {enhancedStats.last_call_name && (
+                  <div className="kpi-breakdown">
+                    <span>{enhancedStats.last_call_name}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -419,9 +539,21 @@ export default function DashboardPage() {
                 <div className="feed-item">Loading activity...</div>
               ) : activityFeed.length ? (
                 activityFeed.map((item) => (
-                  <div key={item.id} className="feed-item">
-                    <span className="feed-time">{item.time}</span>
-                    <span>{item.text}</span>
+                  <div key={item.id} className="feed-item enhanced">
+                    <div className="feed-item-top">
+                      <span className="feed-time">{item.time}</span>
+                      <span className={`feed-badge ${item.outcome?.toLowerCase().includes("book") ? "booked" : item.outcome?.toLowerCase().includes("miss") ? "missed" : ""}`}>
+                        {item.outcome}
+                      </span>
+                      {item.duration > 0 && (
+                        <span className="feed-duration">{formatDuration(item.duration)}</span>
+                      )}
+                    </div>
+                    <div className="feed-item-text">{item.text}</div>
+                    <div className="feed-item-sentiment">
+                      <span className={`sentiment-dot ${item.sentiment}`}></span>
+                      {item.sentiment}
+                    </div>
                   </div>
                 ))
               ) : (
@@ -431,6 +563,19 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Upsell Modal */}
+      <UpsellModal
+        isOpen={showUpsellModal}
+        onClose={() => setShowUpsellModal(false)}
+        usagePercent={Math.max(callPercent, smsPercent)}
+        limitState={usage?.limit_state || "ok"}
+        currentTier={subscription.plan_type || "core"}
+        callMinutesUsed={callUsed}
+        callMinutesTotal={callTotal}
+        smsUsed={smsUsed}
+        smsTotal={smsTotal}
+      />
     </div>
   );
 }

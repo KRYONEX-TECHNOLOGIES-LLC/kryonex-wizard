@@ -1,97 +1,193 @@
 # Kryonex Wizard
 
-Kryonex Wizard is a full-stack app for onboarding, deploying, and managing AI call agents,
-with an admin control plane, calendar booking, live tracking, billing flows, and ops infrastructure.
+Kryonex Wizard is a full-stack SaaS platform for deploying and managing AI call agents for HVAC, Plumbing, and service businesses. Features include automated booking, lead tracking, SMS automation, referral programs, and enterprise integrations.
 
 ## Architecture
-- `frontend/`: Vite + React UI for user and admin portals.
-- `server.js`: Express API server for Retell, Stripe, messaging, webhooks, and data orchestration.
-- `supabase/`: SQL schema, migrations, and RLS policies for Supabase storage.
-- `cypress/`: End-to-end tests (smoke + wizard matrix).
-- `scripts/`: Utility scripts for API checks, test users, and webhook simulation.
-- `docs/`: Admin workflow, ops checklist, and feature docs.
+
+```
+kryonex-wizard/
+├── frontend/           # Vite + React UI (user + admin portals)
+├── server.js           # Express API (Retell, Stripe, SMS, webhooks)
+├── supabase/           # Database schemas, migrations, RLS policies
+├── cypress/            # E2E tests (smoke + wizard matrix)
+├── scripts/            # Utility scripts (API checks, test users)
+└── docs/               # Feature docs, workflows, handoffs
+```
+
+## Features Overview
+
+### Core Features
+- **AI Call Agent** - 24/7 automated call handling via Retell AI
+- **Appointment Booking** - Cal.com integration for real-time scheduling
+- **Lead Management** - CRM with call history, transcripts, sentiment analysis
+- **Live Tracking** - Real-time technician tracking with ETA notifications
+- **Black Box Recordings** - Call recordings with AI summaries
+
+### Revenue Features (Money Printers)
+| Feature | Description | Price |
+|---------|-------------|-------|
+| **Referral Program** | Users earn $25 upfront + 10% recurring for 12 months | Free |
+| **Post-Call SMS** | Auto-text customers after every call | $29/mo |
+| **Review Requests** | Auto-request Google reviews after appointments | $19/mo |
+| **Zapier Integration** | Send data to 5000+ apps via webhooks | $49/mo |
+
+### Retention Features
+- **Upsell Automation** - Smart upgrade prompts at 80% usage
+- **Customer CRM** - Full customer history grouped by phone
+- **Appointment Reminders** - Auto SMS 24h/1h before appointments
+- **ETA Notifications** - Text customers when technician is nearby
 
 ## Quick Start
-1) Install deps:
-```
+
+### 1. Install Dependencies
+```bash
 npm install
-cd frontend
-npm install
+cd frontend && npm install
 ```
 
-2) Configure env:
-- Copy `env.template` to `.env` at repo root and fill values.
-- Create `frontend/.env` with:
-```
+### 2. Configure Environment
+```bash
+# Root .env (copy from env.template)
+SUPABASE_URL=...
+SUPABASE_SERVICE_KEY=...
+RETELL_API_KEY=...
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+RESEND_API_KEY=...
+SERVER_URL=https://your-backend.com
+
+# frontend/.env
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
 VITE_API_URL=http://localhost:3000
 ```
 
-3) Run backend API:
-```
+### 3. Setup Database
+Run these SQL files in Supabase SQL Editor (in order):
+1. `supabase/command_suite.sql` - Core tables
+2. `supabase/ops_infrastructure.sql` - Ops tables
+3. `supabase/referral_system.sql` - Referral program
+4. `supabase/sms_automation.sql` - SMS automation + webhooks
+
+### 4. Start Development
+```bash
+# Terminal 1: Backend
 npm start
+
+# Terminal 2: Frontend
+cd frontend && npm run dev
 ```
 
-4) Run frontend UI (new terminal):
+## Key Pages
+
+### User Portal
+| Page | Route | Description |
+|------|-------|-------------|
+| Dashboard | `/dashboard` | KPIs, activity feed, live clock |
+| Leads | `/leads` | Lead management with filters |
+| Customers | `/customers` | CRM with customer history |
+| Calendar | `/calendar` | Appointments with color coding |
+| Messages | `/messages` | SMS inbox with quick actions |
+| Black Box | `/black-box` | Call recordings + transcripts |
+| Analytics | `/analytics` | Charts and performance metrics |
+| Referrals | `/referrals` | Referral program dashboard |
+| Integrations | `/integrations` | Webhook/Zapier configuration |
+| Settings | `/settings` | Business settings, SMS templates |
+
+### Admin Portal
+| Page | Route | Description |
+|------|-------|-------------|
+| Admin Dashboard | `/admin/dashboard` | Platform-wide metrics |
+| Fleet Registry | `/admin/users` | All users + quick actions |
+| Client Wizard | `/admin/wizard/create` | Deploy new clients |
+| Referral Control | `/admin/referrals` | Manage referral payouts |
+| Revenue Telemetry | `/admin/financials` | MRR, churn, revenue |
+| Sales Floor | `/admin/logs` | Activity logs |
+
+## API Endpoints
+
+### Referral System
 ```
-cd frontend
-npm run dev
+GET  /referral/my-code      - Get user's referral code
+GET  /referral/stats        - Referral earnings summary
+GET  /referral/history      - Detailed referral history
+POST /referral/request-payout - Request payout (min $50)
 ```
 
-## Key Flows
-
-### User Wizard (Deployment Wizard v3)
-- **Step 1 — Identity:** Business Name, Area Code, consent. Saves identity via `/onboarding/identity`.
-- **Step 2 — Plan Selection:** PRO ($249/mo), ELITE ($497/mo), SCALE ($997/mo). CORE is backend-only.
-- **Stripe:** After plan choice, user goes to Stripe checkout for that plan.
-- **Dashboard:** Shown after successful payment (agent number, business info, Cal.com CTA).
-- Wizard state is persisted in localStorage and via backend.
-
-### Admin-Only Flows
-- **Mini Admin Onboarding:** On Admin Client Wizard (`/admin/wizard/create`), a small “Admin Quick Onboarding” box lets admins deploy a client with Business Name + Area Code + Email and **Deploy Agent**. No Stripe, no tier picker; creates/finds user, saves identity, sets Core tier, initializes usage limits, creates Retell agent, marks `admin_onboarded`. See `docs/ADMIN_WORKFLOW.md`.
-- **Admin menu:** “Admin Command” link and ADMIN COMMAND / USER VIEW buttons are visible only when `user.role === 'admin'` or the logged-in email matches `VITE_ADMIN_EMAIL` / `VITE_ADMIN_EMAILS`. Route guard enforces the same.
-- **Admin user dashboard access:** Admins (by role or env email) can open the user dashboard, billing, calendar, etc., **without** completing the wizard or having an agent. They are not redirected to wizard step 1 when using “User view” or dashboard.
-- **Landing (“/”):** Logged-in users who already have an agent, or any admin, are sent to `/dashboard`; others see the marketing landing. No screen glitch.
-- **Fleet Registry:** `/admin/users` — newest-first sort, instant search (business, email, area code), scrollable list, right-side cheat-sheet drawer with summary and quick-copy for Business Name, Agent Phone, Cal.com URL, Transfer Number, Retell Agent ID, User ID.
-
-### Other Flows
-- Calendar bookings write to Supabase and trigger email alerts.
-- Admin tools pull global fleet data, leads, logs, and financials.
-
-## Tests
+### Customer CRM
 ```
+GET /api/customers          - List customers grouped by phone
+GET /api/customers/:phone/history - Full customer timeline
+```
+
+### Webhooks (Zapier)
+```
+GET    /api/webhooks        - List user's webhooks
+POST   /api/webhooks        - Create new webhook
+PUT    /api/webhooks/:id    - Update webhook
+DELETE /api/webhooks/:id    - Delete webhook
+POST   /api/webhooks/:id/test - Test webhook delivery
+```
+
+### SMS Automation
+```
+POST /appointments/:id/request-review - Send review request
+# Post-call SMS is automatic when enabled in settings
+```
+
+## Webhook Events
+
+Available events for Zapier/webhook integrations:
+- `call_ended` - When a call completes
+- `call_started` - When a call begins
+- `appointment_booked` - New appointment created
+- `appointment_updated` - Appointment modified
+- `lead_created` - New lead from call
+- `sms_received` - Inbound text message
+
+## Billing Tiers
+
+| Tier | Price | Minutes | Features |
+|------|-------|---------|----------|
+| CORE | $149/mo | 150 | Basic AI receptionist |
+| PRO | $249/mo | 500 | + Call recordings, SMS |
+| ELITE | $497/mo | 1200 | + Multi-location, VIP support |
+| SCALE | $997/mo | 3000 | Enterprise, white-glove |
+
+Top-ups available:
+- +300 Minutes - $99
+- +800 Minutes - $265
+- +500 SMS - $40
+- +1000 SMS - $80
+
+## Testing
+
+```bash
+# Run E2E tests
 npm run test:e2e
+
+# API health check
+npm run test:api
+
+# Create test user
+npm run seed:test-user
 ```
 
-Common env vars for Cypress:
-- `CYPRESS_TEST_EMAIL`, `CYPRESS_TEST_PASSWORD`
-- `CYPRESS_SUPABASE_URL`, `CYPRESS_SUPABASE_ANON_KEY`
-- `MATRIX_LIMIT` (e.g. `1000` for full sweep)
+## Documentation
 
-## Scripts
-- `npm run test:api` runs `scripts/api-check.js`
-- `npm run seed:test-user` runs `scripts/create-test-user.js`
+- `docs/HANDOFF.md` - Full handoff for new developers
+- `docs/ADMIN_WORKFLOW.md` - Admin onboarding flows
+- `docs/OPS_CHECKLIST.md` - Ops infrastructure status
+- `docs/IMPLEMENTATION_AND_AUDIT.md` - Feature audit trail
 
-## Docs
-- **`docs/HANDOFF.md`** — Full handoff for new devs/AI (start here).
-- `docs/README.md` — Index of feature docs.
-- `docs/ADMIN_WORKFLOW.md` — Admin mini onboarding, Fleet Registry, and admin menu security.
-- `docs/OPS_CHECKLIST.md` — Ops infrastructure implementation status and testing checklist.
-- `docs/AGENT_PROMPT_GRACE.md` — Grace AI agent prompt with dynamic variables.
+## Security Notes
 
-## Ops Infrastructure
-The system includes enterprise-grade webhook handling and event storage:
-- **Raw webhook persistence** — All webhooks stored before processing for replay/audit.
-- **Idempotency** — SHA256-based deduplication prevents double-counting.
-- **Event storage** — `call_events` and `sms_events` tables with normalized fields.
-- **Unknown phone handling** — Webhooks for unrecognized numbers stored, not dropped.
-- **Usage enforcement** — Soft/hard thresholds with immediate blocking.
-- **Alerting** — Operational alerts for usage warnings, blocks, and failures.
+- Never commit `.env` files (gitignored)
+- Retell/Stripe webhooks require public `SERVER_URL`
+- RLS policies enforce user data isolation
+- HMAC signatures available for webhook security
+- 30-day hold period prevents referral fraud
 
-See `supabase/ops_infrastructure.sql` for the full schema.
+## Support
 
-## Notes
-- Do not commit real secrets (`.env` files are gitignored).
-- Retell/Stripe webhooks require a public `SERVER_URL`.
-- Run `supabase/ops_infrastructure.sql` in Supabase SQL Editor to create ops tables.
+For issues or feature requests, contact support or check the docs folder.

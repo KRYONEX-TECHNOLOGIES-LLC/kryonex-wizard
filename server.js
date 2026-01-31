@@ -19,6 +19,8 @@ const {
   RETELL_LLM_VERSION_PLUMBING,
   RETELL_MASTER_AGENT_ID_HVAC,
   RETELL_MASTER_AGENT_ID_PLUMBING,
+  RETELL_AGENT_VERSION_HVAC,
+  RETELL_AGENT_VERSION_PLUMBING,
   WIZARD_MAINTENANCE_MODE,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
@@ -1276,6 +1278,47 @@ app.post(
                   message: deployErr.message,
                 });
               }
+
+              // REFERRAL SYSTEM: Process first payment
+              try {
+                const { data: referral } = await supabaseAdmin
+                  .from("referrals")
+                  .select("*")
+                  .eq("referred_id", userId)
+                  .eq("status", "pending")
+                  .maybeSingle();
+                
+                if (referral) {
+                  const { data: settings } = await supabaseAdmin
+                    .from("referral_settings")
+                    .select("*")
+                    .eq("id", 1)
+                    .maybeSingle();
+                  
+                  const holdDays = settings?.hold_days || 30;
+                  const eligibleAt = new Date();
+                  eligibleAt.setDate(eligibleAt.getDate() + holdDays);
+                  
+                  // Update referral with first payment info
+                  await supabaseAdmin
+                    .from("referrals")
+                    .update({
+                      first_payment_at: new Date().toISOString(),
+                      eligible_at: eligibleAt.toISOString(),
+                      updated_at: new Date().toISOString(),
+                    })
+                    .eq("id", referral.id);
+                  
+                  console.info("[stripe-webhook] Referral first payment recorded", {
+                    referral_id: referral.id,
+                    referrer_id: referral.referrer_id,
+                    referred_id: userId,
+                    eligible_at: eligibleAt.toISOString(),
+                  });
+                }
+              } catch (refErr) {
+                console.error("[stripe-webhook] Referral processing error:", refErr.message);
+              }
             }
           }
           const { data: dealRow } = await supabaseAdmin
@@ -1396,6 +1439,239 @@ app.post(
                 status: invoice.status,
               },
             });
+
+            // REFERRAL SYSTEM: Process recurring commission
+            try {
+              const { data: referral } = await supabaseAdmin
+                .from("referrals")
+                .select("*")
+                .eq("referred_id", userId)
+                .in("status", ["pending", "eligible"])
+                .maybeSingle();
+              
+              if (referral) {
+                const { data: settings } = await supabaseAdmin
+                  .from("referral_settings")
+                  .select("*")
+                  .eq("id", 1)
+                  .maybeSingle();
+                
+                const now = new Date();
+                const eligibleAt = referral.eligible_at ? new Date(referral.eligible_at) : null;
+                
+                // Check if past hold period (30 days)
+                if (eligibleAt && now >= eligibleAt) {
+                  // Check for fraud flags
+                  const hasSeriousFraud = (referral.fraud_flags || []).some(f => 
+                    f.type === "same_payment_method" || f.type === "self_referral"
+                  );
+                  
+                  if (hasSeriousFraud) {
+                    // Reject the referral
+                    await supabaseAdmin
+                      .from("referrals")
+                      .update({
+                        status: "rejected",
+                        rejection_reason: "Fraud detected",
+                        updated_at: now.toISOString(),
+                      })
+                      .eq("id", referral.id);
+                    console.warn("[stripe-webhook] Referral rejected due to fraud flags", { referral_id: referral.id });
+                  } else {
+                    const maxMonths = settings?.max_months || 12;
+                    const monthlyPercent = settings?.monthly_percent || 10;
+                    const upfrontCents = settings?.upfront_amount_cents || 2500;
+                    const autoApproveCents = settings?.auto_approve_under_cents || 10000;
+                    
+                    // Mark as eligible if not already
+                    if (referral.status === "pending") {
+                      await supabaseAdmin
+                        .from("referrals")
+                        .update({
+                          status: "eligible",
+                          updated_at: now.toISOString(),
+                        })
+                        .eq("id", referral.id);
+                    }
+                    
+                    // Process upfront bonus (once)
+                    if (!referral.upfront_paid) {
+                      const upfrontStatus = upfrontCents <= autoApproveCents ? "approved" : "pending";
+                      await supabaseAdmin.from("referral_commissions").insert({
+                        referral_id: referral.id,
+                        referrer_id: referral.referrer_id,
+                        amount_cents: upfrontCents,
+                        commission_type: "upfront",
+                        month_number: null,
+                        status: upfrontStatus,
+                        stripe_invoice_id: invoice.id,
+                        stripe_subscription_id: invoice.subscription || null,
+                      });
+                      
+                      await supabaseAdmin
+                        .from("referrals")
+                        .update({
+                          upfront_paid: true,
+                          upfront_paid_at: now.toISOString(),
+                          total_commission_cents: (referral.total_commission_cents || 0) + upfrontCents,
+                          updated_at: now.toISOString(),
+                        })
+                        .eq("id", referral.id);
+                      
+                      console.info("[stripe-webhook] Referral upfront commission created", {
+                        referral_id: referral.id,
+                        amount_cents: upfrontCents,
+                        status: upfrontStatus,
+                      });
+                    }
+                    
+                    // Process monthly commission (up to 12 months)
+                    const monthsPaid = referral.months_paid || 0;
+                    if (monthsPaid < maxMonths) {
+                      const invoiceAmountCents = invoice.amount_paid || 0;
+                      const commissionCents = Math.floor(invoiceAmountCents * (monthlyPercent / 100));
+                      
+                      if (commissionCents > 0) {
+                        const monthlyStatus = commissionCents <= autoApproveCents ? "approved" : "pending";
+                        await supabaseAdmin.from("referral_commissions").insert({
+                          referral_id: referral.id,
+                          referrer_id: referral.referrer_id,
+                          amount_cents: commissionCents,
+                          commission_type: "monthly",
+                          month_number: monthsPaid + 1,
+                          status: monthlyStatus,
+                          stripe_invoice_id: invoice.id,
+                          stripe_subscription_id: invoice.subscription || null,
+                        });
+                        
+                        await supabaseAdmin
+                          .from("referrals")
+                          .update({
+                            months_paid: monthsPaid + 1,
+                            total_commission_cents: (referral.total_commission_cents || 0) + commissionCents,
+                            updated_at: now.toISOString(),
+                          })
+                          .eq("id", referral.id);
+                        
+                        console.info("[stripe-webhook] Referral monthly commission created", {
+                          referral_id: referral.id,
+                          month: monthsPaid + 1,
+                          amount_cents: commissionCents,
+                          status: monthlyStatus,
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (refErr) {
+              console.error("[stripe-webhook] Referral commission error:", refErr.message);
+            }
+          }
+        }
+
+        // REFERRAL SYSTEM: Handle refunds (clawback)
+        if (event.type === "charge.refunded") {
+          const charge = event.data.object;
+          const customerId = charge.customer;
+          const userId = customerId ? await lookupUserIdByCustomerId(customerId) : null;
+          
+          if (userId) {
+            try {
+              // Find referral for this user
+              const { data: referral } = await supabaseAdmin
+                .from("referrals")
+                .select("id, referrer_id, status")
+                .eq("referred_id", userId)
+                .maybeSingle();
+              
+              if (referral && referral.status !== "clawed_back") {
+                // Clawback all commissions
+                await supabaseAdmin
+                  .from("referral_commissions")
+                  .update({ status: "clawed_back" })
+                  .eq("referral_id", referral.id);
+                
+                await supabaseAdmin
+                  .from("referrals")
+                  .update({
+                    status: "clawed_back",
+                    rejection_reason: "Refund processed",
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("id", referral.id);
+                
+                console.warn("[stripe-webhook] Referral clawed back due to refund", {
+                  referral_id: referral.id,
+                  charge_id: charge.id,
+                });
+                
+                // Alert admin
+                await supabaseAdmin.from("alerts").insert({
+                  alert_type: "referral_clawback",
+                  severity: "warning",
+                  user_id: referral.referrer_id,
+                  message: "Referral commission clawed back due to refund",
+                  details: { referral_id: referral.id, charge_id: charge.id },
+                });
+              }
+            } catch (clawErr) {
+              console.error("[stripe-webhook] Clawback error:", clawErr.message);
+            }
+          }
+        }
+
+        // REFERRAL SYSTEM: Handle disputes/chargebacks (clawback)
+        if (event.type === "charge.dispute.created") {
+          const dispute = event.data.object;
+          const chargeId = dispute.charge;
+          
+          try {
+            // Get the charge to find the customer
+            const charge = await stripe.charges.retrieve(chargeId);
+            const customerId = charge?.customer;
+            const userId = customerId ? await lookupUserIdByCustomerId(customerId) : null;
+            
+            if (userId) {
+              const { data: referral } = await supabaseAdmin
+                .from("referrals")
+                .select("id, referrer_id, status")
+                .eq("referred_id", userId)
+                .maybeSingle();
+              
+              if (referral && referral.status !== "clawed_back") {
+                // Clawback all commissions
+                await supabaseAdmin
+                  .from("referral_commissions")
+                  .update({ status: "clawed_back" })
+                  .eq("referral_id", referral.id);
+                
+                await supabaseAdmin
+                  .from("referrals")
+                  .update({
+                    status: "clawed_back",
+                    rejection_reason: "Chargeback/dispute filed",
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("id", referral.id);
+                
+                console.warn("[stripe-webhook] Referral clawed back due to dispute", {
+                  referral_id: referral.id,
+                  dispute_id: dispute.id,
+                });
+                
+                // Alert admin
+                await supabaseAdmin.from("alerts").insert({
+                  alert_type: "referral_clawback",
+                  severity: "critical",
+                  user_id: referral.referrer_id,
+                  message: "Referral commission clawed back due to chargeback",
+                  details: { referral_id: referral.id, dispute_id: dispute.id },
+                });
+              }
+            }
+          } catch (disputeErr) {
+            console.error("[stripe-webhook] Dispute clawback error:", disputeErr.message);
           }
         }
 
@@ -1770,6 +2046,148 @@ const getDashboardStats = async (userId) => {
     call_volume: totalLeads || 0,
     pipeline_value: pipelineValue,
     avg_job_value: avgJobValue,
+  };
+};
+
+/**
+ * Enhanced dashboard stats with time breakdowns, rates, and trends
+ */
+const getEnhancedDashboardStats = async (userId) => {
+  const avgJobValue = 450;
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
+  
+  // Parallel queries for efficiency
+  const [
+    allLeadsResult,
+    todayLeadsResult,
+    weekLeadsResult,
+    bookedLeadsResult,
+    lastLeadResult,
+    avgDurationResult,
+    todayApptsResult,
+    weekApptsResult,
+    allApptsResult
+  ] = await Promise.all([
+    // All time leads count
+    supabaseAdmin
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId),
+    
+    // Today's leads
+    supabaseAdmin
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("created_at", todayStart),
+    
+    // This week's leads
+    supabaseAdmin
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("created_at", weekStart),
+    
+    // Booked leads (for booking rate)
+    supabaseAdmin
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .in("status", ["Booked", "booked", "confirmed"]),
+    
+    // Most recent lead for "last call"
+    supabaseAdmin
+      .from("leads")
+      .select("created_at, name, summary")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    
+    // Average call duration
+    supabaseAdmin
+      .from("leads")
+      .select("call_duration_seconds")
+      .eq("user_id", userId)
+      .not("call_duration_seconds", "is", null),
+    
+    // Today's appointments
+    supabaseAdmin
+      .from("appointments")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("start_time", todayStart),
+    
+    // This week's appointments
+    supabaseAdmin
+      .from("appointments")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("start_time", weekStart),
+    
+    // All appointments with job values
+    supabaseAdmin
+      .from("appointments")
+      .select("job_value")
+      .eq("user_id", userId)
+  ]);
+  
+  // Calculate stats
+  const callsAllTime = allLeadsResult.count || 0;
+  const callsToday = todayLeadsResult.count || 0;
+  const callsThisWeek = weekLeadsResult.count || 0;
+  const bookedCount = bookedLeadsResult.count || 0;
+  
+  // Booking rate
+  const bookingRatePercent = callsAllTime > 0 
+    ? Math.round((bookedCount / callsAllTime) * 100) 
+    : 0;
+  
+  // Average call duration
+  const durations = (avgDurationResult.data || [])
+    .map(r => r.call_duration_seconds)
+    .filter(d => d && d > 0);
+  const avgCallDurationSeconds = durations.length > 0
+    ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+    : 0;
+  
+  // Last call info
+  const lastLead = lastLeadResult.data;
+  const lastCallAt = lastLead?.created_at || null;
+  const lastCallName = lastLead?.name || null;
+  const lastCallSummary = lastLead?.summary || null;
+  
+  // Appointments
+  const appointmentsToday = todayApptsResult.count || 0;
+  const appointmentsThisWeek = weekApptsResult.count || 0;
+  const appointmentsAllTime = (allApptsResult.data || []).length;
+  
+  // Pipeline value
+  const jobValues = (allApptsResult.data || [])
+    .map(r => Number(r.job_value))
+    .filter(v => Number.isFinite(v) && v > 0);
+  const pipelineValue = jobValues.length > 0
+    ? jobValues.reduce((a, b) => a + b, 0)
+    : bookedCount * avgJobValue;
+  
+  return {
+    calls_today: callsToday,
+    calls_this_week: callsThisWeek,
+    calls_all_time: callsAllTime,
+    appointments_today: appointmentsToday,
+    appointments_this_week: appointmentsThisWeek,
+    appointments_all_time: appointmentsAllTime,
+    booking_rate_percent: bookingRatePercent,
+    avg_call_duration_seconds: avgCallDurationSeconds,
+    last_call_at: lastCallAt,
+    last_call_name: lastCallName,
+    last_call_summary: lastCallSummary,
+    pipeline_value: pipelineValue,
+    estimated_revenue: pipelineValue,
+    avg_job_value: avgJobValue,
+    booked_leads: bookedCount,
   };
 };
 
@@ -3062,11 +3480,30 @@ const retellWebhookHandler = async (req, res) => {
     if (eventType === "call_started" || eventType === "call_initiated") {
       const agentId = call.agent_id || payload.agent_id;
       const callId = call.call_id || payload.call_id || payload.id || null;
-      const { data: agentRow } = await supabaseAdmin
-        .from("agents")
-        .select("user_id")
-        .eq("agent_id", agentId)
-        .maybeSingle();
+      const toNumber = call.to_number || payload.to_number || null;
+      
+      // Normalize to_number for lookup
+      let normalizedToNumber = null;
+      if (toNumber) {
+        const digits = String(toNumber).replace(/\D/g, "");
+        normalizedToNumber = digits.length === 10
+          ? `+1${digits}`
+          : digits.length === 11 && digits.startsWith("1")
+            ? `+${digits}`
+            : String(toNumber).trim();
+      }
+
+      // PHONE NUMBER IS THE ONLY LOOKUP METHOD - NO AGENT_ID FALLBACK
+      let agentRow = null;
+      if (normalizedToNumber) {
+        const { data: phoneRow } = await supabaseAdmin
+          .from("agents")
+          .select("user_id")
+          .eq("phone_number", normalizedToNumber)
+          .maybeSingle();
+        if (phoneRow?.user_id) agentRow = phoneRow;
+      }
+
       if (agentRow?.user_id) {
         const { data: subscription } = await supabaseAdmin
           .from("subscriptions")
@@ -3148,6 +3585,33 @@ const retellWebhookHandler = async (req, res) => {
         call.retell_llm_dynamic_variables ||
         payload.retell_llm_dynamic_variables ||
         null;
+      
+      // POST-CALL ANALYSIS - Retell AI extracts structured data from transcript
+      const postCallAnalysis = 
+        call.call_analysis ||
+        payload.call_analysis ||
+        call.post_call_analysis ||
+        payload.post_call_analysis ||
+        {};
+      
+      // Extract specific fields from post-call analysis
+      const analysisData = {
+        customer_name: postCallAnalysis.customer_name || postCallAnalysis.caller_name || null,
+        customer_phone: postCallAnalysis.customer_phone || postCallAnalysis.phone_number || null,
+        service_address: postCallAnalysis.service_address || postCallAnalysis.address || null,
+        issue_type: postCallAnalysis.issue_type || postCallAnalysis.service_type || null,
+        issue_description: postCallAnalysis.issue_description || postCallAnalysis.problem_description || null,
+        appointment_booked: postCallAnalysis.appointment_booked ?? postCallAnalysis.booked ?? null,
+        call_outcome: postCallAnalysis.call_outcome || postCallAnalysis.outcome || null,
+        call_successful: postCallAnalysis.call_successful ?? null,
+        call_summary: postCallAnalysis.user_summary || postCallAnalysis.summary || postCallAnalysis.call_summary || null,
+      };
+      
+      console.log("📞 [call_ended] post-call analysis data:", {
+        hasAnalysis: Object.keys(postCallAnalysis).length > 0,
+        analysisData,
+        rawAnalysisKeys: Object.keys(postCallAnalysis),
+      });
       const agentId = call.agent_id || payload.agent_id;
       const callId = call.call_id || payload.call_id || payload.id || null;
       const durationSeconds =
@@ -3178,45 +3642,146 @@ const retellWebhookHandler = async (req, res) => {
         payload.cost_cents ||
         null;
 
+      // Extract phone numbers for lookup - to_number is our golden key for tracking
+      const toNumber = call.to_number || payload.to_number || null;
+      const fromNumber = call.from_number || payload.from_number || null;
+      
+      // Normalize to_number to E.164 for consistent DB lookup
+      let normalizedToNumber = null;
+      if (toNumber) {
+        const digits = String(toNumber).replace(/\D/g, "");
+        normalizedToNumber = digits.length === 10
+          ? `+1${digits}`
+          : digits.length === 11 && digits.startsWith("1")
+            ? `+${digits}`
+            : String(toNumber).trim();
+      }
+
       console.log("📞 [call_ended] parsed values:", {
         agentId,
         callId,
         durationSeconds,
         disposition,
         hasTranscript: transcript.length > 0,
+        toNumber: normalizedToNumber,
+        fromNumber,
       });
 
-      const { data: agentRow, error: agentError } = await supabaseAdmin
-        .from("agents")
-        .select("user_id")
-        .eq("agent_id", agentId)
-        .maybeSingle();
+      // PHONE NUMBER IS THE ONLY LOOKUP METHOD - NO AGENT_ID FALLBACK
+      // This prevents accidental mis-attribution if multiple numbers share an agent
+      let agentRow = null;
 
-      console.log("📞 [call_ended] agent lookup:", {
-        agentId,
-        found: !!agentRow,
-        user_id: agentRow?.user_id || null,
-        error: agentError?.message || null,
-      });
-
-      if (agentError || !agentRow) {
-        return res.status(404).json({ error: "Agent not found" });
+      if (normalizedToNumber) {
+        const { data: phoneRow } = await supabaseAdmin
+          .from("agents")
+          .select("user_id, agent_id, phone_number")
+          .eq("phone_number", normalizedToNumber)
+          .maybeSingle();
+        
+        if (phoneRow?.user_id) {
+          agentRow = phoneRow;
+        }
       }
 
-      const extracted = extractLead(transcript);
+      console.log("📞 [call_ended] agent lookup (phone_number ONLY):", {
+        toNumber: normalizedToNumber,
+        found: !!agentRow,
+        user_id: agentRow?.user_id || null,
+      });
+
+      // FAILSAFE: If we can't find the owner, DO NOT attribute to anyone
+      // This prevents accidentally charging the wrong user
+      if (!agentRow?.user_id) {
+        console.error("📞 [call_ended] FAILSAFE: Cannot determine call owner, skipping attribution", {
+          toNumber: normalizedToNumber,
+          agentId,
+          callId,
+        });
+        // Store in unknown_phone for manual review
+        await storeUnknownPhone({
+          phoneNumber: normalizedToNumber || agentId || "unknown",
+          eventType: "call_ended_unattributed",
+          rawPayload: payload,
+        });
+        // Return 200 so Retell doesn't retry, but we didn't process it
+        return res.json({ received: true, warning: "Could not attribute call to user" });
+      }
+
+      // Extract data with priority: post-call analysis > extracted vars > regex fallback
+      const regexExtracted = extractLead(transcript);
+      
+      // Determine best values (post-call AI analysis is most reliable)
+      const bestName = 
+        analysisData.customer_name || 
+        extractedVars?.customer_name || 
+        regexExtracted.name || 
+        null;
+      const bestPhone = 
+        analysisData.customer_phone || 
+        extractedVars?.customer_phone || 
+        regexExtracted.phone || 
+        fromNumber ||
+        null;
+      const bestSummary = 
+        analysisData.call_summary || 
+        analysisData.issue_description ||
+        regexExtracted.summary || 
+        null;
+      const bestSentiment = 
+        postCallAnalysis.user_sentiment || 
+        regexExtracted.sentiment || 
+        "neutral";
+      
+      // Determine call outcome status
+      let leadStatus = "New";
+      if (analysisData.appointment_booked === true) {
+        leadStatus = "Booked";
+      } else if (analysisData.call_outcome === "transferred") {
+        leadStatus = "Transferred";
+      } else if (analysisData.call_outcome === "callback") {
+        leadStatus = "Callback Requested";
+      } else if (analysisData.call_outcome === "declined" || analysisData.call_outcome === "not_interested") {
+        leadStatus = "Not Interested";
+      }
+      
+      console.log("📞 [call_ended] lead extraction results:", {
+        bestName,
+        bestPhone,
+        bestSummary: bestSummary?.substring(0, 50),
+        bestSentiment,
+        leadStatus,
+        sources: {
+          fromPostCallAnalysis: !!analysisData.customer_name,
+          fromExtractedVars: !!extractedVars?.customer_name,
+          fromRegex: !!regexExtracted.name,
+        },
+      });
+      
       const { error: leadError } = await supabaseAdmin.from("leads").insert({
         user_id: agentRow.user_id,
         owner_id: agentRow.user_id,
         agent_id: agentId,
-        name: extracted.name || extractedVars?.customer_name || null,
-        phone: extracted.phone || extractedVars?.customer_phone || null,
-        status: "New",
-        summary: extracted.summary,
+        name: bestName,
+        phone: bestPhone,
+        status: leadStatus,
+        summary: bestSummary,
         transcript,
-        sentiment: extracted.sentiment,
+        sentiment: bestSentiment,
         recording_url: recordingUrl,
         call_duration_seconds: durationSeconds || null,
-        metadata: extractedVars ? { extracted: extractedVars } : null,
+        // Post-call analysis fields (direct columns for easier querying)
+        service_address: analysisData.service_address || null,
+        issue_type: analysisData.issue_type || null,
+        call_outcome: analysisData.call_outcome || null,
+        appointment_booked: analysisData.appointment_booked === true,
+        // Full metadata for debugging/reference
+        metadata: {
+          post_call_analysis: Object.keys(postCallAnalysis).length > 0 ? postCallAnalysis : null,
+          extracted_vars: extractedVars || null,
+          regex_extracted: regexExtracted || null,
+          from_number: fromNumber || null,
+          to_number: normalizedToNumber || null,
+        },
       });
 
       if (leadError) {
@@ -3266,6 +3831,79 @@ const retellWebhookHandler = async (req, res) => {
           disposition,
         },
       });
+
+      // POST-CALL SMS FOLLOW-UP AUTOMATION
+      try {
+        // Check if post-call SMS is enabled for this agent
+        if (agentRow.post_call_sms_enabled && bestPhone) {
+          const delayMs = (agentRow.post_call_sms_delay_seconds || 60) * 1000;
+          
+          // Get user's profile for business name
+          const { data: userProfile } = await supabaseAdmin
+            .from("profiles")
+            .select("business_name")
+            .eq("user_id", agentRow.user_id)
+            .maybeSingle();
+          
+          const businessName = userProfile?.business_name || agentRow.business_name || "our team";
+          
+          // Replace template variables
+          let smsBody = agentRow.post_call_sms_template || "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.";
+          smsBody = smsBody.replace(/\{business\}/gi, businessName);
+          smsBody = smsBody.replace(/\{customer_name\}/gi, bestName || "");
+          
+          // Log the automation attempt
+          await supabaseAdmin.from("sms_automation_log").insert({
+            user_id: agentRow.user_id,
+            lead_id: null, // We don't have the lead ID yet
+            automation_type: "post_call",
+            to_number: bestPhone,
+            message_body: smsBody,
+            status: "pending",
+            metadata: { delay_ms: delayMs, call_id: callId },
+          });
+          
+          // Schedule the SMS with delay
+          setTimeout(async () => {
+            try {
+              await sendSmsInternal({
+                userId: agentRow.user_id,
+                agentId: agentRow.id,
+                to: bestPhone,
+                body: smsBody,
+                leadId: null,
+                source: "auto_post_call",
+              });
+              
+              // Update automation log
+              await supabaseAdmin
+                .from("sms_automation_log")
+                .update({ status: "sent", sent_at: new Date().toISOString() })
+                .eq("to_number", bestPhone)
+                .eq("automation_type", "post_call")
+                .eq("status", "pending")
+                .order("created_at", { ascending: false })
+                .limit(1);
+                
+              console.log("📱 [post_call_sms] Sent follow-up SMS to", bestPhone);
+            } catch (smsErr) {
+              console.error("📱 [post_call_sms] Failed to send:", smsErr.message);
+              await supabaseAdmin
+                .from("sms_automation_log")
+                .update({ status: "failed", error_message: smsErr.message })
+                .eq("to_number", bestPhone)
+                .eq("automation_type", "post_call")
+                .eq("status", "pending")
+                .order("created_at", { ascending: false })
+                .limit(1);
+            }
+          }, delayMs);
+          
+          console.log("📱 [post_call_sms] Scheduled follow-up SMS in", delayMs, "ms");
+        }
+      } catch (postCallSmsErr) {
+        console.error("📱 [post_call_sms] Error setting up post-call SMS:", postCallSmsErr.message);
+      }
 
       console.log("📞 [call_ended] checking durationSeconds:", { durationSeconds, willUpdateUsage: durationSeconds > 0 });
 
@@ -3992,26 +4630,1716 @@ app.get("/api/dashboard/stats", requireAuth, resolveEffectiveUser, async (req, r
   }
 });
 
+// Enhanced dashboard stats with time breakdowns and metrics
+app.get("/api/dashboard/stats-enhanced", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const stats = await getEnhancedDashboardStats(uid);
+    return res.json(stats);
+  } catch (err) {
+    console.error("[stats-enhanced] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Analytics endpoint with charts data
+app.get("/api/analytics", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const period = req.query.period || "7d";
+    
+    // Calculate date range based on period
+    const now = new Date();
+    let daysBack = 7;
+    if (period === "30d") daysBack = 30;
+    if (period === "90d") daysBack = 90;
+    
+    const startDate = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    
+    // Fetch all leads in the period
+    const { data: leads, error: leadsError } = await supabaseAdmin
+      .from("leads")
+      .select("id, created_at, status, sentiment, call_duration_seconds, call_outcome, appointment_booked")
+      .eq("user_id", uid)
+      .gte("created_at", startDate)
+      .order("created_at", { ascending: true });
+    
+    if (leadsError) throw leadsError;
+    
+    const allLeads = leads || [];
+    
+    // Calls per day
+    const callsByDay = {};
+    const bookingsByDay = {};
+    allLeads.forEach(lead => {
+      const day = lead.created_at.split("T")[0];
+      callsByDay[day] = (callsByDay[day] || 0) + 1;
+      if (lead.status?.toLowerCase() === "booked" || lead.appointment_booked) {
+        bookingsByDay[day] = (bookingsByDay[day] || 0) + 1;
+      }
+    });
+    
+    // Generate all days in range for complete chart
+    const calls_per_day = [];
+    const booking_rate_trend = [];
+    for (let i = daysBack - 1; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateStr = d.toISOString().split("T")[0];
+      const callCount = callsByDay[dateStr] || 0;
+      const bookedCount = bookingsByDay[dateStr] || 0;
+      calls_per_day.push({ date: dateStr, count: callCount });
+      booking_rate_trend.push({ 
+        date: dateStr, 
+        rate: callCount > 0 ? Math.round((bookedCount / callCount) * 100) : 0 
+      });
+    }
+    
+    // Peak hours (0-23)
+    const hourCounts = Array(24).fill(0);
+    allLeads.forEach(lead => {
+      const hour = new Date(lead.created_at).getHours();
+      hourCounts[hour]++;
+    });
+    const peak_hours = hourCounts.map((count, hour) => ({ hour, count }));
+    
+    // Sentiment breakdown
+    const sentiment_breakdown = { positive: 0, neutral: 0, negative: 0 };
+    allLeads.forEach(lead => {
+      const s = (lead.sentiment || "neutral").toLowerCase();
+      if (s === "positive") sentiment_breakdown.positive++;
+      else if (s === "negative") sentiment_breakdown.negative++;
+      else sentiment_breakdown.neutral++;
+    });
+    
+    // Outcome breakdown
+    const outcome_breakdown = { booked: 0, transferred: 0, missed: 0, callback: 0, declined: 0, other: 0 };
+    allLeads.forEach(lead => {
+      const outcome = (lead.call_outcome || lead.status || "other").toLowerCase();
+      if (outcome.includes("book") || outcome.includes("confirm")) outcome_breakdown.booked++;
+      else if (outcome.includes("transfer")) outcome_breakdown.transferred++;
+      else if (outcome.includes("miss") || outcome.includes("hangup")) outcome_breakdown.missed++;
+      else if (outcome.includes("callback")) outcome_breakdown.callback++;
+      else if (outcome.includes("decline") || outcome.includes("not interested")) outcome_breakdown.declined++;
+      else outcome_breakdown.other++;
+    });
+    
+    // Average duration trend (by week)
+    const durationsByWeek = {};
+    allLeads.forEach(lead => {
+      if (lead.call_duration_seconds && lead.call_duration_seconds > 0) {
+        const weekStart = new Date(lead.created_at);
+        weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+        const weekKey = weekStart.toISOString().split("T")[0];
+        if (!durationsByWeek[weekKey]) durationsByWeek[weekKey] = [];
+        durationsByWeek[weekKey].push(lead.call_duration_seconds);
+      }
+    });
+    const avg_duration_trend = Object.entries(durationsByWeek).map(([date, durations]) => ({
+      date,
+      avg_seconds: Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+    })).sort((a, b) => a.date.localeCompare(b.date));
+    
+    // Summary stats
+    const total_calls = allLeads.length;
+    const total_booked = outcome_breakdown.booked;
+    const overall_booking_rate = total_calls > 0 ? Math.round((total_booked / total_calls) * 100) : 0;
+    const avgDuration = allLeads
+      .filter(l => l.call_duration_seconds > 0)
+      .reduce((sum, l) => sum + l.call_duration_seconds, 0) / 
+      (allLeads.filter(l => l.call_duration_seconds > 0).length || 1);
+    
+    return res.json({
+      period,
+      calls_per_day,
+      booking_rate_trend,
+      peak_hours,
+      sentiment_breakdown,
+      outcome_breakdown,
+      avg_duration_trend,
+      summary: {
+        total_calls,
+        total_booked,
+        overall_booking_rate,
+        avg_duration_seconds: Math.round(avgDuration)
+      }
+    });
+  } catch (err) {
+    console.error("[analytics] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings endpoints - Get user business settings
+app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    
+    // Fetch profile and agent data with extended fields
+    const [profileResult, agentResult] = await Promise.all([
+      supabaseAdmin
+        .from("profiles")
+        .select("business_name, email, phone, industry, google_review_url, review_request_enabled, review_request_template")
+        .eq("user_id", uid)
+        .maybeSingle(),
+      supabaseAdmin
+        .from("agents")
+        .select("transfer_number, schedule_summary, standard_fee, emergency_fee, tone, phone_number, industry, post_call_sms_enabled, post_call_sms_template, post_call_sms_delay_seconds")
+        .eq("user_id", uid)
+        .maybeSingle()
+    ]);
+    
+    const profile = profileResult.data || {};
+    const agent = agentResult.data || {};
+    
+    return res.json({
+      business_name: profile.business_name || "",
+      email: profile.email || "",
+      phone: profile.phone || "",
+      industry: agent.industry || profile.industry || "hvac",
+      transfer_number: agent.transfer_number || "",
+      service_call_fee: agent.standard_fee || "",
+      emergency_fee: agent.emergency_fee || "",
+      schedule_summary: agent.schedule_summary || "",
+      agent_tone: agent.tone || "Calm & Professional",
+      phone_number: agent.phone_number || "",
+      notification_preferences: {
+        email_on_booking: true,
+        sms_on_booking: true,
+        daily_summary: false
+      },
+      // Post-call SMS settings
+      post_call_sms_enabled: agent.post_call_sms_enabled || false,
+      post_call_sms_template: agent.post_call_sms_template || "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.",
+      post_call_sms_delay_seconds: agent.post_call_sms_delay_seconds || 60,
+      // Review request settings
+      review_request_enabled: profile.review_request_enabled || false,
+      google_review_url: profile.google_review_url || "",
+      review_request_template: profile.review_request_template || "Thanks for choosing {business}! We hope you had a great experience. Please leave us a review: {review_link}",
+    });
+  } catch (err) {
+    console.error("[settings GET] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings endpoints - Update user business settings
+app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const {
+      business_name,
+      transfer_number,
+      service_call_fee,
+      emergency_fee,
+      schedule_summary,
+      agent_tone,
+      industry,
+      notification_preferences,
+      // SMS Automation settings
+      post_call_sms_enabled,
+      post_call_sms_template,
+      post_call_sms_delay_seconds,
+      // Review Request settings
+      review_request_enabled,
+      google_review_url,
+      review_request_template,
+    } = req.body;
+    
+    // Update profile if business_name or review settings provided
+    const profileUpdates = {};
+    if (business_name !== undefined) profileUpdates.business_name = business_name;
+    if (industry !== undefined) profileUpdates.industry = industry;
+    if (review_request_enabled !== undefined) profileUpdates.review_request_enabled = review_request_enabled;
+    if (google_review_url !== undefined) profileUpdates.google_review_url = google_review_url;
+    if (review_request_template !== undefined) profileUpdates.review_request_template = review_request_template;
+    
+    if (Object.keys(profileUpdates).length > 0) {
+      const { error: profileError } = await supabaseAdmin
+        .from("profiles")
+        .update(profileUpdates)
+        .eq("user_id", uid);
+      
+      if (profileError) {
+        console.error("[settings PUT] profile update error:", profileError.message);
+      }
+    }
+    
+    // Update agent settings (including SMS automation)
+    const agentUpdates = {};
+    if (transfer_number !== undefined) agentUpdates.transfer_number = transfer_number;
+    if (service_call_fee !== undefined) agentUpdates.standard_fee = service_call_fee;
+    if (emergency_fee !== undefined) agentUpdates.emergency_fee = emergency_fee;
+    if (schedule_summary !== undefined) agentUpdates.schedule_summary = schedule_summary;
+    if (agent_tone !== undefined) agentUpdates.tone = agent_tone;
+    if (industry !== undefined) agentUpdates.industry = industry;
+    // Post-call SMS automation fields
+    if (post_call_sms_enabled !== undefined) agentUpdates.post_call_sms_enabled = post_call_sms_enabled;
+    if (post_call_sms_template !== undefined) agentUpdates.post_call_sms_template = post_call_sms_template;
+    if (post_call_sms_delay_seconds !== undefined) agentUpdates.post_call_sms_delay_seconds = post_call_sms_delay_seconds;
+    
+    if (Object.keys(agentUpdates).length > 0) {
+      const { error: agentError } = await supabaseAdmin
+        .from("agents")
+        .update(agentUpdates)
+        .eq("user_id", uid);
+      
+      if (agentError) {
+        console.error("[settings PUT] agent update error:", agentError.message);
+      }
+    }
+    
+    // Return updated settings
+    return res.json({ ok: true, message: "Settings updated successfully" });
+  } catch (err) {
+    console.error("[settings PUT] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// REFERRAL SYSTEM ENDPOINTS
+// ============================================
+
+// Helper: Generate unique 8-char referral code
+const generateReferralCode = () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No I, O, 0, 1 to avoid confusion
+  let result = "";
+  for (let i = 0; i < 8; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+// Helper: Get or create referral code for user
+const getOrCreateReferralCode = async (userId) => {
+  // Check if user already has a code
+  const { data: existing } = await supabaseAdmin
+    .from("referral_codes")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  
+  if (existing) {
+    return existing;
+  }
+  
+  // Generate unique code (retry if collision)
+  let code;
+  let attempts = 0;
+  while (attempts < 10) {
+    code = generateReferralCode();
+    const { data: collision } = await supabaseAdmin
+      .from("referral_codes")
+      .select("id")
+      .eq("code", code)
+      .maybeSingle();
+    
+    if (!collision) break;
+    attempts++;
+  }
+  
+  if (attempts >= 10) {
+    throw new Error("Failed to generate unique referral code");
+  }
+  
+  // Create the code
+  const { data: newCode, error } = await supabaseAdmin
+    .from("referral_codes")
+    .insert({ user_id: userId, code, is_active: true })
+    .select()
+    .single();
+  
+  if (error) throw error;
+  return newCode;
+};
+
+// GET /referral/my-code - Get or create user's referral code
+app.get("/referral/my-code", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const referralCode = await getOrCreateReferralCode(userId);
+    
+    // Get user's business name for display
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("business_name")
+      .eq("user_id", userId)
+      .maybeSingle();
+    
+    const baseUrl = process.env.FRONTEND_URL || "https://app.kryonextech.com";
+    const referralLink = `${baseUrl}/login?ref=${referralCode.code}`;
+    
+    return res.json({
+      code: referralCode.code,
+      link: referralLink,
+      is_active: referralCode.is_active,
+      created_at: referralCode.created_at,
+      business_name: profile?.business_name || null,
+    });
+  } catch (err) {
+    console.error("[referral/my-code] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /referral/stats - Get user's referral statistics
+app.get("/referral/stats", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get all referrals made by this user
+    const { data: referrals, error: referralsError } = await supabaseAdmin
+      .from("referrals")
+      .select("id, status, total_commission_cents, upfront_paid, created_at")
+      .eq("referrer_id", userId);
+    
+    if (referralsError) throw referralsError;
+    
+    const allReferrals = referrals || [];
+    
+    // Calculate stats
+    const totalReferrals = allReferrals.length;
+    const activeReferrals = allReferrals.filter(r => 
+      r.status === "eligible" || r.status === "paid"
+    ).length;
+    const pendingReferrals = allReferrals.filter(r => r.status === "pending").length;
+    const rejectedReferrals = allReferrals.filter(r => 
+      r.status === "rejected" || r.status === "clawed_back"
+    ).length;
+    
+    // Get commissions
+    const { data: commissions, error: commissionsError } = await supabaseAdmin
+      .from("referral_commissions")
+      .select("amount_cents, status")
+      .eq("referrer_id", userId);
+    
+    if (commissionsError) throw commissionsError;
+    
+    const allCommissions = commissions || [];
+    
+    const totalEarnedCents = allCommissions
+      .filter(c => c.status === "paid" || c.status === "approved")
+      .reduce((sum, c) => sum + (c.amount_cents || 0), 0);
+    
+    const pendingEarningsCents = allCommissions
+      .filter(c => c.status === "pending")
+      .reduce((sum, c) => sum + (c.amount_cents || 0), 0);
+    
+    const availablePayoutCents = allCommissions
+      .filter(c => c.status === "approved")
+      .reduce((sum, c) => sum + (c.amount_cents || 0), 0);
+    
+    // Get settings for min payout
+    const { data: settings } = await supabaseAdmin
+      .from("referral_settings")
+      .select("min_payout_cents")
+      .eq("id", 1)
+      .maybeSingle();
+    
+    const minPayoutCents = settings?.min_payout_cents || 5000;
+    const canRequestPayout = availablePayoutCents >= minPayoutCents;
+    
+    return res.json({
+      total_referrals: totalReferrals,
+      active_referrals: activeReferrals,
+      pending_referrals: pendingReferrals,
+      rejected_referrals: rejectedReferrals,
+      total_earned_cents: totalEarnedCents,
+      pending_earnings_cents: pendingEarningsCents,
+      available_payout_cents: availablePayoutCents,
+      min_payout_cents: minPayoutCents,
+      can_request_payout: canRequestPayout,
+    });
+  } catch (err) {
+    console.error("[referral/stats] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /referral/history - Get detailed referral history
+app.get("/referral/history", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get all referrals with referred user info (masked email)
+    const { data: referrals, error } = await supabaseAdmin
+      .from("referrals")
+      .select(`
+        id, 
+        referral_code, 
+        status, 
+        signup_at, 
+        first_payment_at,
+        eligible_at,
+        upfront_paid,
+        total_commission_cents,
+        months_paid,
+        rejection_reason,
+        fraud_flags,
+        referred_id
+      `)
+      .eq("referrer_id", userId)
+      .order("created_at", { ascending: false });
+    
+    if (error) throw error;
+    
+    // Get referred user emails (masked)
+    const referredIds = (referrals || []).map(r => r.referred_id).filter(Boolean);
+    let emailMap = {};
+    
+    if (referredIds.length > 0) {
+      const { data: users } = await supabaseAdmin.auth.admin.listUsers();
+      if (users?.users) {
+        users.users.forEach(u => {
+          if (referredIds.includes(u.id)) {
+            // Mask email: j***@example.com
+            const email = u.email || "";
+            const [local, domain] = email.split("@");
+            const masked = local ? `${local[0]}***@${domain || ""}` : "***";
+            emailMap[u.id] = masked;
+          }
+        });
+      }
+    }
+    
+    // Format response
+    const history = (referrals || []).map(r => ({
+      id: r.id,
+      referred_email: emailMap[r.referred_id] || "Unknown",
+      status: r.status,
+      signup_date: r.signup_at,
+      first_payment_date: r.first_payment_at,
+      eligible_date: r.eligible_at,
+      upfront_paid: r.upfront_paid,
+      total_earned_cents: r.total_commission_cents || 0,
+      months_paid: r.months_paid || 0,
+      rejection_reason: r.rejection_reason,
+      has_fraud_flags: (r.fraud_flags || []).length > 0,
+    }));
+    
+    return res.json({ referrals: history });
+  } catch (err) {
+    console.error("[referral/history] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /referral/request-payout - Request payout (if eligible balance >= min)
+app.post("/referral/request-payout", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get settings
+    const { data: settings } = await supabaseAdmin
+      .from("referral_settings")
+      .select("min_payout_cents")
+      .eq("id", 1)
+      .maybeSingle();
+    
+    const minPayoutCents = settings?.min_payout_cents || 5000;
+    
+    // Get available balance (approved commissions not yet paid)
+    const { data: commissions } = await supabaseAdmin
+      .from("referral_commissions")
+      .select("id, amount_cents")
+      .eq("referrer_id", userId)
+      .eq("status", "approved");
+    
+    const availableCents = (commissions || []).reduce((sum, c) => sum + (c.amount_cents || 0), 0);
+    
+    if (availableCents < minPayoutCents) {
+      return res.status(400).json({ 
+        error: `Minimum payout is $${(minPayoutCents / 100).toFixed(2)}. You have $${(availableCents / 100).toFixed(2)} available.`
+      });
+    }
+    
+    // Mark commissions as "requested" (admin will process manually for now)
+    // In future, could integrate with Stripe Connect for automatic payouts
+    const commissionIds = (commissions || []).map(c => c.id);
+    
+    // Create an alert for admin
+    await supabaseAdmin.from("alerts").insert({
+      alert_type: "payout_request",
+      severity: "info",
+      user_id: userId,
+      message: `Payout requested: $${(availableCents / 100).toFixed(2)}`,
+      details: { commission_ids: commissionIds, amount_cents: availableCents },
+    });
+    
+    return res.json({ 
+      ok: true, 
+      message: `Payout request submitted for $${(availableCents / 100).toFixed(2)}. Admin will process within 3-5 business days.`,
+      amount_cents: availableCents,
+    });
+  } catch (err) {
+    console.error("[referral/request-payout] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper: Process referral on signup (called from signup flow)
+const processReferralSignup = async ({ referredUserId, referralCode, signupIp }) => {
+  if (!referralCode) return null;
+  
+  // Find the referral code
+  const { data: codeData } = await supabaseAdmin
+    .from("referral_codes")
+    .select("user_id, code, is_active")
+    .eq("code", referralCode.toUpperCase())
+    .maybeSingle();
+  
+  if (!codeData || !codeData.is_active) {
+    console.log("[referral] Invalid or inactive code:", referralCode);
+    return null;
+  }
+  
+  const referrerId = codeData.user_id;
+  
+  // Fraud check: Can't refer yourself
+  if (referrerId === referredUserId) {
+    console.log("[referral] Self-referral blocked");
+    return { blocked: true, reason: "self_referral" };
+  }
+  
+  // Get referrer's email for domain check
+  const { data: referrerAuth } = await supabaseAdmin.auth.admin.getUserById(referrerId);
+  const { data: referredAuth } = await supabaseAdmin.auth.admin.getUserById(referredUserId);
+  
+  const referrerEmail = referrerAuth?.user?.email || "";
+  const referredEmail = referredAuth?.user?.email || "";
+  
+  // Fraud check: Same email domain (might be same company)
+  const referrerDomain = referrerEmail.split("@")[1]?.toLowerCase();
+  const referredDomain = referredEmail.split("@")[1]?.toLowerCase();
+  
+  const fraudFlags = [];
+  if (referrerDomain && referredDomain && referrerDomain === referredDomain) {
+    // Don't block common domains like gmail, yahoo, etc.
+    const commonDomains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"];
+    if (!commonDomains.includes(referrerDomain)) {
+      fraudFlags.push({ type: "same_domain", domain: referrerDomain });
+    }
+  }
+  
+  // Store the referral (pending until payment)
+  const { data: referral, error } = await supabaseAdmin
+    .from("referrals")
+    .insert({
+      referrer_id: referrerId,
+      referred_id: referredUserId,
+      referral_code: referralCode.toUpperCase(),
+      status: "pending",
+      signup_ip: signupIp,
+      signup_at: new Date().toISOString(),
+      fraud_flags: fraudFlags,
+    })
+    .select()
+    .single();
+  
+  if (error) {
+    console.error("[referral] Failed to create referral:", error.message);
+    return null;
+  }
+  
+  // Update referred user's profile
+  await supabaseAdmin
+    .from("profiles")
+    .update({
+      referred_by_code: referralCode.toUpperCase(),
+      referred_by_user_id: referrerId,
+      signup_ip: signupIp,
+    })
+    .eq("user_id", referredUserId);
+  
+  console.log("[referral] Created referral:", { referral_id: referral.id, referrer_id: referrerId, referred_id: referredUserId });
+  return referral;
+};
+
+// Endpoint to record referral from signup (called by frontend)
+app.post("/referral/record-signup", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { referral_code } = req.body;
+    const signupIp = req.headers["x-forwarded-for"]?.split(",")[0] || req.ip || null;
+    
+    if (!referral_code) {
+      return res.json({ ok: true, message: "No referral code provided" });
+    }
+    
+    // Check if user already has a referral recorded
+    const { data: existingReferral } = await supabaseAdmin
+      .from("referrals")
+      .select("id")
+      .eq("referred_id", userId)
+      .maybeSingle();
+    
+    if (existingReferral) {
+      return res.json({ ok: true, message: "Referral already recorded" });
+    }
+    
+    const result = await processReferralSignup({
+      referredUserId: userId,
+      referralCode: referral_code,
+      signupIp,
+    });
+    
+    if (result?.blocked) {
+      return res.json({ ok: false, message: "Invalid referral" });
+    }
+    
+    return res.json({ ok: true, message: "Referral recorded successfully" });
+  } catch (err) {
+    console.error("[referral/record-signup] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// END REFERRAL SYSTEM ENDPOINTS
+// ============================================
+
+// ============================================
+// ADMIN REFERRAL MANAGEMENT ENDPOINTS
+// ============================================
+
+// GET /admin/referrals - List all referrals with filters
+app.get("/admin/referrals", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 50 } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+    
+    let query = supabaseAdmin
+      .from("referrals")
+      .select(`
+        *,
+        referrer:referrer_id(id),
+        referred:referred_id(id)
+      `, { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + Number(limit) - 1);
+    
+    if (status && status !== "all") {
+      query = query.eq("status", status);
+    }
+    
+    const { data: referrals, count, error } = await query;
+    if (error) throw error;
+    
+    // Get user emails
+    const referrerIds = [...new Set((referrals || []).map(r => r.referrer_id).filter(Boolean))];
+    const referredIds = [...new Set((referrals || []).map(r => r.referred_id).filter(Boolean))];
+    const allIds = [...new Set([...referrerIds, ...referredIds])];
+    
+    let emailMap = {};
+    if (allIds.length > 0) {
+      const { data: users } = await supabaseAdmin.auth.admin.listUsers();
+      if (users?.users) {
+        users.users.forEach(u => {
+          if (allIds.includes(u.id)) {
+            emailMap[u.id] = u.email || "Unknown";
+          }
+        });
+      }
+    }
+    
+    // Format response with emails
+    const formatted = (referrals || []).map(r => ({
+      ...r,
+      referrer_email: emailMap[r.referrer_id] || "Unknown",
+      referred_email: emailMap[r.referred_id] || "Unknown",
+    }));
+    
+    // Get summary stats
+    const { data: allReferrals } = await supabaseAdmin
+      .from("referrals")
+      .select("status");
+    
+    const summary = {
+      total: allReferrals?.length || 0,
+      pending: allReferrals?.filter(r => r.status === "pending").length || 0,
+      eligible: allReferrals?.filter(r => r.status === "eligible").length || 0,
+      paid: allReferrals?.filter(r => r.status === "paid").length || 0,
+      rejected: allReferrals?.filter(r => r.status === "rejected").length || 0,
+      clawed_back: allReferrals?.filter(r => r.status === "clawed_back").length || 0,
+    };
+    
+    return res.json({
+      referrals: formatted,
+      summary,
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        total: count || 0,
+        pages: Math.ceil((count || 0) / Number(limit)),
+      },
+    });
+  } catch (err) {
+    console.error("[admin/referrals] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/referrals/:id - Get single referral with full details
+app.get("/admin/referrals/:id", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const { data: referral, error } = await supabaseAdmin
+      .from("referrals")
+      .select("*")
+      .eq("id", id)
+      .single();
+    
+    if (error || !referral) {
+      return res.status(404).json({ error: "Referral not found" });
+    }
+    
+    // Get commissions for this referral
+    const { data: commissions } = await supabaseAdmin
+      .from("referral_commissions")
+      .select("*")
+      .eq("referral_id", id)
+      .order("created_at", { ascending: false });
+    
+    // Get user emails
+    const { data: referrerAuth } = await supabaseAdmin.auth.admin.getUserById(referral.referrer_id);
+    const { data: referredAuth } = await supabaseAdmin.auth.admin.getUserById(referral.referred_id);
+    
+    return res.json({
+      ...referral,
+      referrer_email: referrerAuth?.user?.email || "Unknown",
+      referred_email: referredAuth?.user?.email || "Unknown",
+      commissions: commissions || [],
+    });
+  } catch (err) {
+    console.error("[admin/referrals/:id] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/referrals/:id/approve - Approve pending commissions
+app.post("/admin/referrals/:id/approve", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Update all pending commissions for this referral to approved
+    const { data: updated, error } = await supabaseAdmin
+      .from("referral_commissions")
+      .update({ 
+        status: "approved",
+        approved_at: new Date().toISOString(),
+      })
+      .eq("referral_id", id)
+      .eq("status", "pending")
+      .select();
+    
+    if (error) throw error;
+    
+    // Update referral status if needed
+    await supabaseAdmin
+      .from("referrals")
+      .update({ 
+        status: "eligible",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("status", "pending");
+    
+    // Log action
+    await auditLog({
+      userId: req.user.id,
+      action: "referral_commissions_approved",
+      entity: "referral",
+      entityId: id,
+      req,
+      metadata: { commissions_approved: updated?.length || 0 },
+    });
+    
+    return res.json({ 
+      ok: true, 
+      message: `Approved ${updated?.length || 0} commission(s)`,
+      commissions: updated,
+    });
+  } catch (err) {
+    console.error("[admin/referrals/:id/approve] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/referrals/:id/reject - Reject a referral
+app.post("/admin/referrals/:id/reject", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    // Update referral status to rejected
+    const { error: referralError } = await supabaseAdmin
+      .from("referrals")
+      .update({ 
+        status: "rejected",
+        rejection_reason: reason || "Admin rejected",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+    
+    if (referralError) throw referralError;
+    
+    // Cancel all pending commissions
+    await supabaseAdmin
+      .from("referral_commissions")
+      .update({ status: "clawed_back" })
+      .eq("referral_id", id)
+      .in("status", ["pending", "approved"]);
+    
+    // Log action
+    await auditLog({
+      userId: req.user.id,
+      action: "referral_rejected",
+      entity: "referral",
+      entityId: id,
+      req,
+      metadata: { reason: reason || "Admin rejected" },
+    });
+    
+    return res.json({ 
+      ok: true, 
+      message: "Referral rejected successfully",
+    });
+  } catch (err) {
+    console.error("[admin/referrals/:id/reject] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/referrals/:id/mark-paid - Mark commissions as paid
+app.post("/admin/referrals/:id/mark-paid", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Update approved commissions to paid
+    const { data: updated, error } = await supabaseAdmin
+      .from("referral_commissions")
+      .update({ 
+        status: "paid",
+        paid_at: new Date().toISOString(),
+      })
+      .eq("referral_id", id)
+      .eq("status", "approved")
+      .select();
+    
+    if (error) throw error;
+    
+    // Update referral status
+    await supabaseAdmin
+      .from("referrals")
+      .update({ 
+        status: "paid",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+    
+    // Log action
+    await auditLog({
+      userId: req.user.id,
+      action: "referral_commissions_paid",
+      entity: "referral",
+      entityId: id,
+      req,
+      metadata: { commissions_paid: updated?.length || 0 },
+    });
+    
+    return res.json({ 
+      ok: true, 
+      message: `Marked ${updated?.length || 0} commission(s) as paid`,
+    });
+  } catch (err) {
+    console.error("[admin/referrals/:id/mark-paid] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/referral-settings - Get referral program settings
+app.get("/admin/referral-settings", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { data: settings, error } = await supabaseAdmin
+      .from("referral_settings")
+      .select("*")
+      .eq("id", 1)
+      .single();
+    
+    if (error && error.code !== "PGRST116") throw error;
+    
+    // Return defaults if no settings exist
+    return res.json(settings || {
+      id: 1,
+      upfront_amount_cents: 2500,
+      monthly_percent: 10,
+      max_months: 12,
+      hold_days: 30,
+      min_payout_cents: 5000,
+      auto_approve_under_cents: 10000,
+      is_active: true,
+    });
+  } catch (err) {
+    console.error("[admin/referral-settings] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /admin/referral-settings - Update referral program settings
+app.put("/admin/referral-settings", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const {
+      upfront_amount_cents,
+      monthly_percent,
+      max_months,
+      hold_days,
+      min_payout_cents,
+      auto_approve_under_cents,
+      is_active,
+    } = req.body;
+    
+    const updates = { updated_at: new Date().toISOString() };
+    if (upfront_amount_cents !== undefined) updates.upfront_amount_cents = upfront_amount_cents;
+    if (monthly_percent !== undefined) updates.monthly_percent = monthly_percent;
+    if (max_months !== undefined) updates.max_months = max_months;
+    if (hold_days !== undefined) updates.hold_days = hold_days;
+    if (min_payout_cents !== undefined) updates.min_payout_cents = min_payout_cents;
+    if (auto_approve_under_cents !== undefined) updates.auto_approve_under_cents = auto_approve_under_cents;
+    if (is_active !== undefined) updates.is_active = is_active;
+    
+    const { data: settings, error } = await supabaseAdmin
+      .from("referral_settings")
+      .upsert({ id: 1, ...updates })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Log action
+    await auditLog({
+      userId: req.user.id,
+      action: "referral_settings_updated",
+      entity: "referral_settings",
+      entityId: "1",
+      req,
+      metadata: updates,
+    });
+    
+    return res.json({ ok: true, settings });
+  } catch (err) {
+    console.error("[admin/referral-settings] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/referral-payout-requests - Get pending payout requests
+app.get("/admin/referral-payout-requests", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { data: alerts, error } = await supabaseAdmin
+      .from("alerts")
+      .select("*")
+      .eq("alert_type", "payout_request")
+      .order("created_at", { ascending: false });
+    
+    if (error) throw error;
+    
+    // Get user emails
+    const userIds = [...new Set((alerts || []).map(a => a.user_id).filter(Boolean))];
+    let emailMap = {};
+    
+    if (userIds.length > 0) {
+      const { data: users } = await supabaseAdmin.auth.admin.listUsers();
+      if (users?.users) {
+        users.users.forEach(u => {
+          if (userIds.includes(u.id)) {
+            emailMap[u.id] = u.email || "Unknown";
+          }
+        });
+      }
+    }
+    
+    const formatted = (alerts || []).map(a => ({
+      ...a,
+      user_email: emailMap[a.user_id] || "Unknown",
+    }));
+    
+    return res.json({ payout_requests: formatted });
+  } catch (err) {
+    console.error("[admin/referral-payout-requests] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// END ADMIN REFERRAL MANAGEMENT
+// ============================================
+
+// ============================================
+// CUSTOMER CRM ENDPOINTS
+// ============================================
+
+// GET /api/customers - Get customers grouped by phone number
+app.get("/api/customers", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { search, sort = "last_call", order = "desc", limit = 50, offset = 0 } = req.query;
+    
+    // Get all leads for this user
+    let query = supabaseAdmin
+      .from("leads")
+      .select("id, phone, name, status, sentiment, created_at, call_duration_seconds, appointment_booked, call_outcome, summary")
+      .eq("user_id", uid)
+      .not("phone", "is", null);
+    
+    if (search) {
+      query = query.or(`phone.ilike.%${search}%,name.ilike.%${search}%`);
+    }
+    
+    const { data: leads, error } = await query;
+    if (error) throw error;
+    
+    // Group by phone number
+    const customerMap = {};
+    (leads || []).forEach(lead => {
+      const phone = lead.phone;
+      if (!phone) return;
+      
+      if (!customerMap[phone]) {
+        customerMap[phone] = {
+          phone,
+          name: lead.name || "Unknown",
+          total_calls: 0,
+          total_duration_seconds: 0,
+          appointments_booked: 0,
+          last_call_at: null,
+          last_status: null,
+          last_sentiment: null,
+          calls: [],
+        };
+      }
+      
+      const customer = customerMap[phone];
+      customer.total_calls++;
+      customer.total_duration_seconds += lead.call_duration_seconds || 0;
+      if (lead.appointment_booked) customer.appointments_booked++;
+      
+      // Track latest call
+      const callDate = new Date(lead.created_at);
+      if (!customer.last_call_at || callDate > new Date(customer.last_call_at)) {
+        customer.last_call_at = lead.created_at;
+        customer.last_status = lead.status;
+        customer.last_sentiment = lead.sentiment;
+        customer.name = lead.name || customer.name;
+      }
+      
+      customer.calls.push({
+        id: lead.id,
+        date: lead.created_at,
+        duration: lead.call_duration_seconds,
+        status: lead.status,
+        sentiment: lead.sentiment,
+        outcome: lead.call_outcome,
+        summary: lead.summary,
+      });
+    });
+    
+    // Convert to array and sort
+    let customers = Object.values(customerMap);
+    
+    if (sort === "last_call") {
+      customers.sort((a, b) => {
+        const dateA = a.last_call_at ? new Date(a.last_call_at) : new Date(0);
+        const dateB = b.last_call_at ? new Date(b.last_call_at) : new Date(0);
+        return order === "desc" ? dateB - dateA : dateA - dateB;
+      });
+    } else if (sort === "total_calls") {
+      customers.sort((a, b) => order === "desc" ? b.total_calls - a.total_calls : a.total_calls - b.total_calls);
+    } else if (sort === "name") {
+      customers.sort((a, b) => order === "desc" ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name));
+    }
+    
+    // Apply pagination
+    const total = customers.length;
+    customers = customers.slice(Number(offset), Number(offset) + Number(limit));
+    
+    return res.json({
+      customers,
+      pagination: {
+        total,
+        limit: Number(limit),
+        offset: Number(offset),
+      },
+    });
+  } catch (err) {
+    console.error("[customers] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/customers/:phone/history - Get full history for a customer
+app.get("/api/customers/:phone/history", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const phone = decodeURIComponent(req.params.phone);
+    
+    // Get all leads for this phone number
+    const { data: leads, error: leadsError } = await supabaseAdmin
+      .from("leads")
+      .select("*")
+      .eq("user_id", uid)
+      .eq("phone", phone)
+      .order("created_at", { ascending: false });
+    
+    if (leadsError) throw leadsError;
+    
+    // Get all appointments for this phone number
+    const { data: appointments, error: apptError } = await supabaseAdmin
+      .from("appointments")
+      .select("*")
+      .eq("user_id", uid)
+      .eq("customer_phone", phone)
+      .order("start_time", { ascending: false });
+    
+    // Get all messages for this phone number
+    const { data: messages, error: msgError } = await supabaseAdmin
+      .from("messages")
+      .select("*")
+      .eq("user_id", uid)
+      .or(`to_number.eq.${phone},from_number.eq.${phone}`)
+      .order("timestamp", { ascending: false })
+      .limit(50);
+    
+    // Build timeline
+    const timeline = [];
+    
+    // Add calls to timeline
+    (leads || []).forEach(lead => {
+      timeline.push({
+        type: "call",
+        id: lead.id,
+        date: lead.created_at,
+        data: {
+          duration: lead.call_duration_seconds,
+          status: lead.status,
+          sentiment: lead.sentiment,
+          outcome: lead.call_outcome,
+          summary: lead.summary,
+          transcript: lead.transcript,
+          recording_url: lead.recording_url,
+        },
+      });
+    });
+    
+    // Add appointments to timeline
+    (appointments || []).forEach(appt => {
+      timeline.push({
+        type: "appointment",
+        id: appt.id,
+        date: appt.start_time,
+        data: {
+          status: appt.status,
+          location: appt.location,
+          notes: appt.notes,
+          duration_minutes: appt.duration_minutes,
+        },
+      });
+    });
+    
+    // Add messages to timeline
+    (messages || []).forEach(msg => {
+      timeline.push({
+        type: "message",
+        id: msg.id,
+        date: msg.timestamp,
+        data: {
+          direction: msg.direction,
+          body: msg.body,
+        },
+      });
+    });
+    
+    // Sort timeline by date (newest first)
+    timeline.sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    // Get customer summary
+    const customer = {
+      phone,
+      name: leads?.[0]?.name || "Unknown",
+      total_calls: leads?.length || 0,
+      total_appointments: appointments?.length || 0,
+      total_messages: messages?.length || 0,
+      first_contact: leads?.length > 0 ? leads[leads.length - 1].created_at : null,
+      last_contact: leads?.[0]?.created_at || null,
+    };
+    
+    return res.json({
+      customer,
+      timeline,
+      leads: leads || [],
+      appointments: appointments || [],
+      messages: messages || [],
+    });
+  } catch (err) {
+    console.error("[customers/:phone/history] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// END CUSTOMER CRM ENDPOINTS
+// ============================================
+
+// ============================================
+// WEBHOOK (ZAPIER) INTEGRATION ENDPOINTS
+// ============================================
+
+// Helper: Send outbound webhook
+const sendOutboundWebhook = async (userId, eventType, payload) => {
+  try {
+    // Get active webhooks for this user that listen to this event
+    const { data: webhooks, error } = await supabaseAdmin
+      .from("webhook_configs")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .contains("events", [eventType]);
+    
+    if (error || !webhooks || webhooks.length === 0) {
+      return { sent: 0, webhooks: [] };
+    }
+    
+    const results = [];
+    
+    for (const webhook of webhooks) {
+      try {
+        // Build headers
+        const headers = {
+          "Content-Type": "application/json",
+          "X-Kryonex-Event": eventType,
+          "X-Kryonex-Webhook-Id": webhook.id,
+          ...(webhook.headers || {}),
+        };
+        
+        // Add HMAC signature if secret is set
+        if (webhook.secret) {
+          const crypto = require("crypto");
+          const signature = crypto
+            .createHmac("sha256", webhook.secret)
+            .update(JSON.stringify(payload))
+            .digest("hex");
+          headers["X-Kryonex-Signature"] = signature;
+        }
+        
+        // Send the webhook
+        const response = await fetch(webhook.url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            event: eventType,
+            timestamp: new Date().toISOString(),
+            data: payload,
+          }),
+          timeout: 10000,
+        });
+        
+        // Log the delivery
+        await supabaseAdmin.from("webhook_deliveries").insert({
+          webhook_id: webhook.id,
+          user_id: userId,
+          event_type: eventType,
+          payload,
+          status_code: response.status,
+          response_body: await response.text().catch(() => null),
+          delivered_at: new Date().toISOString(),
+        });
+        
+        results.push({ webhook_id: webhook.id, success: response.ok, status: response.status });
+        console.log(`🔗 [webhook] Delivered ${eventType} to ${webhook.name}:`, response.status);
+      } catch (webhookErr) {
+        // Log the failed delivery
+        await supabaseAdmin.from("webhook_deliveries").insert({
+          webhook_id: webhook.id,
+          user_id: userId,
+          event_type: eventType,
+          payload,
+          error_message: webhookErr.message,
+        });
+        results.push({ webhook_id: webhook.id, success: false, error: webhookErr.message });
+        console.error(`🔗 [webhook] Failed to deliver ${eventType} to ${webhook.name}:`, webhookErr.message);
+      }
+    }
+    
+    return { sent: results.filter(r => r.success).length, webhooks: results };
+  } catch (err) {
+    console.error("[sendOutboundWebhook] error:", err.message);
+    return { sent: 0, error: err.message };
+  }
+};
+
+// GET /api/webhooks - List user's webhooks
+app.get("/api/webhooks", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    
+    const { data: webhooks, error } = await supabaseAdmin
+      .from("webhook_configs")
+      .select("*")
+      .eq("user_id", uid)
+      .order("created_at", { ascending: false });
+    
+    if (error) throw error;
+    
+    // Get delivery stats for each webhook
+    const webhooksWithStats = await Promise.all((webhooks || []).map(async (webhook) => {
+      const { count: totalDeliveries } = await supabaseAdmin
+        .from("webhook_deliveries")
+        .select("id", { count: "exact", head: true })
+        .eq("webhook_id", webhook.id);
+      
+      const { count: successfulDeliveries } = await supabaseAdmin
+        .from("webhook_deliveries")
+        .select("id", { count: "exact", head: true })
+        .eq("webhook_id", webhook.id)
+        .gte("status_code", 200)
+        .lt("status_code", 300);
+      
+      return {
+        ...webhook,
+        secret: webhook.secret ? "••••••••" : null, // Hide actual secret
+        stats: {
+          total_deliveries: totalDeliveries || 0,
+          successful_deliveries: successfulDeliveries || 0,
+        },
+      };
+    }));
+    
+    return res.json({ webhooks: webhooksWithStats });
+  } catch (err) {
+    console.error("[webhooks GET] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/webhooks - Create a new webhook
+app.post("/api/webhooks", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { name, url, events, secret, headers } = req.body;
+    
+    if (!name || !url) {
+      return res.status(400).json({ error: "Name and URL are required" });
+    }
+    
+    // Validate URL
+    try {
+      new URL(url);
+    } catch {
+      return res.status(400).json({ error: "Invalid URL format" });
+    }
+    
+    // Validate events
+    const validEvents = ["call_ended", "call_started", "appointment_booked", "appointment_updated", "lead_created", "sms_received"];
+    const eventList = events || [];
+    const invalidEvents = eventList.filter(e => !validEvents.includes(e));
+    if (invalidEvents.length > 0) {
+      return res.status(400).json({ error: `Invalid events: ${invalidEvents.join(", ")}` });
+    }
+    
+    const { data: webhook, error } = await supabaseAdmin
+      .from("webhook_configs")
+      .insert({
+        user_id: uid,
+        name,
+        url,
+        events: eventList,
+        secret: secret || null,
+        headers: headers || {},
+        is_active: true,
+      })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    return res.json({ 
+      ok: true, 
+      webhook: { ...webhook, secret: webhook.secret ? "••••••••" : null },
+    });
+  } catch (err) {
+    console.error("[webhooks POST] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/webhooks/:id - Update a webhook
+app.put("/api/webhooks/:id", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { id } = req.params;
+    const { name, url, events, secret, headers, is_active } = req.body;
+    
+    const updates = { updated_at: new Date().toISOString() };
+    if (name !== undefined) updates.name = name;
+    if (url !== undefined) {
+      try {
+        new URL(url);
+        updates.url = url;
+      } catch {
+        return res.status(400).json({ error: "Invalid URL format" });
+      }
+    }
+    if (events !== undefined) updates.events = events;
+    if (secret !== undefined) updates.secret = secret || null;
+    if (headers !== undefined) updates.headers = headers;
+    if (is_active !== undefined) updates.is_active = is_active;
+    
+    const { data: webhook, error } = await supabaseAdmin
+      .from("webhook_configs")
+      .update(updates)
+      .eq("id", id)
+      .eq("user_id", uid)
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    return res.json({ 
+      ok: true, 
+      webhook: { ...webhook, secret: webhook.secret ? "••••••••" : null },
+    });
+  } catch (err) {
+    console.error("[webhooks PUT] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/webhooks/:id - Delete a webhook
+app.delete("/api/webhooks/:id", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { id } = req.params;
+    
+    const { error } = await supabaseAdmin
+      .from("webhook_configs")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", uid);
+    
+    if (error) throw error;
+    
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[webhooks DELETE] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/webhooks/:id/test - Test a webhook
+app.post("/api/webhooks/:id/test", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { id } = req.params;
+    
+    // Get the webhook
+    const { data: webhook, error: webhookError } = await supabaseAdmin
+      .from("webhook_configs")
+      .select("*")
+      .eq("id", id)
+      .eq("user_id", uid)
+      .single();
+    
+    if (webhookError || !webhook) {
+      return res.status(404).json({ error: "Webhook not found" });
+    }
+    
+    // Send test payload
+    const testPayload = {
+      test: true,
+      message: "This is a test webhook from Kryonex",
+      webhook_name: webhook.name,
+      timestamp: new Date().toISOString(),
+    };
+    
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Kryonex-Event": "test",
+        "X-Kryonex-Webhook-Id": webhook.id,
+        ...(webhook.headers || {}),
+      };
+      
+      if (webhook.secret) {
+        const crypto = require("crypto");
+        const signature = crypto
+          .createHmac("sha256", webhook.secret)
+          .update(JSON.stringify(testPayload))
+          .digest("hex");
+        headers["X-Kryonex-Signature"] = signature;
+      }
+      
+      const response = await fetch(webhook.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          event: "test",
+          timestamp: new Date().toISOString(),
+          data: testPayload,
+        }),
+        timeout: 10000,
+      });
+      
+      const responseText = await response.text().catch(() => "");
+      
+      // Log the test delivery
+      await supabaseAdmin.from("webhook_deliveries").insert({
+        webhook_id: webhook.id,
+        user_id: uid,
+        event_type: "test",
+        payload: testPayload,
+        status_code: response.status,
+        response_body: responseText,
+        delivered_at: new Date().toISOString(),
+      });
+      
+      return res.json({
+        ok: response.ok,
+        status_code: response.status,
+        response: responseText.substring(0, 500),
+      });
+    } catch (fetchErr) {
+      // Log the failed test
+      await supabaseAdmin.from("webhook_deliveries").insert({
+        webhook_id: webhook.id,
+        user_id: uid,
+        event_type: "test",
+        payload: testPayload,
+        error_message: fetchErr.message,
+      });
+      
+      return res.json({
+        ok: false,
+        error: fetchErr.message,
+      });
+    }
+  } catch (err) {
+    console.error("[webhooks test] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/webhooks/:id/deliveries - Get delivery history
+app.get("/api/webhooks/:id/deliveries", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { id } = req.params;
+    const { limit = 20 } = req.query;
+    
+    // Verify ownership
+    const { data: webhook } = await supabaseAdmin
+      .from("webhook_configs")
+      .select("id")
+      .eq("id", id)
+      .eq("user_id", uid)
+      .maybeSingle();
+    
+    if (!webhook) {
+      return res.status(404).json({ error: "Webhook not found" });
+    }
+    
+    const { data: deliveries, error } = await supabaseAdmin
+      .from("webhook_deliveries")
+      .select("*")
+      .eq("webhook_id", id)
+      .order("created_at", { ascending: false })
+      .limit(Number(limit));
+    
+    if (error) throw error;
+    
+    return res.json({ deliveries: deliveries || [] });
+  } catch (err) {
+    console.error("[webhook deliveries] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// END WEBHOOK INTEGRATION ENDPOINTS
+// ============================================
+
 app.get("/leads", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
     const uid = req.effectiveUserId ?? req.user.id;
+    const { status, sentiment, date_from, date_to, has_transcript } = req.query;
+    
     const { data: profile } = await supabaseAdmin
       .from("profiles")
       .select("role")
       .eq("user_id", uid)
       .maybeSingle();
     const role = profile?.role || "owner";
-    const { data, error } = await supabaseAdmin
+    
+    // Build query with filters
+    let query = supabaseAdmin
       .from("leads")
       .select("*")
-      .eq(role === "seller" ? "owner_id" : "user_id", uid)
-      .order("created_at", { ascending: false });
+      .eq(role === "seller" ? "owner_id" : "user_id", uid);
+    
+    // Apply filters
+    if (status && status !== "all") {
+      query = query.ilike("status", `%${status}%`);
+    }
+    if (sentiment && sentiment !== "all") {
+      query = query.ilike("sentiment", `%${sentiment}%`);
+    }
+    if (date_from) {
+      query = query.gte("created_at", date_from);
+    }
+    if (date_to) {
+      // Add 1 day to include the end date fully
+      const endDate = new Date(date_to);
+      endDate.setDate(endDate.getDate() + 1);
+      query = query.lt("created_at", endDate.toISOString());
+    }
+    if (has_transcript === "true") {
+      query = query.not("transcript", "is", null).neq("transcript", "");
+    }
+    
+    const { data, error } = await query.order("created_at", { ascending: false });
 
     if (error) {
       return res.status(500).json({ error: error.message });
     }
 
     return res.json({ leads: data || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Flag a lead/recording for review
+app.post("/leads/:leadId/flag", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { leadId } = req.params;
+    const { flagged } = req.body;
+    
+    const { data, error } = await supabaseAdmin
+      .from("leads")
+      .update({ 
+        flagged_for_review: flagged === true,
+        flagged_at: flagged === true ? new Date().toISOString() : null
+      })
+      .eq("id", leadId)
+      .eq("user_id", uid)
+      .select()
+      .single();
+    
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    
+    return res.json({ ok: true, lead: data });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -4889,8 +7217,165 @@ app.put(
       if (error) {
         return res.status(500).json({ error: error.message });
       }
+      
+      // REVIEW REQUEST AUTOMATION: Trigger when appointment is completed
+      if (status === "completed" && existing.status !== "completed" && data.customer_phone) {
+        try {
+          // Check if review requests are enabled for this user
+          const { data: profile } = await supabaseAdmin
+            .from("profiles")
+            .select("review_request_enabled, google_review_url, review_request_template, business_name")
+            .eq("user_id", uid)
+            .maybeSingle();
+          
+          if (profile?.review_request_enabled && profile?.google_review_url) {
+            const delayHours = profile.review_request_delay_hours || 24;
+            const delayMs = delayHours * 60 * 60 * 1000;
+            
+            // Build the review request message
+            let reviewMsg = profile.review_request_template || 
+              "Thanks for choosing {business}! We hope you had a great experience. Please leave us a review: {review_link}";
+            reviewMsg = reviewMsg.replace(/\{business\}/gi, profile.business_name || "us");
+            reviewMsg = reviewMsg.replace(/\{review_link\}/gi, profile.google_review_url);
+            
+            // Get agent for sending SMS
+            const { data: agent } = await supabaseAdmin
+              .from("agents")
+              .select("id")
+              .eq("user_id", uid)
+              .maybeSingle();
+            
+            // Log the automation
+            await supabaseAdmin.from("sms_automation_log").insert({
+              user_id: uid,
+              appointment_id: data.id,
+              automation_type: "review_request",
+              to_number: data.customer_phone,
+              message_body: reviewMsg,
+              status: "pending",
+              metadata: { delay_ms: delayMs, google_review_url: profile.google_review_url },
+            });
+            
+            // Schedule the review request SMS
+            setTimeout(async () => {
+              try {
+                await sendSmsInternal({
+                  userId: uid,
+                  agentId: agent?.id,
+                  to: data.customer_phone,
+                  body: reviewMsg,
+                  source: "auto_review_request",
+                });
+                
+                // Update automation log
+                await supabaseAdmin
+                  .from("sms_automation_log")
+                  .update({ status: "sent", sent_at: new Date().toISOString() })
+                  .eq("appointment_id", data.id)
+                  .eq("automation_type", "review_request")
+                  .eq("status", "pending");
+                
+                console.log("⭐ [review_request] Sent review request to", data.customer_phone);
+              } catch (smsErr) {
+                console.error("⭐ [review_request] Failed:", smsErr.message);
+                await supabaseAdmin
+                  .from("sms_automation_log")
+                  .update({ status: "failed", error_message: smsErr.message })
+                  .eq("appointment_id", data.id)
+                  .eq("automation_type", "review_request")
+                  .eq("status", "pending");
+              }
+            }, delayMs);
+            
+            console.log("⭐ [review_request] Scheduled review request in", delayHours, "hours");
+          }
+        } catch (reviewErr) {
+          console.error("⭐ [review_request] Error:", reviewErr.message);
+        }
+      }
+      
       return res.json({ appointment: data });
     } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Manual review request endpoint
+app.post(
+  "/appointments/:id/request-review",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "review-request", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      const { id } = req.params;
+      
+      // Get the appointment
+      const { data: appointment, error: apptError } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", uid)
+        .maybeSingle();
+      
+      if (apptError || !appointment) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+      
+      if (!appointment.customer_phone) {
+        return res.status(400).json({ error: "No customer phone number for this appointment" });
+      }
+      
+      // Get user's review settings
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("google_review_url, review_request_template, business_name")
+        .eq("user_id", uid)
+        .maybeSingle();
+      
+      if (!profile?.google_review_url) {
+        return res.status(400).json({ error: "Please configure your Google Review URL in Settings first" });
+      }
+      
+      // Build the review request message
+      let reviewMsg = profile.review_request_template || 
+        "Thanks for choosing {business}! We hope you had a great experience. Please leave us a review: {review_link}";
+      reviewMsg = reviewMsg.replace(/\{business\}/gi, profile.business_name || "us");
+      reviewMsg = reviewMsg.replace(/\{review_link\}/gi, profile.google_review_url);
+      
+      // Get agent for sending SMS
+      const { data: agent } = await supabaseAdmin
+        .from("agents")
+        .select("id")
+        .eq("user_id", uid)
+        .maybeSingle();
+      
+      // Send immediately
+      await sendSmsInternal({
+        userId: uid,
+        agentId: agent?.id,
+        to: appointment.customer_phone,
+        body: reviewMsg,
+        source: "manual_review_request",
+      });
+      
+      // Log the automation
+      await supabaseAdmin.from("sms_automation_log").insert({
+        user_id: uid,
+        appointment_id: appointment.id,
+        automation_type: "review_request",
+        to_number: appointment.customer_phone,
+        message_body: reviewMsg,
+        status: "sent",
+        sent_at: new Date().toISOString(),
+        metadata: { manual: true, google_review_url: profile.google_review_url },
+      });
+      
+      return res.json({ ok: true, message: "Review request sent successfully" });
+    } catch (err) {
+      console.error("[request-review] error:", err.message);
       return res.status(500).json({ error: err.message });
     }
   }
@@ -6570,135 +9055,64 @@ const provisionPhoneNumberOnly = async ({
   updateExisting = false,
   industry = "hvac",
 }) => {
-  const providerBaseUrl = (retellClient.defaults?.baseURL || "https://api.retellai.com").replace(/\/$/, "");
   const nickname = String(businessName || "").trim() || "Business";
   
-  // Step 1: Get master agent template (same as admin flow)
-  const sourceAgentId = industry === "plumbing" 
+  // STEP 1: Select the correct MASTER agent based on industry (NO CLONING)
+  // All customers share the master agent - tracking is done via phone number
+  const masterAgentId = industry === "plumbing" 
     ? RETELL_MASTER_AGENT_ID_PLUMBING 
     : RETELL_MASTER_AGENT_ID_HVAC;
   
-  if (!sourceAgentId) {
+  if (!masterAgentId) {
     throw new Error(`Missing RETELL_MASTER_AGENT_ID_${industry.toUpperCase()} env variable`);
   }
   
-  console.info("[provisionAgent] getting master template", {
+  console.info("[provisionAgent] using MASTER agent directly (no cloning)", {
     deployRequestId: reqId,
-    sourceAgentId,
+    masterAgentId,
     industry,
+    businessName: nickname,
   });
   
-  let template;
+  // Verify master agent exists
   try {
-    const getRes = await retellClient.get(`/get-agent/${encodeURIComponent(sourceAgentId)}`);
-    template = getRes.data?.agent ?? getRes.data;
+    await retellClient.get(`/get-agent/${encodeURIComponent(masterAgentId)}`);
+    console.info("[provisionAgent] master agent verified", { masterAgentId });
   } catch (err) {
-    console.error("[provisionAgent] failed to get master template", {
+    console.error("[provisionAgent] master agent not found", {
       deployRequestId: reqId,
-      sourceAgentId,
+      masterAgentId,
       error: err.message,
-      status: err.response?.status,
     });
-    throw new Error(`Failed to get master agent template: ${err.message}`);
+    throw new Error(`Master agent not found: ${masterAgentId}. Check RETELL_MASTER_AGENT_ID_${industry.toUpperCase()}`);
   }
   
-  if (!template?.response_engine || !template?.voice_id) {
-    throw new Error("Master agent template missing response_engine or voice_id");
-  }
+  // STEP 2: Create phone number pointing to the MASTER agent
+  // Inbound webhook is set so we can inject dynamic variables per-call
+  // Version locks the phone to a specific published agent version (not draft)
+  const agentVersion = industry === "plumbing"
+    ? (RETELL_AGENT_VERSION_PLUMBING ? parseInt(RETELL_AGENT_VERSION_PLUMBING, 10) : null)
+    : (RETELL_AGENT_VERSION_HVAC ? parseInt(RETELL_AGENT_VERSION_HVAC, 10) : null);
   
-  // Step 2: Create agent clone pointing to master's LLM (includes functions/KB)
-  // Note: Don't specify version for new agents - we'll update it after creation
-  const re = template.response_engine || {};
-  const masterLlmVersion = re.version; // Save the master's LLM version to apply after creation
-  const response_engine = {
-    type: re.type || "retell-llm",
-    llm_id: re.llm_id,
-    // version omitted for creation - Retell doesn't allow version > 0 on create
-  };
-  
-  if (!response_engine.llm_id) {
-    throw new Error("Master agent missing llm_id in response_engine");
-  }
-  
-  const createAgentBody = {
-    response_engine,
-    voice_id: template.voice_id,
-    agent_name: `${nickname} AI Agent`,
-    webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
-    webhook_timeout_ms: 10000,
-  };
-  
-  console.info("[provisionAgent] creating agent clone", {
-    deployRequestId: reqId,
-    llm_id: response_engine.llm_id,
-    llm_version: response_engine.version,
-    voice_id: template.voice_id,
-  });
-  
-  let agentId;
-  try {
-    const createRes = await retellClient.post("/create-agent", createAgentBody);
-    agentId = createRes.data?.agent_id ?? createRes.data?.agent?.agent_id;
-    if (!agentId) {
-      throw new Error("Retell create-agent did not return agent_id");
-    }
-    console.info("[provisionAgent] agent created", {
-      deployRequestId: reqId,
-      agent_id: agentId,
-    });
-    
-    // Step 2b: Update agent to use the master's LLM version (can't set version > 0 on create)
-    if (masterLlmVersion && masterLlmVersion > 0) {
-      console.info("[provisionAgent] updating agent to LLM version", {
-        deployRequestId: reqId,
-        agent_id: agentId,
-        targetVersion: masterLlmVersion,
-      });
-      try {
-        await retellClient.patch(`/update-agent/${agentId}`, {
-          response_engine: {
-            type: re.type || "retell-llm",
-            llm_id: re.llm_id,
-            version: masterLlmVersion,
-          },
-        });
-        console.info("[provisionAgent] agent LLM version updated", {
-          deployRequestId: reqId,
-          agent_id: agentId,
-          version: masterLlmVersion,
-        });
-      } catch (updateErr) {
-        console.warn("[provisionAgent] failed to update LLM version (agent still usable)", {
-          deployRequestId: reqId,
-          agent_id: agentId,
-          error: updateErr.message,
-        });
-        // Don't throw - agent is still usable with draft version
-      }
-    }
-  } catch (err) {
-    console.error("[provisionAgent] create-agent failed", {
-      deployRequestId: reqId,
-      error: err.message,
-      status: err.response?.status,
-      body: err.response?.data,
-    });
-    throw err;
-  }
-  
-  // Step 3: Create phone number linked to the new agent
   const phonePayload = {
-    inbound_agent_id: agentId,
-    outbound_agent_id: agentId,
+    inbound_agent_id: masterAgentId,
+    outbound_agent_id: masterAgentId,
     area_code: areaCode && String(areaCode).length === 3 ? Number(areaCode) : undefined,
     country_code: "US",
     nickname: `${nickname} Line`,
     inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
   };
   
-  console.info("[provisionAgent] creating phone number", {
+  // Lock to specific published version if set (otherwise uses draft/latest)
+  if (agentVersion !== null && !isNaN(agentVersion)) {
+    phonePayload.inbound_agent_version = agentVersion;
+    phonePayload.outbound_agent_version = agentVersion;
+  }
+  
+  console.info("[provisionAgent] creating phone number linked to master", {
     deployRequestId: reqId,
-    agent_id: agentId,
+    masterAgentId,
+    agentVersion: agentVersion ?? "draft (latest)",
     area_code: phonePayload.area_code,
   });
   
@@ -6711,16 +9125,8 @@ const provisionPhoneNumberOnly = async ({
       responseStatus: err.response?.status,
       responseBody: err.response?.data,
     });
-    // Check for "no numbers available" error from Retell
     const retellMsg = err.response?.data?.message || "";
     if (err.response?.status === 404 && retellMsg.toLowerCase().includes("no phone numbers")) {
-      // Clean up the agent we created since phone failed
-      try {
-        await retellClient.delete(`/delete-agent/${agentId}`);
-        console.info("[provisionAgent] cleaned up agent after phone failure", { agent_id: agentId });
-      } catch (cleanupErr) {
-        console.warn("[provisionAgent] failed to cleanup agent", { agent_id: agentId, error: cleanupErr.message });
-      }
       const userError = new Error(`No phone numbers available for area code ${areaCode}. Please choose a different area code and try again.`);
       userError.retellStatus = err.response.status;
       userError.retellError = err.response.data;
@@ -6735,23 +9141,25 @@ const provisionPhoneNumberOnly = async ({
     throw new Error("Retell create-phone-number did not return phone_number");
   }
   
-  console.info("[provisionAgent] phone number created", {
+  console.info("[provisionAgent] phone number created and linked to master", {
     deployRequestId: reqId,
     phone_number: phoneNumber,
-    agent_id: agentId,
+    masterAgentId,
+    industry,
   });
   
-  // Step 4: Store in database with real agent_id (not pending)
+  // STEP 3: Store in database - phone_number is the KEY for tracking
+  // We store masterAgentId for reference but tracking uses phone_number
   const transferNumber =
     transferNumberRaw != null
       ? String(transferNumberRaw).replace(/[^\d+]/g, "").trim() || null
       : null;
   
   const agentRow = {
-    agent_id: agentId,  // Real Retell agent ID, not pending
-    phone_number: phoneNumber,
-    voice_id: template.voice_id || null,
-    llm_id: response_engine.llm_id,
+    agent_id: masterAgentId,  // Reference to master (tracking uses phone_number)
+    phone_number: phoneNumber,  // THIS IS THE GOLDEN KEY FOR TRACKING
+    voice_id: null,
+    llm_id: null,
     prompt: null,
     area_code: areaCode || null,
     tone: null,
@@ -6767,6 +9175,7 @@ const provisionPhoneNumberOnly = async ({
     deploy_request_id: reqId || null,
     nickname: nickname || null,
     provider_number_id: phoneNumber || null,
+    industry: industry || "hvac",  // Store industry for reference
   };
   
   if (updateExisting) {
@@ -6778,7 +9187,7 @@ const provisionPhoneNumberOnly = async ({
       console.error("[provisionAgent] update failed", { userId, error: updateError.message });
       throw new Error(updateError.message);
     }
-    console.info("[provisionAgent] updated existing row", { userId, phone_number: phoneNumber, agent_id: agentId });
+    console.info("[provisionAgent] updated existing row", { userId, phone_number: phoneNumber, masterAgentId });
   } else {
     const { error: insertError } = await supabaseAdmin.from("agents").insert({
       user_id: userId,
@@ -6794,18 +9203,17 @@ const provisionPhoneNumberOnly = async ({
     userId,
     action: "agent_deployed",
     entity: "agent",
-    entityId: agentId,
+    entityId: masterAgentId,
   });
 
-  console.info("[provisionAgent] done", {
+  console.info("[provisionAgent] done - using MASTER agent (no clone)", {
     deployRequestId: reqId,
     phone_number: phoneNumber,
-    agent_id: agentId,
-    llm_id: response_engine.llm_id,
-    llm_version: response_engine.version,
+    masterAgentId,
+    industry,
   });
   
-  return { phone_number: phoneNumber, agent_id: agentId };
+  return { phone_number: phoneNumber, agent_id: masterAgentId };
 };
 
 /**
@@ -7679,6 +10087,215 @@ app.get(
         conversion_rate: conversion,
       });
     } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// GRANDMASTER ADMIN - Enhanced metrics for full platform visibility
+app.get(
+  "/admin/metrics-enhanced",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      
+      // Parallel queries for maximum efficiency
+      const [
+        // Total counts
+        totalUsersResult,
+        totalLeadsResult,
+        totalAppointmentsResult,
+        totalAgentsResult,
+        
+        // Today's activity
+        todayLeadsResult,
+        todayAppointmentsResult,
+        todayUsersResult,
+        
+        // This week
+        weekLeadsResult,
+        weekAppointmentsResult,
+        
+        // Subscriptions
+        activeSubsResult,
+        trialingSubsResult,
+        pastDueSubsResult,
+        cancelledSubsResult,
+        
+        // Recent leads for activity feed
+        recentLeadsResult,
+        
+        // Recent appointments
+        recentAppointmentsResult,
+        
+        // Usage stats
+        usageStatsResult,
+        
+        // Agents by industry
+        hvacAgentsResult,
+        plumbingAgentsResult,
+        
+        // Flagged for review
+        flaggedLeadsResult,
+      ] = await Promise.all([
+        // Total counts
+        supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }),
+        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }),
+        supabaseAdmin.from("appointments").select("id", { count: "exact", head: true }),
+        supabaseAdmin.from("agents").select("id", { count: "exact", head: true }),
+        
+        // Today's activity
+        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).gte("created_at", todayStart),
+        supabaseAdmin.from("appointments").select("id", { count: "exact", head: true }).gte("created_at", todayStart),
+        supabaseAdmin.from("profiles").select("id", { count: "exact", head: true }).gte("created_at", todayStart),
+        
+        // This week
+        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).gte("created_at", weekStart),
+        supabaseAdmin.from("appointments").select("id", { count: "exact", head: true }).gte("created_at", weekStart),
+        
+        // Subscriptions
+        supabaseAdmin.from("subscriptions").select("id", { count: "exact", head: true }).eq("status", "active"),
+        supabaseAdmin.from("subscriptions").select("id", { count: "exact", head: true }).eq("status", "trialing"),
+        supabaseAdmin.from("subscriptions").select("id", { count: "exact", head: true }).eq("status", "past_due"),
+        supabaseAdmin.from("subscriptions").select("id", { count: "exact", head: true }).eq("status", "canceled"),
+        
+        // Recent leads (last 20)
+        supabaseAdmin
+          .from("leads")
+          .select("id, name, phone, status, sentiment, summary, created_at, user_id")
+          .order("created_at", { ascending: false })
+          .limit(20),
+        
+        // Recent appointments (last 10)
+        supabaseAdmin
+          .from("appointments")
+          .select("id, customer_name, start_time, status, user_id")
+          .order("created_at", { ascending: false })
+          .limit(10),
+        
+        // Total usage across platform
+        supabaseAdmin
+          .from("usage_limits")
+          .select("call_used_seconds, call_limit_seconds"),
+        
+        // Agents by industry
+        supabaseAdmin.from("agents").select("id", { count: "exact", head: true }).eq("industry", "hvac"),
+        supabaseAdmin.from("agents").select("id", { count: "exact", head: true }).eq("industry", "plumbing"),
+        
+        // Flagged leads
+        supabaseAdmin.from("leads").select("id", { count: "exact", head: true }).eq("flagged_for_review", true),
+      ]);
+      
+      // Calculate total minutes used across platform
+      const usageData = usageStatsResult.data || [];
+      const totalMinutesUsed = Math.floor(usageData.reduce((sum, u) => sum + (u.call_used_seconds || 0), 0) / 60);
+      const totalMinutesAllocated = Math.floor(usageData.reduce((sum, u) => sum + (u.call_limit_seconds || 0), 0) / 60);
+      
+      // Calculate booking rate
+      const bookedLeads = (recentLeadsResult.data || []).filter(l => 
+        l.status?.toLowerCase().includes("book") || l.status?.toLowerCase().includes("confirm")
+      ).length;
+      const totalRecentLeads = (recentLeadsResult.data || []).length;
+      const bookingRate = totalRecentLeads > 0 ? Math.round((bookedLeads / totalRecentLeads) * 100) : 0;
+      
+      // Format recent activity feed
+      const activityFeed = (recentLeadsResult.data || []).slice(0, 10).map(lead => ({
+        id: lead.id,
+        type: "lead",
+        name: lead.name || "Unknown",
+        status: lead.status || "New",
+        sentiment: lead.sentiment || "neutral",
+        summary: lead.summary || "New lead captured",
+        time: lead.created_at,
+        user_id: lead.user_id,
+      }));
+      
+      // Add appointments to activity feed
+      (recentAppointmentsResult.data || []).forEach(appt => {
+        activityFeed.push({
+          id: appt.id,
+          type: "appointment",
+          name: appt.customer_name || "Unknown",
+          status: appt.status || "booked",
+          summary: `Appointment: ${appt.customer_name}`,
+          time: appt.start_time,
+          user_id: appt.user_id,
+        });
+      });
+      
+      // Sort by time
+      activityFeed.sort((a, b) => new Date(b.time) - new Date(a.time));
+      
+      // System health check
+      const systemHealth = {
+        api: "operational",
+        database: "operational",
+        webhooks: lastRetellWebhookAt ? "operational" : "unknown",
+        last_webhook: lastRetellWebhookAt || null,
+      };
+      
+      return res.json({
+        timestamp: now.toISOString(),
+        
+        // Platform totals
+        totals: {
+          users: totalUsersResult.count || 0,
+          leads: totalLeadsResult.count || 0,
+          appointments: totalAppointmentsResult.count || 0,
+          agents: totalAgentsResult.count || 0,
+          flagged_for_review: flaggedLeadsResult.count || 0,
+        },
+        
+        // Today's activity
+        today: {
+          leads: todayLeadsResult.count || 0,
+          appointments: todayAppointmentsResult.count || 0,
+          new_users: todayUsersResult.count || 0,
+        },
+        
+        // This week
+        this_week: {
+          leads: weekLeadsResult.count || 0,
+          appointments: weekAppointmentsResult.count || 0,
+        },
+        
+        // Subscriptions breakdown
+        subscriptions: {
+          active: activeSubsResult.count || 0,
+          trialing: trialingSubsResult.count || 0,
+          past_due: pastDueSubsResult.count || 0,
+          cancelled: cancelledSubsResult.count || 0,
+        },
+        
+        // Platform usage
+        usage: {
+          total_minutes_used: totalMinutesUsed,
+          total_minutes_allocated: totalMinutesAllocated,
+          utilization_percent: totalMinutesAllocated > 0 
+            ? Math.round((totalMinutesUsed / totalMinutesAllocated) * 100) 
+            : 0,
+        },
+        
+        // Performance metrics
+        performance: {
+          booking_rate: bookingRate,
+          agents_hvac: hvacAgentsResult.count || 0,
+          agents_plumbing: plumbingAgentsResult.count || 0,
+        },
+        
+        // Real-time activity feed
+        activity_feed: activityFeed.slice(0, 15),
+        
+        // System health
+        system_health: systemHealth,
+      });
+    } catch (err) {
+      console.error("[admin/metrics-enhanced] error:", err.message);
       return res.status(500).json({ error: err.message });
     }
   }
