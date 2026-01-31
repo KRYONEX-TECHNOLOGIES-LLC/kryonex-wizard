@@ -3907,7 +3907,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     let agentRow = (
       await supabaseAdmin
         .from("agents")
-        .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
+        .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee, nickname")
         .eq("phone_number", toNumber)
         .maybeSingle()
     ).data;
@@ -3915,7 +3915,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       agentRow = (
         await supabaseAdmin
           .from("agents")
-          .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
+          .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee, nickname")
           .eq("phone_number", rawTo)
           .maybeSingle()
       ).data;
@@ -3924,7 +3924,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       const last10 = digits.slice(-10);
       const { data: rows } = await supabaseAdmin
         .from("agents")
-        .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee")
+        .select("user_id, agent_id, transfer_number, tone, schedule_summary, standard_fee, emergency_fee, nickname")
         .like("phone_number", `%${last10}`);
       agentRow = rows?.[0] || null;
     }
@@ -3971,8 +3971,14 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
         .maybeSingle(),
     ]);
 
-    // Doc: dynamic_variables values must be strings; empty/unset leaves {{var}} in prompt
-    const businessName = (profile?.business_name && profile.business_name.trim()) ? profile.business_name.trim() : "your business";
+    // Doc: dynamic_variables values must be strings; fallback: profiles.business_name → agents.nickname (set at provision)
+    const profileName = (profile?.business_name && profile.business_name.trim()) ? profile.business_name.trim() : "";
+    const agentNickname = (agentRow?.nickname && String(agentRow.nickname).trim()) ? String(agentRow.nickname).trim() : "";
+    const businessName = profileName || agentNickname || "your business";
+    // Backfill: if profile was empty but we have nickname from provision, save it so next call has it
+    if (!profileName && agentNickname && agentNickname !== "Business" && agentNickname.length >= 2) {
+      supabaseAdmin.from("profiles").update({ business_name: agentNickname }).eq("user_id", agentRow.user_id).then(() => {});
+    }
     const dynamicVariables = {
       business_name: businessName,
       cal_com_link: String(profile?.cal_com_url || integration?.booking_url || ""),
@@ -4792,7 +4798,8 @@ app.post(
         if (upsertErr) {
           console.error("🔥 DB SAVE FAILED (profiles):", { userId: uid, error: upsertErr.message });
         } else {
-          console.info("[deploy-agent-self] profiles updated", { userId: uid, business_name: businessNameRaw });
+          const { data: verify } = await supabaseAdmin.from("profiles").select("business_name").eq("user_id", uid).maybeSingle();
+          console.info("[deploy-agent-self] profiles updated", { userId: uid, business_name: businessNameRaw, verified_in_db: verify?.business_name || "(empty)" });
         }
       } else if (areaCodeRaw && /^\d{3}$/.test(areaCodeRaw)) {
         await supabaseAdmin.from("profiles").update({ area_code: areaCodeRaw }).eq("user_id", uid);
