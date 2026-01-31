@@ -257,9 +257,32 @@ export default function WizardPage({ embeddedMode }) {
   };
   const [step, setStep] = useState(getInitialStep);
   const navigate = useNavigate();
-  const [form, setForm] = useState(() =>
-    embeddedMode ? (getSavedState(WIZARD_EMBEDDED_FORM_KEY) || defaultFormState) : defaultFormState
-  );
+  const [form, setForm] = useState(() => {
+    if (embeddedMode) {
+      return getSavedState(WIZARD_EMBEDDED_FORM_KEY) || defaultFormState;
+    }
+    // Try generic key first (most recent writes go here too)
+    const genericForm = getSavedState(WIZARD_FORM_KEY);
+    if (genericForm?.nameInput && genericForm?.areaCodeInput) {
+      console.log("[WizardPage] restored form from generic key");
+      return { ...defaultFormState, ...genericForm };
+    }
+    // Try to find user-specific form in localStorage (check all wizard.form.* keys)
+    if (typeof window !== "undefined") {
+      const keys = Object.keys(window.localStorage).filter((k) => k.startsWith("kryonex:wizard.form."));
+      for (const k of keys) {
+        try {
+          const raw = window.localStorage.getItem(k);
+          const parsed = raw ? JSON.parse(raw) : null;
+          if (parsed?.nameInput && parsed?.areaCodeInput) {
+            console.log("[WizardPage] restored form from", k);
+            return { ...defaultFormState, ...parsed };
+          }
+        } catch {}
+      }
+    }
+    return defaultFormState;
+  });
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployError, setDeployError] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -419,7 +442,14 @@ export default function WizardPage({ embeddedMode }) {
   const updateField = (field, value) => {
     setForm((prev) => {
       const next = { ...prev, [field]: value };
+      // Save to both generic and user-specific keys to avoid sync issues
       saveState(formKey, next);
+      if (wizardUserId) {
+        saveState(`wizard.form.${wizardUserId}`, next);
+      }
+      if (!embeddedMode) {
+        saveState(WIZARD_FORM_KEY, next); // Also save to generic as fallback
+      }
       return next;
     });
   };
@@ -879,6 +909,14 @@ export default function WizardPage({ embeddedMode }) {
     setDeployError("");
     const businessName = (form.nameInput || deployStatus?.business_name || "").trim();
     const areaCode = (form.areaCodeInput || deployStatus?.area_code || "").trim();
+    console.log("[handleSelfDeploy] sources:", {
+      "form.nameInput": form.nameInput,
+      "deployStatus?.business_name": deployStatus?.business_name,
+      "resolved businessName": businessName,
+      "form.areaCodeInput": form.areaCodeInput,
+      "deployStatus?.area_code": deployStatus?.area_code,
+      "resolved areaCode": areaCode,
+    });
     if (!businessName || businessName.length < 2) {
       setDeployError("Enter your business name above before deploying.");
       return;
