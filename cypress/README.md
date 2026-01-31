@@ -33,3 +33,5 @@ Optional:
   (or `FRONTEND_BASE_URL`).
 - The suite uses Supabase auth injection and localStorage flags to
   access protected routes quickly.
+- Wizard tests verify form persistence across step navigation and Stripe redirects.
+- Business name should persist in localStorage (`kryonex:wizard.form.{userId}`) after Stripe checkout.
