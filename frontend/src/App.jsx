@@ -28,6 +28,7 @@ import AdminCalendarPage from "./pages/AdminCalendarPage.jsx";
 import AnalyticsPage from "./pages/AnalyticsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import ReferralPage from "./pages/ReferralPage.jsx";
+import AffiliatePage from "./pages/AffiliatePage.jsx";
 import CustomersPage from "./pages/CustomersPage.jsx";
 import IntegrationsPage from "./pages/IntegrationsPage.jsx";
 import ThankYouPage from "./pages/ThankYouPage.jsx";
@@ -73,6 +74,7 @@ export default function App() {
       <Route path="/" element={<LandingGate />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/thank-you" element={<ThankYouPage />} />
+      <Route path="/affiliate" element={<AffiliatePage />} />
       <Route path="/admin/stripe-success" element={<AdminStripeSuccessPage />} />
       <Route
         path="/wizard"

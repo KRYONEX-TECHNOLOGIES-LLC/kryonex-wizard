@@ -7231,3 +7231,562 @@ select option {
     gap: 1rem;
   }
 }
+
+/* ==========================================
+   AFFILIATE PAGE
+   ========================================== */
+.affiliate-page {
+  min-height: 100vh;
+  background: #050505;
+  color: #e5e7eb;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Hero Section */
+.affiliate-hero {
+  min-height: 70vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 2rem;
+  position: relative;
+  z-index: 1;
+}
+
+.affiliate-hero-content {
+  max-width: 800px;
+  text-align: center;
+}
+
+.affiliate-badge {
+  display: inline-block;
+  padding: 0.5rem 1.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.1);
+  color: #a78bfa;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.15rem;
+  margin-bottom: 1.5rem;
+}
+
+.affiliate-headline {
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  font-weight: 800;
+  line-height: 1.1;
+  margin-bottom: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.affiliate-headline .highlight-green {
+  color: #10b981;
+  text-shadow: 0 0 30px rgba(16, 185, 129, 0.5);
+}
+
+.affiliate-headline .highlight-cyan {
+  color: #22d3ee;
+  text-shadow: 0 0 30px rgba(34, 211, 238, 0.5);
+}
+
+.affiliate-subheadline {
+  font-size: 1.25rem;
+  color: #9ca3af;
+  max-width: 600px;
+  margin: 0 auto 2.5rem;
+  line-height: 1.6;
+}
+
+.affiliate-hero-cta {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn-primary-glow {
+  display: inline-block;
+  padding: 1rem 2.5rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  font-weight: 600;
+  font-size: 1rem;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  box-shadow: 0 0 30px rgba(16, 185, 129, 0.3);
+}
+
+.btn-primary-glow:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 50px rgba(16, 185, 129, 0.5);
+}
+
+.btn-primary-glow.large {
+  padding: 1.25rem 3rem;
+  font-size: 1.1rem;
+}
+
+.btn-secondary {
+  display: inline-block;
+  padding: 1rem 2.5rem;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #9ca3af;
+  font-weight: 600;
+  font-size: 1rem;
+  text-decoration: none;
+  transition: all 0.3s ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #e5e7eb;
+}
+
+/* Stats Bar */
+.affiliate-stats-bar {
+  display: flex;
+  justify-content: center;
+  gap: 3rem;
+  padding: 2rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: #9ca3af;
+}
+
+.stat-item svg {
+  color: #22d3ee;
+}
+
+.stat-value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #e5e7eb;
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05rem;
+}
+
+/* Sections */
+.affiliate-section {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 5rem 2rem;
+}
+
+.section-title {
+  text-align: center;
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 3rem;
+  letter-spacing: 0.05rem;
+}
+
+/* How It Works */
+.how-it-works-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 2rem;
+}
+
+.step-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 2rem;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.step-card:hover {
+  border-color: rgba(34, 211, 238, 0.3);
+  background: rgba(34, 211, 238, 0.03);
+}
+
+.step-number {
+  display: inline-block;
+  width: 48px;
+  height: 48px;
+  line-height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.2), rgba(139, 92, 246, 0.2));
+  color: #22d3ee;
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.step-card h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.step-card p {
+  color: #9ca3af;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Calculator */
+.calculator-section {
+  background: rgba(139, 92, 246, 0.03);
+  border-radius: 24px;
+  margin: 3rem auto;
+}
+
+.calculator-card {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 2.5rem;
+}
+
+.calculator-input {
+  margin-bottom: 2rem;
+}
+
+.calculator-input label {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+  color: #9ca3af;
+}
+
+.slider-container {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.affiliate-slider {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.affiliate-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #22d3ee, #8b5cf6);
+  cursor: pointer;
+  box-shadow: 0 0 15px rgba(34, 211, 238, 0.5);
+}
+
+.slider-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #22d3ee;
+  min-width: 60px;
+  text-align: center;
+}
+
+.calculator-results {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: #9ca3af;
+}
+
+.result-row:last-child {
+  border-bottom: none;
+}
+
+.result-row.total {
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: none;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.result-value {
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.result-value.highlight {
+  color: #10b981;
+  font-size: 1.5rem;
+}
+
+.calculator-note {
+  text-align: center;
+  margin-top: 1.5rem;
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+/* Benefits Grid */
+.benefits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.5rem;
+}
+
+.benefit-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 2rem;
+  transition: all 0.3s ease;
+}
+
+.benefit-card:hover {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.03);
+}
+
+.benefit-icon {
+  color: #10b981;
+  margin-bottom: 1rem;
+  width: 32px;
+  height: 32px;
+}
+
+.benefit-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.benefit-card p {
+  color: #9ca3af;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* Commission Table */
+.commission-table {
+  overflow: hidden;
+  padding: 0;
+}
+
+.commission-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  padding: 1rem 1.5rem;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05rem;
+  color: #6b7280;
+}
+
+.commission-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.9rem;
+}
+
+.commission-row span {
+  color: #9ca3af;
+}
+
+.commission-row .highlight-cyan {
+  color: #22d3ee;
+  font-weight: 600;
+}
+
+.commission-row .highlight-green {
+  color: #10b981;
+  font-weight: 700;
+}
+
+.commission-note {
+  text-align: center;
+  padding: 1.5rem;
+  color: #a78bfa;
+  font-weight: 600;
+  background: rgba(139, 92, 246, 0.05);
+  margin: 0;
+}
+
+/* FAQ */
+.faq-list {
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.faq-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  margin-bottom: 1rem;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.faq-item:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.faq-item.expanded {
+  border-color: rgba(34, 211, 238, 0.3);
+}
+
+.faq-question {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 1.5rem;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.faq-question svg {
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.faq-answer {
+  padding: 0 1.5rem 1.25rem;
+  color: #9ca3af;
+  line-height: 1.6;
+  font-size: 0.9rem;
+}
+
+/* Final CTA */
+.affiliate-final-cta {
+  padding: 6rem 2rem;
+  text-align: center;
+  background: linear-gradient(180deg, transparent, rgba(139, 92, 246, 0.05));
+}
+
+.final-cta-content h2 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.final-cta-content p {
+  color: #9ca3af;
+  font-size: 1.1rem;
+  margin-bottom: 2rem;
+}
+
+/* Footer */
+.affiliate-footer {
+  padding: 2rem;
+  text-align: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.footer-links {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.footer-links a {
+  color: #9ca3af;
+  text-decoration: none;
+}
+
+.footer-links a:hover {
+  color: #22d3ee;
+}
+
+.footer-links span {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+/* Affiliate CTA on Login Page */
+.affiliate-cta-link:hover {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.25), rgba(34, 211, 238, 0.15)) !important;
+  border-color: rgba(139, 92, 246, 0.6) !important;
+  color: #c4b5fd !important;
+  transform: translateY(-1px);
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .affiliate-hero {
+    min-height: 60vh;
+    padding: 3rem 1.5rem;
+  }
+  
+  .affiliate-headline {
+    font-size: 2rem;
+  }
+  
+  .affiliate-subheadline {
+    font-size: 1rem;
+  }
+  
+  .affiliate-stats-bar {
+    gap: 1.5rem;
+    padding: 1.5rem 1rem;
+  }
+  
+  .stat-item {
+    flex: 0 0 calc(50% - 1rem);
+    justify-content: center;
+  }
+  
+  .affiliate-section {
+    padding: 3rem 1.5rem;
+  }
+  
+  .section-title {
+    font-size: 1.5rem;
+  }
+  
+  .commission-header,
+  .commission-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+  
+  .commission-header span:nth-child(3),
+  .commission-header span:nth-child(4),
+  .commission-row span:nth-child(3),
+  .commission-row span:nth-child(4) {
+    display: none;
+  }
+  
+  .affiliate-final-cta {
+    padding: 4rem 1.5rem;
+  }
+  
+  .final-cta-content h2 {
+    font-size: 1.75rem;
+  }
+}

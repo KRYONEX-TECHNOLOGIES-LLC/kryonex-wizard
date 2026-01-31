@@ -32,7 +32,7 @@ const defaultCalendarFormState = {
   reminder_enabled: true,
   eta_enabled: false,
   eta_minutes: "10",
-  eta_link: "",
+  tracking_enabled: false,
   send_confirmation: false,
 };
 const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -245,10 +245,17 @@ export default function CalendarPage() {
         reminder_enabled: Boolean(form.reminder_enabled),
         eta_enabled: Boolean(form.eta_enabled),
         eta_minutes: form.eta_minutes,
-        eta_link: form.eta_link || null,
+        tracking_enabled: Boolean(form.tracking_enabled),
       });
       if (response?.data?.appointment?.id) {
         setViewAppointmentId(response.data.appointment.id);
+      }
+      // Show tracking info if created
+      if (response?.data?.tracking?.tech_url) {
+        setTrackingStatus(`Tracking enabled! Tech URL: ${response.data.tracking.tech_url}`);
+      }
+      if (response?.data?.cal_synced) {
+        setMessageStatus("Appointment synced to Cal.com.");
       }
     } catch (err) {
       setMessageStatus(err.response?.data?.error || "Failed to create appointment.");
@@ -256,7 +263,7 @@ export default function CalendarPage() {
     }
     persistForm(defaultCalendarFormState);
     await loadAppointments(currentMonth);
-    setMessageStatus("Appointment locked.");
+    if (!messageStatus) setMessageStatus("Appointment locked.");
     setCreateOpen(false);
     setViewAppointmentId(null);
   };
@@ -969,36 +976,44 @@ export default function CalendarPage() {
                     </div>
                   </div>
                   <div className="calendar-tab">
-                    <div className="deck-title">Tracking (Elite)</div>
+                    <div className="deck-title">Live Tracking</div>
                     <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={form.tracking_enabled}
+                        onChange={(e) => mergeForm({ tracking_enabled: e.target.checked })}
+                      />
+                      <span className="toggle-slider" />
+                      <span className="toggle-label">Enable Live GPS Tracking</span>
+                    </label>
+                    {form.tracking_enabled && (
+                      <div className="deck-status" style={{ marginTop: "0.75rem", color: "#10b981" }}>
+                        Tracking link will be auto-generated when you save. Customer gets a link to track technician location in real-time.
+                      </div>
+                    )}
+                    <label className="toggle" style={{ marginTop: "1rem" }}>
                       <input
                         type="checkbox"
                         checked={form.eta_enabled}
                         onChange={(e) => mergeForm({ eta_enabled: e.target.checked })}
                       />
                       <span className="toggle-slider" />
-                      <span className="toggle-label">Enable Live GPS Link</span>
+                      <span className="toggle-label">Auto-Send ETA Text</span>
                     </label>
-                    <label className="deck-label">ETA Minutes</label>
-                    <select
-                      className="glass-input"
-                      value={form.eta_minutes}
-                      onChange={(e) => mergeForm({ eta_minutes: e.target.value })}
-                    >
-                      <option value="5">5 minutes</option>
-                      <option value="10">10 minutes</option>
-                      <option value="15">15 minutes</option>
-                    </select>
-                    <label className="deck-label">Tracking URL</label>
-                    <input
-                      className="glass-input"
-                      value={form.eta_link}
-                      onChange={(e) => mergeForm({ eta_link: e.target.value })}
-                      placeholder="https://maps.google.com/?q=..."
-                    />
-                    <button className="button-primary" onClick={handleCreateTracking}>
-                      Generate Tracking URL
-                    </button>
+                    {form.eta_enabled && (
+                      <>
+                        <label className="deck-label">Send text when tech is:</label>
+                        <select
+                          className="glass-input"
+                          value={form.eta_minutes}
+                          onChange={(e) => mergeForm({ eta_minutes: e.target.value })}
+                        >
+                          <option value="5">5 minutes away</option>
+                          <option value="10">10 minutes away</option>
+                          <option value="15">15 minutes away</option>
+                        </select>
+                      </>
+                    )}
                     {trackingStatus ? (
                       <div className="deck-status">{trackingStatus}</div>
                     ) : null}
@@ -1168,7 +1183,7 @@ export default function CalendarPage() {
                     </div>
                   </div>
                   <div className="calendar-tab">
-                    <div className="deck-title">Tracking (Elite)</div>
+                    <div className="deck-title">Live Tracking</div>
                     <label className="toggle">
                       <input
                         type="checkbox"
@@ -1181,29 +1196,37 @@ export default function CalendarPage() {
                         }
                       />
                       <span className="toggle-slider" />
-                      <span className="toggle-label">Enable Live GPS Link</span>
+                      <span className="toggle-label">Auto-Send ETA Text</span>
                     </label>
-                    <label className="deck-label">ETA Minutes</label>
-                    <select
-                      className="glass-input"
-                      value={editForm.eta_minutes}
-                      onChange={(e) =>
-                        setEditForm((prev) => ({ ...prev, eta_minutes: e.target.value }))
-                      }
-                    >
-                      <option value="5">5 minutes</option>
-                      <option value="10">10 minutes</option>
-                      <option value="15">15 minutes</option>
-                    </select>
-                    <label className="deck-label">Tracking URL</label>
-                    <input
-                      className="glass-input"
-                      value={editForm.eta_link}
-                      onChange={(e) =>
-                        setEditForm((prev) => ({ ...prev, eta_link: e.target.value }))
-                      }
-                      placeholder="https://maps.google.com/?q=..."
-                    />
+                    {editForm.eta_enabled && (
+                      <>
+                        <label className="deck-label">Send text when tech is:</label>
+                        <select
+                          className="glass-input"
+                          value={editForm.eta_minutes}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, eta_minutes: e.target.value }))
+                          }
+                        >
+                          <option value="5">5 minutes away</option>
+                          <option value="10">10 minutes away</option>
+                          <option value="15">15 minutes away</option>
+                        </select>
+                      </>
+                    )}
+                    {editForm.eta_link && (
+                      <div className="deck-status" style={{ marginTop: "0.75rem" }}>
+                        <span style={{ color: "#9ca3af" }}>Tracking URL: </span>
+                        <a 
+                          href={editForm.eta_link} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          style={{ color: "#22d3ee" }}
+                        >
+                          {editForm.eta_link}
+                        </a>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

@@ -7057,7 +7057,7 @@ app.post(
         reminder_enabled,
         eta_enabled,
         eta_minutes,
-        eta_link,
+        tracking_enabled,
       } = req.body || {};
 
       if (!customer_name || !start_date || !start_time) {
@@ -7071,6 +7071,65 @@ app.post(
       const startTime = new Date(year, month - 1, day, hour, minute);
       const durationMinutes = parseInt(duration_minutes || "60", 10);
       const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+
+      // Check Cal.com integration and sync if connected
+      let calBookingUid = null;
+      try {
+        const calConfig = await getCalConfig(uid);
+        if (calConfig) {
+          console.log("[appointments] Cal.com connected, creating booking...");
+          const calBooking = await createCalBooking({
+            config: calConfig,
+            start: startTime,
+            args: {
+              customer_name,
+              customer_phone,
+              duration_minutes: durationMinutes,
+              notes,
+            },
+          });
+          calBookingUid = calBooking?.uid || calBooking?.id || null;
+          console.log("[appointments] Cal.com booking created:", calBookingUid);
+        }
+      } catch (calErr) {
+        console.warn("[appointments] Cal.com sync failed (continuing with local):", calErr.message);
+        // Continue with local appointment even if Cal.com fails
+      }
+
+      // Auto-create tracking session if enabled
+      let etaLink = null;
+      let trackingUrls = null;
+      if (tracking_enabled && customer_phone) {
+        try {
+          const token = generateToken(12);
+          const updateKey = generateToken(16);
+          const eta = parseInt(eta_minutes || "10", 10);
+
+          const { data: trackingData } = await supabaseAdmin
+            .from("tracking_sessions")
+            .insert({
+              token,
+              update_key: updateKey,
+              created_by: uid,
+              customer_phone: customer_phone || null,
+              eta_minutes: eta,
+              status: "active",
+            })
+            .select("*")
+            .single();
+
+          if (trackingData) {
+            etaLink = `${FRONTEND_URL}/track/${token}`;
+            trackingUrls = {
+              customer_url: etaLink,
+              tech_url: `${FRONTEND_URL}/tech/track/${token}?key=${updateKey}`,
+            };
+            console.log("[appointments] Tracking session created:", token);
+          }
+        } catch (trackErr) {
+          console.warn("[appointments] Tracking creation failed:", trackErr.message);
+        }
+      }
 
       const { data, error } = await supabaseAdmin
         .from("appointments")
@@ -7086,7 +7145,8 @@ app.post(
           reminder_enabled: Boolean(reminder_enabled),
           eta_enabled: Boolean(eta_enabled),
           eta_minutes: parseInt(eta_minutes || "10", 10),
-          eta_link: eta_link || null,
+          eta_link: etaLink,
+          cal_booking_uid: calBookingUid,
           status: "booked",
         })
         .select("*")
@@ -7104,7 +7164,11 @@ app.post(
         }
       }
 
-      return res.json({ appointment: data });
+      return res.json({ 
+        appointment: data,
+        cal_synced: Boolean(calBookingUid),
+        tracking: trackingUrls,
+      });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }

@@ -1,9 +1,9 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Mic } from "lucide-react";
+import { Search, RefreshCw } from "lucide-react";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { getMessages, sendSms } from "../lib/api";
+import { getMessages, sendSms, getSubscriptionStatus } from "../lib/api";
 import { normalizePhone } from "../lib/phone.js";
 import { supabase } from "../lib/supabase";
 
@@ -21,31 +21,53 @@ const formatTime = (value) => {
 const QUICK_ACTIONS = [
   {
     label: "EN ROUTE",
+    statusText: "EN ROUTE sent",
     payload: "Technician is en route to your location now. See you soon.",
     tone: "tactical-green",
   },
   {
     label: "ARRIVED",
+    statusText: "ARRIVED sent",
     payload: "Technician has arrived at the location.",
     tone: "tactical-cyan",
   },
   {
     label: "DELAYED",
+    statusText: "DELAYED sent",
     payload:
       "Running slightly behind schedule due to traffic. Will update shortly.",
     tone: "tactical-amber",
   },
   {
     label: "GATE ACCESS",
+    statusText: "GATE ACCESS sent",
     payload: "Technician is at the gate/door. Please provide access.",
     tone: "tactical-purple",
   },
   {
     label: "COMPLETE",
+    statusText: "COMPLETE sent",
     payload: "Service complete. Thank you for choosing {business}.",
     tone: "tactical-slate",
   },
 ];
+
+// Relative time formatting
+const formatRelativeTime = (dateString) => {
+  if (!dateString) return "--";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+};
 
 const toStatusText = (value) => {
   if (!value) return "";
@@ -105,12 +127,14 @@ export default function MessagesPage() {
   const [sending, setSending] = React.useState(false);
   const [status, setStatus] = React.useState("");
   const [businessName, setBusinessName] = React.useState("");
+  const [subscription, setSubscription] = React.useState({ status: "none", plan_type: null });
   const [form, setForm] = React.useState({
     to: "",
     body: "",
   });
   const [search, setSearch] = React.useState("");
   const [fatalError, setFatalError] = React.useState("");
+  const [lastRefresh, setLastRefresh] = React.useState(new Date());
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -120,6 +144,7 @@ export default function MessagesPage() {
         ? response.data.messages
         : [];
       setMessages(nextMessages);
+      setLastRefresh(new Date());
     } catch (err) {
       setMessages([]);
       setStatus(
@@ -131,8 +156,17 @@ export default function MessagesPage() {
     }
   }, []);
 
+  // Initial load
   React.useEffect(() => {
     load();
+  }, [load]);
+
+  // Auto-refresh every 10 seconds
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      load();
+    }, 10000);
+    return () => clearInterval(interval);
   }, [load]);
 
   React.useEffect(() => {
@@ -146,10 +180,13 @@ export default function MessagesPage() {
       setFatalError(message);
     };
     window.addEventListener("unhandledrejection", handleUnhandled);
-    const loadBusiness = async () => {
+    
+    const loadUserData = async () => {
       const { data: sessionData } = await supabase.auth.getSession();
       const user = sessionData?.session?.user;
       if (!user) return;
+      
+      // Load business name
       const { data: profile } = await supabase
         .from("profiles")
         .select("business_name")
@@ -158,8 +195,18 @@ export default function MessagesPage() {
       if (mounted) {
         setBusinessName(profile?.business_name || "");
       }
+      
+      // Load subscription status
+      try {
+        const subRes = await getSubscriptionStatus();
+        if (mounted) {
+          setSubscription(subRes.data || { status: "none", plan_type: null });
+        }
+      } catch {
+        // ignore
+      }
     };
-    loadBusiness();
+    loadUserData();
     return () => {
       mounted = false;
       window.removeEventListener("unhandledrejection", handleUnhandled);
@@ -170,7 +217,7 @@ export default function MessagesPage() {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const sendSmsPayload = async (payload) => {
+  const sendSmsPayload = async (payload, statusText = null) => {
     if (!form.to.trim()) {
       setStatus("Target phone required.");
       return;
@@ -186,7 +233,7 @@ export default function MessagesPage() {
         body: resolvedPayload,
         source: "user_app",
       });
-      setStatus(`${payload.split(".")[0]} dispatched.`);
+      setStatus(statusText || "Message sent!");
       setForm((prev) => ({ ...prev, body: "" }));
       await load();
     } catch (err) {
@@ -204,13 +251,13 @@ export default function MessagesPage() {
       setStatus("Enter a number and a message.");
       return;
     }
-    await sendSmsPayload(form.body.trim());
+    await sendSmsPayload(form.body.trim(), "Message sent!");
   };
 
-  const handleQuickAction = (event, payload) => {
+  const handleQuickAction = (event, action) => {
     event.preventDefault();
     event.stopPropagation();
-    sendSmsPayload(payload);
+    sendSmsPayload(action.payload, action.statusText);
   };
 
   const filteredLog = (Array.isArray(messages) ? messages : [])
@@ -230,13 +277,11 @@ export default function MessagesPage() {
       <div className="absolute inset-0 bg-grid-lines opacity-30" />
       <div className="relative z-10 px-6 py-10 dashboard-layout w-full">
         <SideNav
-          eligibleNewAgent
           onUpgrade={() => navigate("/billing")}
           onNewAgent={() => navigate("/wizard?new=1")}
-          billingStatus="active"
-          tier="calendar"
-          agentLive
-          lastUpdated={new Date()}
+          billingStatus={subscription.status}
+          tier={subscription.plan_type}
+          lastUpdated={lastRefresh}
         />
 
         <MessagesErrorBoundary>
@@ -261,15 +306,25 @@ export default function MessagesPage() {
               </div>
             ) : null}
             <div className="glass-panel rounded-3xl border border-white/10 p-6">
-              <div>
-                <p className="text-xs uppercase tracking-[0.4em] text-white/50">
-                  Legacy Messaging
-                </p>
-                <h1 className="mt-2 text-3xl font-semibold">COMMS DECK</h1>
-                <p className="mt-1 text-white/60 max-w-xl">
-                  Tactical quick actions for live deployments plus a terminal-inspired intel stream
-                  from every inbound/outbound webhook event.
-                </p>
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.4em] text-white/50">
+                    SMS Command Center
+                  </p>
+                  <h1 className="mt-2 text-3xl font-semibold">COMMS DECK</h1>
+                  <p className="mt-1 text-white/60 max-w-xl">
+                    Tactical quick actions for live deployments plus a terminal-inspired intel stream
+                    from every inbound/outbound webhook event.
+                  </p>
+                </div>
+                <button 
+                  className="icon-button" 
+                  onClick={load}
+                  disabled={loading}
+                  title="Refresh messages"
+                >
+                  <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+                </button>
               </div>
             </div>
 
@@ -280,7 +335,7 @@ export default function MessagesPage() {
                     key={action.label}
                     className={`quick-action ${action.tone}`}
                     type="button"
-                    onClick={(event) => handleQuickAction(event, action.payload)}
+                    onClick={(event) => handleQuickAction(event, action)}
                     disabled={sending}
                   >
                     <span className="text-xs tracking-[0.4em]">{action.label}</span>
@@ -310,7 +365,7 @@ export default function MessagesPage() {
               <div className="status-row">
                 {status ? <span className="deck-status">{toStatusText(status)}</span> : null}
                 <span className="text-xs text-white/40">
-                  {loading ? "Loading log…" : `${filteredLog.length} entries`}
+                  {loading ? "Syncing…" : `${filteredLog.length} entries • Auto-refresh on`}
                 </span>
               </div>
               <div className="intel-search">
@@ -340,8 +395,10 @@ export default function MessagesPage() {
                   filteredLog.map((message) => (
                     <div key={message.id} className="intel-entry">
                       <div className="intel-meta">
-                        <span>{message.direction?.toUpperCase() || "UNKNOWN"}</span>
-                        <span>{formatTime(message.created_at || message.timestamp)}</span>
+                        <span className={message.direction === "inbound" ? "text-green-400" : "text-cyan-400"}>
+                          {message.direction?.toUpperCase() || "UNKNOWN"}
+                        </span>
+                        <span>{formatRelativeTime(message.created_at || message.timestamp)}</span>
                         <span>{message.phone || "—"}</span>
                       </div>
                       <div className="intel-body">{message.body || "—"}</div>
@@ -356,7 +413,7 @@ export default function MessagesPage() {
             <div className="glass-panel rounded-3xl border border-white/10 p-4 compact-input">
               <div className="messages-form compact">
                 <div className="messages-form-row">
-                  <label className="deck-label">Manual Override</label>
+                  <label className="deck-label">Custom Message</label>
                   <textarea
                     className="glass-input"
                     rows={2}
@@ -374,13 +431,6 @@ export default function MessagesPage() {
                   disabled={sending || !form.body.trim()}
                 >
                   {sending ? "Sending…" : "Send SMS"}
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Voice to text coming soon"
-                >
-                  <Mic size={18} />
                 </button>
               </div>
             </div>
