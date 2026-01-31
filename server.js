@@ -333,6 +333,271 @@ const lookupUserIdByCustomerId = async (customerId) => {
   return data?.user_id || null;
 };
 
+// =============================================================================
+// OPS INFRASTRUCTURE HELPERS
+// =============================================================================
+
+/**
+ * Generate idempotency key from webhook payload
+ */
+const generateIdempotencyKey = (payload) => {
+  const hash = crypto.createHash("sha256");
+  hash.update(JSON.stringify(payload));
+  return hash.digest("hex");
+};
+
+/**
+ * Persist raw webhook to queue before processing (critical for audit)
+ */
+const persistRawWebhook = async ({ phoneNumber, userId, agentId, eventType, rawPayload, idempotencyKey }) => {
+  try {
+    const { error } = await supabaseAdmin.from("webhook_queue").insert({
+      phone_number: phoneNumber || "",
+      user_id: userId || null,
+      agent_id: agentId || null,
+      event_type: eventType,
+      raw_payload: rawPayload,
+      idempotency_key: idempotencyKey,
+      received_at: new Date().toISOString(),
+    });
+    if (error && !error.message.includes("duplicate")) {
+      console.error("[persistRawWebhook] insert error", error.message);
+    }
+    return !error;
+  } catch (err) {
+    console.error("[persistRawWebhook] error", err.message);
+    return false;
+  }
+};
+
+/**
+ * Mark webhook as processed in queue
+ */
+const markWebhookProcessed = async (idempotencyKey, result, errorMessage = null) => {
+  try {
+    await supabaseAdmin.from("webhook_queue").update({
+      processed_at: new Date().toISOString(),
+      processed_by: "system",
+      result,
+      error_message: errorMessage,
+    }).eq("idempotency_key", idempotencyKey);
+  } catch (err) {
+    console.error("[markWebhookProcessed] error", err.message);
+  }
+};
+
+/**
+ * Check if event is duplicate by idempotency key
+ */
+const isDuplicateEvent = async (idempotencyKey, table = "webhook_queue") => {
+  if (!idempotencyKey) return false;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from(table)
+      .select("id, processed_at")
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+    return !!data;
+  } catch (err) {
+    return false;
+  }
+};
+
+/**
+ * Store unknown phone webhook for ops review
+ */
+const storeUnknownPhone = async ({ phoneNumber, eventType, rawPayload }) => {
+  try {
+    await supabaseAdmin.from("unknown_phone").insert({
+      phone_number: phoneNumber,
+      event_type: eventType,
+      raw_payload: rawPayload,
+      received_at: new Date().toISOString(),
+    });
+    console.warn("[storeUnknownPhone] unknown number stored", { phoneNumber, eventType });
+  } catch (err) {
+    console.error("[storeUnknownPhone] error", err.message);
+  }
+};
+
+/**
+ * Store call event with normalized fields
+ */
+const storeCallEvent = async ({
+  eventId,
+  idempotencyKey,
+  phoneNumber,
+  userId,
+  agentId,
+  callSid,
+  direction,
+  fromNumber,
+  toNumber,
+  startTime,
+  answerTime,
+  endTime,
+  durationSeconds,
+  billedSeconds,
+  callStatus,
+  disconnectReason,
+  recordingUrl,
+  transcriptId,
+  agentUsed,
+  callTags,
+  rawPayload,
+  signatureValid,
+}) => {
+  try {
+    await supabaseAdmin.from("call_events").insert({
+      event_id: eventId || `call_${generateToken(12)}`,
+      idempotency_key: idempotencyKey,
+      phone_number: phoneNumber,
+      user_id: userId,
+      agent_id: agentId,
+      call_sid: callSid,
+      direction,
+      from_number: fromNumber,
+      to_number: toNumber,
+      start_time: startTime,
+      answer_time: answerTime,
+      end_time: endTime,
+      duration_seconds: durationSeconds || 0,
+      billed_seconds: billedSeconds || durationSeconds || 0,
+      call_status: callStatus,
+      disconnect_reason: disconnectReason,
+      recording_url: recordingUrl,
+      transcript_id: transcriptId,
+      agent_used: agentUsed,
+      call_tags: callTags,
+      raw_payload: rawPayload,
+      received_at: new Date().toISOString(),
+      processed_at: new Date().toISOString(),
+      signature_valid: signatureValid,
+    });
+  } catch (err) {
+    if (!err.message?.includes("duplicate")) {
+      console.error("[storeCallEvent] error", err.message);
+    }
+  }
+};
+
+/**
+ * Store SMS event with normalized fields
+ */
+const storeSmsEvent = async ({
+  eventId,
+  idempotencyKey,
+  phoneNumber,
+  userId,
+  agentId,
+  messageSid,
+  direction,
+  fromNumber,
+  toNumber,
+  body,
+  mediaUrls,
+  status,
+  billedUnits,
+  rawPayload,
+  signatureValid,
+}) => {
+  try {
+    await supabaseAdmin.from("sms_events").insert({
+      event_id: eventId || `sms_${generateToken(12)}`,
+      idempotency_key: idempotencyKey,
+      phone_number: phoneNumber,
+      user_id: userId,
+      agent_id: agentId,
+      message_sid: messageSid,
+      direction,
+      from_number: fromNumber,
+      to_number: toNumber,
+      body,
+      media_urls: mediaUrls,
+      status: status || "received",
+      billed_units: billedUnits || 1,
+      raw_payload: rawPayload,
+      received_at: new Date().toISOString(),
+      processed_at: new Date().toISOString(),
+      signature_valid: signatureValid,
+    });
+  } catch (err) {
+    if (!err.message?.includes("duplicate")) {
+      console.error("[storeSmsEvent] error", err.message);
+    }
+  }
+};
+
+/**
+ * Create operational alert
+ */
+const createAlert = async ({ alertType, severity, userId, phoneNumber, message, details }) => {
+  try {
+    await supabaseAdmin.from("alerts").insert({
+      alert_type: alertType,
+      severity,
+      user_id: userId,
+      phone_number: phoneNumber,
+      message,
+      details,
+    });
+  } catch (err) {
+    console.error("[createAlert] error", err.message);
+  }
+};
+
+/**
+ * Update limit_state based on usage (immediate enforcement)
+ */
+const evaluateUsageThresholds = async (userId, usage) => {
+  if (!usage) return;
+  const capSeconds = usage.call_cap_seconds || 0;
+  const usedSeconds = usage.call_used_seconds || 0;
+  const softThreshold = usage.soft_limit_threshold || 80;
+  const hardThreshold = usage.hard_limit_threshold || 100;
+  
+  if (capSeconds <= 0) return;
+  
+  const usagePercent = (usedSeconds / capSeconds) * 100;
+  let newState = "ok";
+  
+  if (usagePercent >= hardThreshold) {
+    newState = "blocked";
+  } else if (usagePercent >= softThreshold) {
+    newState = "warning";
+  }
+  
+  if (newState !== usage.limit_state) {
+    await supabaseAdmin.from("usage_limits").update({
+      limit_state: newState,
+      ...(newState === "warning" ? { last_warning_at: new Date().toISOString() } : {}),
+      ...(newState === "blocked" ? { last_block_at: new Date().toISOString() } : {}),
+    }).eq("user_id", userId);
+    
+    if (newState === "warning") {
+      await createAlert({
+        alertType: "usage_warning",
+        severity: "warning",
+        userId,
+        message: `Usage at ${Math.round(usagePercent)}% of limit`,
+        details: { usedSeconds, capSeconds, percent: usagePercent },
+      });
+    } else if (newState === "blocked") {
+      await createAlert({
+        alertType: "usage_blocked",
+        severity: "critical",
+        userId,
+        message: `Usage blocked at ${Math.round(usagePercent)}% of limit`,
+        details: { usedSeconds, capSeconds, percent: usagePercent },
+      });
+    }
+  }
+};
+
+// =============================================================================
+// END OPS INFRASTRUCTURE HELPERS
+// =============================================================================
+
 const sendSmsInternal = async ({
   userId,
   to,
@@ -2806,6 +3071,30 @@ const retellWebhookHandler = async (req, res) => {
       if (leadError) {
         return res.status(500).json({ error: leadError.message });
       }
+      
+      // Store call event (completed)
+      const idempotencyKey = callId || generateIdempotencyKey(payload);
+      await storeCallEvent({
+        eventId: callId,
+        idempotencyKey,
+        phoneNumber: call.to_number || payload.to_number || "",
+        userId: agentRow.user_id,
+        agentId,
+        callSid: callId,
+        direction: call.direction || "inbound",
+        fromNumber: call.from_number || payload.from_number,
+        toNumber: call.to_number || payload.to_number,
+        endTime: new Date().toISOString(),
+        durationSeconds,
+        billedSeconds: durationSeconds,
+        callStatus: "completed",
+        disconnectReason: disposition,
+        recordingUrl,
+        transcriptId: null,
+        agentUsed: agentId,
+        rawPayload: payload,
+      });
+      
       await auditLog({
         userId: agentRow.user_id,
         action: "lead_created",
@@ -3830,22 +4119,63 @@ app.post(
 );
 
 app.post("/webhooks/sms-inbound", async (req, res) => {
+  const receivedAt = new Date().toISOString();
   try {
     const payload = req.body || {};
     const toNumber = payload.to_number || payload.to || payload.phone_number;
     const fromNumber = payload.from_number || payload.from || payload.sender;
     const body = payload.body || payload.text || payload.message || "";
+    const messageSid = payload.message_sid || payload.sid || payload.id || null;
+    
+    // Generate idempotency key for deduplication
+    const idempotencyKey = messageSid || generateIdempotencyKey(payload);
+    
+    // Check for duplicate
+    if (await isDuplicateEvent(idempotencyKey, "sms_events")) {
+      console.log("[sms-inbound] duplicate event, skipping", { idempotencyKey });
+      return res.json({ ok: true, duplicate: true });
+    }
+    
     if (!toNumber || !fromNumber) {
       return res.status(400).json({ error: "to_number and from_number required" });
     }
+    
+    // Persist raw webhook immediately (before processing)
+    await persistRawWebhook({
+      phoneNumber: toNumber,
+      eventType: "sms_inbound",
+      rawPayload: payload,
+      idempotencyKey,
+    });
+    
     const { data: agentRow } = await supabaseAdmin
       .from("agents")
       .select("user_id, agent_id")
       .eq("phone_number", toNumber)
       .maybeSingle();
+    
     if (!agentRow?.user_id) {
+      // Store unknown phone for ops review
+      await storeUnknownPhone({ phoneNumber: toNumber, eventType: "sms_inbound", rawPayload: payload });
+      await markWebhookProcessed(idempotencyKey, "failed", "Agent not found for number");
       return res.status(404).json({ error: "Agent not found for number" });
     }
+    
+    // Store normalized SMS event
+    await storeSmsEvent({
+      idempotencyKey,
+      phoneNumber: toNumber,
+      userId: agentRow.user_id,
+      agentId: agentRow.agent_id,
+      messageSid,
+      direction: "inbound",
+      fromNumber,
+      toNumber,
+      body,
+      status: "received",
+      rawPayload: payload,
+    });
+    
     await supabaseAdmin.from("messages").insert({
       user_id: agentRow.user_id,
       direction: "inbound",
@@ -3869,8 +4199,11 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
         to: toNumber,
       },
     });
+    
+    await markWebhookProcessed(idempotencyKey, "success");
     return res.json({ ok: true });
   } catch (err) {
+    console.error("[sms-inbound] error", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -3883,6 +4216,19 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
   try {
     const payload = req.body || {};
     const inbound = payload.call_inbound || payload;
+    
+    // Generate idempotency key for this call event
+    const callId = inbound.call_id || payload.call_id || null;
+    const idempotencyKey = callId || generateIdempotencyKey(payload);
+    
+    // Persist raw webhook immediately (before any processing)
+    await persistRawWebhook({
+      phoneNumber: inbound.to_number || payload.to_number || "",
+      eventType: "call_inbound",
+      rawPayload: payload,
+      idempotencyKey,
+    });
+    
     // Doc: to_number always in payload (receiver); from_number always (caller)
     const rawTo =
       inbound.to_number ??
@@ -3894,6 +4240,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       inbound.phone_number ??
       payload.phone_number;
     if (!rawTo) {
+      await markWebhookProcessed(idempotencyKey, "failed", "to_number required");
       return res.status(400).json({ error: "to_number required" });
     }
     // Normalize to E.164 so lookup matches DB (e.g. +15045021309)
@@ -3904,6 +4251,8 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
         : digits.length === 11 && digits.startsWith("1")
           ? `+${digits}`
           : String(rawTo).trim();
+    const fromNumber = inbound.from_number ?? payload.from_number ?? null;
+    
     let agentRow = (
       await supabaseAdmin
         .from("agents")
@@ -3930,8 +4279,31 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     }
     if (!agentRow?.user_id) {
       console.warn("[retell-inbound] agent not found", { to_number: toNumber, rawTo, digits });
+      // Store unknown phone for ops review (don't drop the event)
+      await storeUnknownPhone({ phoneNumber: toNumber, eventType: "call_inbound", rawPayload: payload });
+      await markWebhookProcessed(idempotencyKey, "failed", "Agent not found for number");
       return res.status(404).json({ error: "Agent not found for number" });
     }
+    
+    // Update webhook queue with user info
+    await supabaseAdmin.from("webhook_queue").update({
+      user_id: agentRow.user_id,
+      agent_id: agentRow.agent_id,
+    }).eq("idempotency_key", idempotencyKey);
+    
+    // Store call event (inbound initiated)
+    await storeCallEvent({
+      eventId: callId || `call_inbound_${generateToken(8)}`,
+      idempotencyKey,
+      phoneNumber: toNumber,
+      userId: agentRow.user_id,
+      agentId: agentRow.agent_id,
+      direction: "inbound",
+      fromNumber,
+      toNumber,
+      callStatus: "ringing",
+      rawPayload: payload,
+    });
 
     const { data: subscription } = await supabaseAdmin
       .from("subscriptions")
@@ -4010,6 +4382,10 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     console.log("📤 [retell-inbound] response", JSON.stringify(responsePayload, null, 2));
     console.log(`⏱️ [retell-inbound] ${elapsed}ms`);
     if (elapsed > 5000) console.warn("⚠️ [retell-inbound] Slow: Retell timeout ~10s.");
+    
+    // Mark webhook as processed
+    await markWebhookProcessed(idempotencyKey, "success");
+    
     return res.status(200).json(responsePayload);
   } catch (err) {
     console.error("🔥 [retell-inbound] error", err);
