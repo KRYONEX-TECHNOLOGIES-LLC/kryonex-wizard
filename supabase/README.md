@@ -13,6 +13,7 @@ This folder contains the SQL schema and migrations used by the app.
 | `add_profiles_area_code.sql` | Adds business_name, area_code, and other columns to profiles. |
 | `check_profile_for_deploy.sql` | Diagnostic query to verify profile data before deploy. |
 | `deploy_error_profiles.sql` | Adds deploy_error column to profiles. |
+| `ops_layer_complete.sql` | **NEW** - Adds columns for recording storage (leads), usage_alerts table, cal_booking_uid to appointments. Run this to complete ops layer. |
 
 ## How to Apply
 

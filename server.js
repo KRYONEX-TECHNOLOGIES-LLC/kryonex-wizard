@@ -529,7 +529,7 @@ const storeSmsEvent = async ({
 };
 
 /**
- * Create operational alert
+ * Create operational alert and send email notifications for usage alerts
  */
 const createAlert = async ({ alertType, severity, userId, phoneNumber, message, details }) => {
   try {
@@ -541,6 +541,12 @@ const createAlert = async ({ alertType, severity, userId, phoneNumber, message, 
       message,
       details,
     });
+    
+    // Send email for usage alerts
+    if (alertType === "usage_warning" || alertType === "usage_blocked") {
+      const usagePercent = details?.percent || 0;
+      await sendUsageAlertEmail(userId, alertType, usagePercent, details);
+    }
   } catch (err) {
     console.error("[createAlert] error", err.message);
   }
@@ -889,6 +895,98 @@ const sendBookingAlert = async (userEmail, appointment) => {
       </div>
     `,
   });
+};
+
+/**
+ * Send usage alert email when user hits 80% or 100% of their limit
+ */
+const sendUsageAlertEmail = async (userId, alertType, usagePercent, details = {}) => {
+  if (!resend) {
+    console.warn("[sendUsageAlertEmail] Resend not configured, skipping email");
+    return;
+  }
+  
+  try {
+    // Get user email from profiles
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("email, business_name")
+      .eq("id", userId)
+      .maybeSingle();
+    
+    if (!profile?.email) {
+      console.warn("[sendUsageAlertEmail] No email found for user", { userId });
+      return;
+    }
+    
+    const businessName = profile.business_name || "Your Business";
+    const usedMinutes = Math.ceil((details.usedSeconds || 0) / 60);
+    const capMinutes = Math.ceil((details.capSeconds || 0) / 60);
+    const remainingMinutes = Math.max(0, capMinutes - usedMinutes);
+    const dashboardUrl = `${appBaseUrl}/dashboard`;
+    const billingUrl = `${appBaseUrl}/billing`;
+    
+    const isWarning = alertType === "usage_warning";
+    const isBlocked = alertType === "usage_blocked";
+    
+    const subject = isBlocked 
+      ? `Action Required: ${businessName} AI Minutes Depleted`
+      : `Usage Alert: ${businessName} at ${Math.round(usagePercent)}% of AI Minutes`;
+    
+    const headerColor = isBlocked ? "#dc2626" : "#f59e0b";
+    const headerText = isBlocked 
+      ? "Your AI minutes have been exhausted" 
+      : "You're approaching your AI minutes limit";
+    
+    const actionText = isBlocked
+      ? "Your AI agent is currently paused. Add more minutes to resume service."
+      : "Consider upgrading your plan or purchasing additional minutes to avoid service interruption.";
+    
+    const ctaText = isBlocked ? "Add More Minutes" : "View Usage & Upgrade";
+    const ctaUrl = isBlocked ? billingUrl : dashboardUrl;
+    
+    await resend.emails.send({
+      from: "Kryonex Alerts <alerts@kryonextech.com>",
+      to: profile.email,
+      subject,
+      html: `
+        <div style="font-family: 'Inter', system-ui, sans-serif; color: #0f172a; background:#f8fafc; padding:24px; border-radius:20px;">
+          <div style="background:${headerColor}; color:white; padding:16px; border-radius:12px; margin-bottom:20px;">
+            <h2 style="margin:0; font-size:18px;">${headerText}</h2>
+          </div>
+          
+          <p style="margin:0 0 18px; color:#475569;">${actionText}</p>
+          
+          <table cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; border:1px solid rgba(15,23,42,0.08); margin-bottom:20px;">
+            <tr>
+              <td style="padding:12px 16px; color:#475569; font-weight:600; border-bottom:1px solid #e2e8f0;">Usage</td>
+              <td style="padding:12px 16px; color:#0f172a; border-bottom:1px solid #e2e8f0;">${Math.round(usagePercent)}%</td>
+            </tr>
+            <tr>
+              <td style="padding:12px 16px; color:#475569; font-weight:600; border-bottom:1px solid #e2e8f0;">Minutes Used</td>
+              <td style="padding:12px 16px; color:#0f172a; border-bottom:1px solid #e2e8f0;">${usedMinutes} / ${capMinutes}</td>
+            </tr>
+            <tr>
+              <td style="padding:12px 16px; color:#475569; font-weight:600;">Remaining</td>
+              <td style="padding:12px 16px; color:${isBlocked ? '#dc2626' : '#0f172a'}; font-weight:${isBlocked ? '700' : '400'};">${remainingMinutes} minutes</td>
+            </tr>
+          </table>
+          
+          <a href="${ctaUrl}" style="display:inline-block;padding:14px 22px;background:${isBlocked ? '#dc2626' : '#0f172a'};color:#f8fafc;text-decoration:none;border-radius:10px;font-weight:700;">
+            ${ctaText}
+          </a>
+          
+          <p style="margin:20px 0 0; color:#94a3b8; font-size:12px;">
+            You're receiving this because you're the owner of ${businessName} on Kryonex.
+          </p>
+        </div>
+      `,
+    });
+    
+    console.log("[sendUsageAlertEmail] sent", { userId, alertType, usagePercent });
+  } catch (err) {
+    console.error("[sendUsageAlertEmail] error", err.message);
+  }
 };
 
 // Stripe webhook needs raw body
@@ -2599,16 +2697,43 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     const calConfig = await getCalConfig(userId);
     if (calConfig) {
       const booking = await createCalBooking({ config: calConfig, start, args });
+      
+      // Also insert into appointments table so it appears in calendar UI
+      const { data: appointmentData, error: appointmentError } = await supabaseAdmin
+        .from("appointments")
+        .insert({
+          user_id: userId,
+          customer_name: args.customer_name || booking?.attendee?.name || "Customer",
+          customer_phone: args.customer_phone || booking?.attendee?.phoneNumber || null,
+          start_time: booking?.start || start.toISOString(),
+          end_time: booking?.end || end.toISOString(),
+          location: args.service_address || args.location || null,
+          notes: args.service_issue || args.notes || `Booked via Cal.com`,
+          status: "booked",
+          cal_booking_uid: booking?.uid || booking?.id || null,
+        })
+        .select("*")
+        .single();
+      
+      if (appointmentError) {
+        console.warn("[book_appointment] Cal.com booking succeeded but DB insert failed", {
+          userId,
+          booking_uid: booking?.uid,
+          error: appointmentError.message,
+        });
+      }
+      
       await logEvent({
         userId,
         actionType: "APPOINTMENT_BOOKED",
         metaData: {
           booking_uid: booking?.uid || booking?.id || null,
+          appointment_id: appointmentData?.id || null,
           start: booking?.start || start.toISOString(),
           source: "cal.com",
         },
       });
-      return { ok: true, source: "cal.com", booking };
+      return { ok: true, source: "cal.com", booking, appointment: appointmentData };
     }
     const { data, error } = await supabaseAdmin
       .from("appointments")
@@ -3237,6 +3362,12 @@ const retellWebhookHandler = async (req, res) => {
           minutes_used: Math.ceil(updatedUsed / 60),
           cap_minutes: Math.ceil(total / 60),
           remaining_minutes: Math.ceil(remaining / 60),
+        });
+
+        // Evaluate usage thresholds and trigger alerts/emails if needed
+        await evaluateUsageThresholds(agentRow.user_id, {
+          ...usage,
+          call_used_seconds: updatedUsed,
         });
 
         if (total > 0 && remaining / total <= 0.2) {
