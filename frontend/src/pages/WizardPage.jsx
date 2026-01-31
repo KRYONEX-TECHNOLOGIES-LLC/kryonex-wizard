@@ -720,7 +720,8 @@ export default function WizardPage({ embeddedMode }) {
         setWizardLocked(false);
         setWizardLockReason("");
         if (!isOnboarded) {
-          const savedForm = getSavedState(formKey) || {};
+          const userFormKey = `wizard.form.${user.id}`;
+          const savedForm = getSavedState(userFormKey) || {};
           const hasWizardProgress = Boolean(
             savedForm.nameInput || savedForm.areaCodeInput
           );
@@ -888,16 +889,22 @@ export default function WizardPage({ embeddedMode }) {
     }
     setIsDeploying(true);
     try {
-      await saveOnboardingIdentity({
-        businessName,
-        areaCode,
-        industry: form.industryInput || "hvac",
-      }).catch(() => {});
-      const res = await deployAgentSelf({
+      try {
+        await saveOnboardingIdentity({
+          businessName,
+          areaCode,
+          industry: form.industryInput || "hvac",
+        });
+      } catch (saveErr) {
+        console.warn("[handleSelfDeploy] saveOnboardingIdentity failed, continuing with deploy", saveErr);
+      }
+      const payload = {
         business_name: businessName,
         area_code: areaCode,
         transfer_number: form.transferNumber || null,
-      });
+      };
+      console.log("🚀 PAYLOAD LEAVING FRONTEND:", payload);
+      const res = await deployAgentSelf(payload);
       setPhoneNumber(res.data?.phone_number || "");
       const statusRes = await getDeployStatus();
       if (statusRes?.data) setDeployStatus(statusRes.data);

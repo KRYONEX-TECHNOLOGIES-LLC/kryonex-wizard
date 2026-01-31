@@ -4763,6 +4763,7 @@ app.post(
     const deployRequestId = `deploy-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const ts = new Date().toISOString();
     const uid = req.effectiveUserId ?? req.user.id;
+    console.log("📥 SERVER RECEIVED:", req.body || {});
     console.info("[deploy-agent-self] start", {
       deployRequestId,
       userId: uid,
@@ -4789,7 +4790,7 @@ app.post(
           ...(areaCodeRaw && /^\d{3}$/.test(areaCodeRaw) ? { area_code: areaCodeRaw } : {}),
         }, { onConflict: "user_id" });
         if (upsertErr) {
-          console.error("[deploy-agent-self] profiles upsert failed", { userId: uid, error: upsertErr.message });
+          console.error("🔥 DB SAVE FAILED (profiles):", { userId: uid, error: upsertErr.message });
         } else {
           console.info("[deploy-agent-self] profiles updated", { userId: uid, business_name: businessNameRaw });
         }
@@ -5991,6 +5992,7 @@ const provisionPhoneNumberOnly = async ({
   areaCode,
   deployRequestId: reqId,
   transferNumber: transferNumberRaw,
+  updateExisting = false,
 }) => {
   const providerBaseUrl = (retellClient.defaults?.baseURL || "https://api.retellai.com").replace(/\/$/, "");
   const phonePath = "/create-phone-number";
@@ -6045,8 +6047,7 @@ const provisionPhoneNumberOnly = async ({
     transferNumberRaw != null
       ? String(transferNumberRaw).replace(/[^\d+]/g, "").trim() || null
       : null;
-  const { error: insertError } = await supabaseAdmin.from("agents").insert({
-    user_id: userId,
+  const agentRow = {
     agent_id: pendingAgentId,
     phone_number: phoneNumber,
     voice_id: null,
@@ -6066,9 +6067,26 @@ const provisionPhoneNumberOnly = async ({
     deploy_request_id: reqId || null,
     nickname: nickname || null,
     provider_number_id: phoneNumber || null,
-  });
-  if (insertError) {
-    throw new Error(insertError.message);
+  };
+  if (updateExisting) {
+    const { error: updateError } = await supabaseAdmin
+      .from("agents")
+      .update(agentRow)
+      .eq("user_id", userId);
+    if (updateError) {
+      console.error("[provisionPhoneNumberOnly] update failed", { userId, error: updateError.message });
+      throw new Error(updateError.message);
+    }
+    console.info("[provisionPhoneNumberOnly] updated existing row", { userId, phone_number: phoneNumber });
+  } else {
+    const { error: insertError } = await supabaseAdmin.from("agents").insert({
+      user_id: userId,
+      ...agentRow,
+    });
+    if (insertError) {
+      console.error("[provisionPhoneNumberOnly] insert failed", { userId, error: insertError.message });
+      throw new Error(insertError.message);
+    }
   }
 
   await auditLog({
@@ -6161,26 +6179,16 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (existingAgent?.phone_number) {
-    await supabaseAdmin
-      .from("profiles")
-      .update({ deploy_error: null })
-      .eq("user_id", targetUserId);
-    return {
-      ok: true,
-      phone_number: existingAgent.phone_number,
-      agent_id: existingAgent.agent_id,
-      existing: true,
-    };
-  }
+  const updateExisting = Boolean(existingAgent?.phone_number);
 
   const plan = sub?.plan_type || null;
-  console.info("[deployAgentForUser] calling provisionPhoneNumberOnly (number only; assign template in Retell later)", {
+  console.info("[deployAgentForUser] calling provisionPhoneNumberOnly", {
     deployRequestId: reqId,
     userId: targetUserId,
     businessName,
     areaCode,
     plan,
+    updateExisting: updateExisting || undefined,
   });
   const transferNumber =
     options.transferNumber != null
@@ -6193,6 +6201,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
       areaCode,
       deployRequestId: reqId,
       transferNumber: transferNumber || undefined,
+      updateExisting,
     });
     await supabaseAdmin
       .from("profiles")
