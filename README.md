@@ -1,15 +1,15 @@
 # Kryonex Wizard
 
 Kryonex Wizard is a full-stack app for onboarding, deploying, and managing AI call agents,
-with an admin control plane, calendar booking, live tracking, and billing flows.
+with an admin control plane, calendar booking, live tracking, billing flows, and ops infrastructure.
 
 ## Architecture
 - `frontend/`: Vite + React UI for user and admin portals.
-- `server.js`: Express API server for Retell, Stripe, messaging, and data orchestration.
-- `supabase/`: SQL schema and RLS notes for Supabase storage.
+- `server.js`: Express API server for Retell, Stripe, messaging, webhooks, and data orchestration.
+- `supabase/`: SQL schema, migrations, and RLS policies for Supabase storage.
 - `cypress/`: End-to-end tests (smoke + wizard matrix).
-- `scripts/`: Utility scripts for API checks and test user provisioning.
-- `docs/`: Admin workflow and feature docs.
+- `scripts/`: Utility scripts for API checks, test users, and webhook simulation.
+- `docs/`: Admin workflow, ops checklist, and feature docs.
 
 ## Quick Start
 1) Install deps:
@@ -74,9 +74,24 @@ Common env vars for Cypress:
 - `npm run seed:test-user` runs `scripts/create-test-user.js`
 
 ## Docs
+- **`docs/HANDOFF.md`** — Full handoff for new devs/AI (start here).
 - `docs/README.md` — Index of feature docs.
 - `docs/ADMIN_WORKFLOW.md` — Admin mini onboarding, Fleet Registry, and admin menu security.
+- `docs/OPS_CHECKLIST.md` — Ops infrastructure implementation status and testing checklist.
+- `docs/AGENT_PROMPT_GRACE.md` — Grace AI agent prompt with dynamic variables.
+
+## Ops Infrastructure
+The system includes enterprise-grade webhook handling and event storage:
+- **Raw webhook persistence** — All webhooks stored before processing for replay/audit.
+- **Idempotency** — SHA256-based deduplication prevents double-counting.
+- **Event storage** — `call_events` and `sms_events` tables with normalized fields.
+- **Unknown phone handling** — Webhooks for unrecognized numbers stored, not dropped.
+- **Usage enforcement** — Soft/hard thresholds with immediate blocking.
+- **Alerting** — Operational alerts for usage warnings, blocks, and failures.
+
+See `supabase/ops_infrastructure.sql` for the full schema.
 
 ## Notes
-- Do not commit real secrets.
+- Do not commit real secrets (`.env` files are gitignored).
 - Retell/Stripe webhooks require a public `SERVER_URL`.
+- Run `supabase/ops_infrastructure.sql` in Supabase SQL Editor to create ops tables.

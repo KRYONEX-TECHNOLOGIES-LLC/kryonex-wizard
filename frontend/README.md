@@ -44,6 +44,10 @@ The “Admin Command” menu option and admin routes are visible only when `user
 
 ## State + Persistence
 - Wizard state is persisted via `localStorage` keys with `kryonex:` prefix.
+- Form data saved to both generic (`wizard.form`) and user-specific (`wizard.form.{userId}`) keys for reliability across page reloads (e.g., after Stripe checkout redirect).
+- Business name and area code are saved to the database at multiple points:
+  1. When clicking "Continue to Plans" on Step 1 (`/onboarding/identity`)
+  2. When clicking "Deploy Agent" on Step 3 (`/deploy-agent-self`)
 - Admin mode toggles by writing `kryonex_admin_mode=admin` (only meaningful if user is already admin or admin-email).
 
 ## Retell + Webhooks (Backend)
