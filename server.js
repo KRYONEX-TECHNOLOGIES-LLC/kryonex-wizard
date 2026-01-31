@@ -6222,12 +6222,13 @@ Business Variables:
       "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
     );
   }
-  // Retell create-agent: response_engine with type and llm_id. Don't specify version - Retell uses latest LLM version automatically.
+  // Retell create-agent: response_engine with type and llm_id. Don't specify version on create - we'll update after.
   const re = template.response_engine || {};
+  const masterLlmVersion = re.version; // Save master's LLM version to apply after creation
   const response_engine = {
     type: re.type || "retell-llm",
     llm_id: re.llm_id,
-    // version omitted - new agents can't specify version > 0, Retell uses latest
+    // version omitted for creation - Retell doesn't allow version > 0 on create
   };
   if (!response_engine.llm_id) {
     throw new Error("Template agent response_engine missing llm_id. Check RETELL_MASTER_AGENT_ID_HVAC points to a Retell-LLM agent.");
@@ -6276,12 +6277,27 @@ Business Variables:
 
   // Retell update-agent: only documented fields (https://docs.retellai.com/api-references/update-agent)
   // Do not send retell_llm_dynamic_variables or prompt – they cause 400
+  // Include response_engine.version to use the master's published LLM version (not draft)
   const updatePayload = {
     agent_name: `${businessName} AI Agent`,
     webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
     webhook_timeout_ms: 10000,
     voice_id: resolvedVoiceId,
+    // Set the LLM version to match master's published version (if available)
+    ...(masterLlmVersion && masterLlmVersion > 0 ? {
+      response_engine: {
+        type: re.type || "retell-llm",
+        llm_id: re.llm_id,
+        version: masterLlmVersion,
+      },
+    } : {}),
   };
+  
+  console.info("[createAdminAgent] will update agent with LLM version", {
+    deployRequestId: reqId,
+    masterLlmVersion,
+    willSetVersion: masterLlmVersion && masterLlmVersion > 0,
+  });
   const updatePath = `/update-agent/${agentId}`;
   const updateUrl = `${providerBaseUrl}${updatePath}`;
   console.info("[createAdminAgent] provider call about to run", {
@@ -6460,12 +6476,13 @@ const provisionPhoneNumberOnly = async ({
   }
   
   // Step 2: Create agent clone pointing to master's LLM (includes functions/KB)
-  // Note: Don't specify version for new agents - Retell uses latest LLM version automatically
+  // Note: Don't specify version for new agents - we'll update it after creation
   const re = template.response_engine || {};
+  const masterLlmVersion = re.version; // Save the master's LLM version to apply after creation
   const response_engine = {
     type: re.type || "retell-llm",
     llm_id: re.llm_id,
-    // version omitted - new agents can't specify version > 0, Retell uses latest
+    // version omitted for creation - Retell doesn't allow version > 0 on create
   };
   
   if (!response_engine.llm_id) {
@@ -6498,6 +6515,36 @@ const provisionPhoneNumberOnly = async ({
       deployRequestId: reqId,
       agent_id: agentId,
     });
+    
+    // Step 2b: Update agent to use the master's LLM version (can't set version > 0 on create)
+    if (masterLlmVersion && masterLlmVersion > 0) {
+      console.info("[provisionAgent] updating agent to LLM version", {
+        deployRequestId: reqId,
+        agent_id: agentId,
+        targetVersion: masterLlmVersion,
+      });
+      try {
+        await retellClient.patch(`/update-agent/${agentId}`, {
+          response_engine: {
+            type: re.type || "retell-llm",
+            llm_id: re.llm_id,
+            version: masterLlmVersion,
+          },
+        });
+        console.info("[provisionAgent] agent LLM version updated", {
+          deployRequestId: reqId,
+          agent_id: agentId,
+          version: masterLlmVersion,
+        });
+      } catch (updateErr) {
+        console.warn("[provisionAgent] failed to update LLM version (agent still usable)", {
+          deployRequestId: reqId,
+          agent_id: agentId,
+          error: updateErr.message,
+        });
+        // Don't throw - agent is still usable with draft version
+      }
+    }
   } catch (err) {
     console.error("[provisionAgent] create-agent failed", {
       deployRequestId: reqId,
