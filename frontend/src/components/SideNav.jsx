@@ -80,6 +80,10 @@ export default function SideNav({
           <span className="nav-icon">💰</span>
           Lead Grid
         </Link>
+        <Link to="/customers" className="side-nav-link">
+          <span className="nav-icon">👥</span>
+          Customers
+        </Link>
         <Link to={adminEnabled ? "/admin/calendar" : "/calendar"} className="side-nav-link">
           <span className="nav-icon">📍</span>
           Calendar
@@ -99,6 +103,22 @@ export default function SideNav({
         <Link to="/black-box" className="side-nav-link">
           <span className="nav-icon">🎙️</span>
           Black Box
+        </Link>
+        <Link to="/analytics" className="side-nav-link">
+          <span className="nav-icon">📊</span>
+          Analytics
+        </Link>
+        <Link to="/referrals" className="side-nav-link">
+          <span className="nav-icon">🎁</span>
+          Referrals
+        </Link>
+        <Link to="/integrations" className="side-nav-link">
+          <span className="nav-icon">🔗</span>
+          Integrations
+        </Link>
+        <Link to="/settings" className="side-nav-link">
+          <span className="nav-icon">⚙️</span>
+          Settings
         </Link>
         {adminEnabled && !isSeller ? (
           <div className="side-nav-admin-group">
@@ -136,6 +156,9 @@ export default function SideNav({
                 <Link to="/admin/financials" className="side-nav-link">
                   Revenue Telemetry
                 </Link>
+                <Link to="/admin/referrals" className="side-nav-link">
+                  Referral Control
+                </Link>
               </div>
             ) : null}
           </div>
@@ -148,7 +171,7 @@ export default function SideNav({
         <div className="side-nav-pill">Billing {statusLabel}</div>
         <div className="side-nav-pill">Tier {tierLabel}</div>
         <div className="side-nav-pill">Pulse {timeLabel}</div>
-        <Link to="/billing" className="side-nav-link side-nav-settings">
+        <Link to="/settings" className="side-nav-link side-nav-settings">
           ⚙️ Settings
         </Link>
       </div>

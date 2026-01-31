@@ -25,8 +25,14 @@ import AdminLeadsPage from "./pages/AdminLeadsPage.jsx";
 import AdminBlackBoxPage from "./pages/AdminBlackBoxPage.jsx";
 import AdminMessagesPage from "./pages/AdminMessagesPage.jsx";
 import AdminCalendarPage from "./pages/AdminCalendarPage.jsx";
+import AnalyticsPage from "./pages/AnalyticsPage.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
+import ReferralPage from "./pages/ReferralPage.jsx";
+import CustomersPage from "./pages/CustomersPage.jsx";
+import IntegrationsPage from "./pages/IntegrationsPage.jsx";
 import ThankYouPage from "./pages/ThankYouPage.jsx";
 import AdminStripeSuccessPage from "./pages/AdminStripeSuccessPage.jsx";
+import AdminReferralsPage from "./pages/AdminReferralsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import RequireOnboarding from "./components/RequireOnboarding.jsx";
@@ -154,6 +160,56 @@ export default function App() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/analytics"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <AnalyticsPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <SettingsPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/referrals"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <ReferralPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/customers"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <CustomersPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/integrations"
+        element={
+          <ProtectedRoute>
+            <RequireOnboarding>
+              <IntegrationsPage />
+            </RequireOnboarding>
+          </ProtectedRoute>
+        }
+      />
       <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
       <Route
         path="/admin/dashboard"
@@ -225,6 +281,16 @@ export default function App() {
           <ProtectedRoute>
             <RequireAdmin>
               <AdminFinancialsPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/referrals"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminReferralsPage />
             </RequireAdmin>
           </ProtectedRoute>
         }

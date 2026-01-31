@@ -39,6 +39,26 @@ const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const formatLocalDateKey = (date) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 const formatLocalTime = (date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+// Status-based color coding for appointments
+const getStatusColor = (status) => {
+  const s = (status || "").toLowerCase();
+  if (s === "confirmed" || s === "complete" || s === "completed") return "status-confirmed";
+  if (s === "pending" || s === "booked") return "status-pending";
+  if (s === "cancelled" || s === "canceled") return "status-cancelled";
+  if (s === "no-show" || s === "noshow") return "status-noshow";
+  return "status-default";
+};
+
+const getStatusBadgeClass = (status) => {
+  const s = (status || "").toLowerCase();
+  if (s === "confirmed" || s === "complete" || s === "completed") return "badge-confirmed";
+  if (s === "pending" || s === "booked") return "badge-pending";
+  if (s === "cancelled" || s === "canceled") return "badge-cancelled";
+  if (s === "no-show" || s === "noshow") return "badge-noshow";
+  return "badge-booked";
+};
+
 const PUBLIC_CAL_MONTH_KEY = "publicCalendar.currentMonth";
 const PUBLIC_CAL_SELECTED_KEY = "publicCalendar.selectedDate";
 const PUBLIC_CAL_FORM_KEY = "publicCalendar.form";
@@ -345,6 +365,32 @@ export default function CalendarPage() {
   const countForDay = (date) =>
     appointments.filter((appt) => appointmentDateKey(appt) === dayKey(date)).length;
 
+  // Get appointments for a specific day
+  const getAppointmentsForDay = (date) =>
+    appointments.filter((appt) => appointmentDateKey(appt) === dayKey(date));
+
+  // Get primary status color for a day (uses first appointment's status)
+  const getDayStatusClass = (date) => {
+    const dayAppts = getAppointmentsForDay(date);
+    if (!dayAppts.length) return "";
+    // Priority: confirmed > pending > other
+    const confirmed = dayAppts.find(a => 
+      (a.status || "").toLowerCase() === "confirmed" || 
+      (a.status || "").toLowerCase() === "completed"
+    );
+    if (confirmed) return "day-confirmed";
+    const pending = dayAppts.find(a => 
+      (a.status || "").toLowerCase() === "pending" ||
+      (a.status || "").toLowerCase() === "booked"
+    );
+    if (pending) return "day-pending";
+    const cancelled = dayAppts.find(a => 
+      (a.status || "").toLowerCase().includes("cancel")
+    );
+    if (cancelled) return "day-cancelled";
+    return "day-booked";
+  };
+
   const handleCreateTracking = async () => {
     setTrackingStatus("");
     if (!form.customer_phone) {
@@ -606,10 +652,11 @@ export default function CalendarPage() {
                 const selected = dayKey(dayDate) === dayKey(selectedDate);
                 const intensity =
                   count >= 4 ? "high" : count >= 2 ? "mid" : count > 0 ? "low" : "none";
+                const statusClass = getDayStatusClass(dayDate);
                 return (
                   <button
                     key={dayDate.toISOString()}
-                    className={`calendar-day ${intensity} ${
+                    className={`calendar-day ${intensity} ${statusClass} ${
                       selected ? "active" : ""
                     }`}
                     onClick={() => openDrawerForDate(dayDate)}
@@ -696,27 +743,60 @@ export default function CalendarPage() {
                       minute: "2-digit",
                     })
                   : "--";
+                const endTimeLabel = appt.start_time && appt.duration_minutes
+                  ? new Date(new Date(appt.start_time).getTime() + (appt.duration_minutes || 60) * 60000).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : null;
                 return (
                   <div
                     key={appt.id}
                     id={`manifest-${appt.id}`}
-                    className="calendar-manifest-card manifest-focus-card"
+                    className={`calendar-manifest-card manifest-focus-card ${getStatusColor(appt.status)}`}
                   >
                     <div className="calendar-manifest-meta">
-                      <span className="badge">
+                      <span className={`badge ${getStatusBadgeClass(appt.status)}`}>
                         {(appt.status || "booked").toString().toUpperCase()}
                       </span>
-                      <span className="calendar-manifest-time">{timeLabel}</span>
+                      <span className="calendar-manifest-time">
+                        {timeLabel}{endTimeLabel ? ` - ${endTimeLabel}` : ""}
+                      </span>
                     </div>
-                    <h3>
-                      {appt.customer_name || "Unknown"}{" "}
-                      {appt.notes ? `(${appt.notes})` : ""}
+                    <h3 className="manifest-customer-name">
+                      {appt.customer_name || "Unknown"}
                     </h3>
-                    <p>{appt.location || "Location TBD"}</p>
+                    {appt.notes && (
+                      <p className="manifest-notes">{appt.notes}</p>
+                    )}
+                    <div className="manifest-details">
+                      <div className="manifest-detail-row">
+                        <span className="detail-label">📍 Location</span>
+                        <span className="detail-value">{appt.location || "TBD"}</span>
+                      </div>
+                      {appt.customer_phone && (
+                        <div className="manifest-detail-row">
+                          <span className="detail-label">📞 Phone</span>
+                          <span className="detail-value">{appt.customer_phone}</span>
+                        </div>
+                      )}
+                      {appt.duration_minutes && (
+                        <div className="manifest-detail-row">
+                          <span className="detail-label">⏱️ Duration</span>
+                          <span className="detail-value">{appt.duration_minutes} min</span>
+                        </div>
+                      )}
+                      {appt.job_value && (
+                        <div className="manifest-detail-row">
+                          <span className="detail-label">💰 Value</span>
+                          <span className="detail-value">${appt.job_value}</span>
+                        </div>
+                      )}
+                    </div>
                     <div className="calendar-manifest-actions">
                       {appt.customer_phone ? (
                         <a
-                          className="action-button"
+                          className="action-button call-btn"
                           href={`tel:${appt.customer_phone}`}
                           onClick={(event) => event.stopPropagation()}
                         >
@@ -731,6 +811,20 @@ export default function CalendarPage() {
                         onClick={() => openEditModal(appt)}
                       >
                         ✏️ Edit
+                      </button>
+                      <button
+                        className="action-button complete-btn"
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await updateAppointment(appt.id, { status: "completed" });
+                            loadAppointments(currentMonth);
+                          } catch (err) {
+                            console.error("Failed to mark complete:", err);
+                          }
+                        }}
+                      >
+                        ✓ Complete
                       </button>
                       <button
                         className="action-button danger"

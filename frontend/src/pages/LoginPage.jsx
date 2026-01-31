@@ -3,7 +3,10 @@ import { motion } from "framer-motion";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import BackgroundGrid from "../components/BackgroundGrid.jsx";
 import { supabase } from "../lib/supabase";
-import { autoGrantAdmin, logBlackBoxEvent, verifyAdminCode } from "../lib/api";
+import { autoGrantAdmin, logBlackBoxEvent, verifyAdminCode, recordReferralSignup } from "../lib/api";
+
+// Referral code storage key
+const REFERRAL_CODE_KEY = "kryonex_referral_code";
 
 export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
   const navigate = useNavigate();
@@ -25,15 +28,41 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
   const [setPasswordError, setSetPasswordError] = React.useState("");
   const [resendLoading, setResendLoading] = React.useState(false);
   const [emailNotConfirmed, setEmailNotConfirmed] = React.useState(false);
+  const [referralCode, setReferralCode] = React.useState("");
+
+  // Capture referral code from URL on initial load
+  React.useEffect(() => {
+    const refCode = searchParams.get("ref");
+    if (refCode) {
+      // Store in localStorage (persists even if user leaves page)
+      localStorage.setItem(REFERRAL_CODE_KEY, refCode.toUpperCase());
+      setReferralCode(refCode.toUpperCase());
+      console.log("[Referral] Code captured:", refCode.toUpperCase());
+      // Clean the URL but keep other params
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("ref");
+      setSearchParams(newParams, { replace: true });
+    } else {
+      // Check if we have a stored referral code
+      const storedCode = localStorage.getItem(REFERRAL_CODE_KEY);
+      if (storedCode) {
+        setReferralCode(storedCode);
+      }
+    }
+  }, [searchParams, setSearchParams]);
 
   React.useEffect(() => {
     const reason = searchParams.get("reason");
     if (reason === "idle") {
       setNotice("You were signed out due to inactivity. Sign in again.");
-      setSearchParams({}, { replace: true });
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("reason");
+      setSearchParams(newParams, { replace: true });
     } else if (reason === "session") {
       setNotice("Your session ended. Sign in again.");
-      setSearchParams({}, { replace: true });
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("reason");
+      setSearchParams(newParams, { replace: true });
     }
   }, [searchParams, setSearchParams]);
 
@@ -172,6 +201,21 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
       return;
     }
     window.localStorage.setItem("kryonex_session_ok", "1");
+    
+    // Record referral on successful signup/login
+    const storedRefCode = localStorage.getItem(REFERRAL_CODE_KEY);
+    if (storedRefCode && authResult.data?.session) {
+      try {
+        await recordReferralSignup(storedRefCode);
+        // Clear the stored referral code after successful recording
+        localStorage.removeItem(REFERRAL_CODE_KEY);
+        console.log("[Referral] Successfully recorded referral:", storedRefCode);
+      } catch (refErr) {
+        console.warn("[Referral] Failed to record referral:", refErr);
+        // Don't block login on referral error
+      }
+    }
+    
     try {
       await logBlackBoxEvent("LOGIN", { mode, email });
     } catch {

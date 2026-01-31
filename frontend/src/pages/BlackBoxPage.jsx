@@ -2,7 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { fetchUserCallRecordings } from "../lib/api";
+import { fetchUserCallRecordings, flagLead } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
 const formatDuration = (seconds) => {
@@ -25,7 +25,107 @@ const outcomeTone = (value) => {
   const normalized = String(value || "").toLowerCase();
   if (normalized.includes("book")) return "badge-booked";
   if (normalized.includes("miss") || normalized.includes("hangup")) return "badge-missed";
+  if (normalized.includes("transfer")) return "badge-transferred";
   return "badge-inquiry";
+};
+
+const getSentimentClass = (sentiment) => {
+  const s = (sentiment || "").toLowerCase();
+  if (s === "positive") return "sentiment-positive";
+  if (s === "negative") return "sentiment-negative";
+  return "sentiment-neutral";
+};
+
+// Waveform Visualizer Component
+const WaveformVisualizer = ({ audioRef, isPlaying, playingId, recordId }) => {
+  const canvasRef = React.useRef(null);
+  const animationRef = React.useRef(null);
+  const analyserRef = React.useRef(null);
+  const sourceRef = React.useRef(null);
+  const audioContextRef = React.useRef(null);
+  
+  React.useEffect(() => {
+    if (!isPlaying || playingId !== recordId || !canvasRef.current) {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+      return;
+    }
+    
+    const audio = audioRef.current;
+    if (!audio) return;
+    
+    // Create audio context if not exists
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    
+    const ctx = audioContextRef.current;
+    
+    // Create analyser if not exists
+    if (!analyserRef.current) {
+      analyserRef.current = ctx.createAnalyser();
+      analyserRef.current.fftSize = 128;
+    }
+    
+    // Create source if not exists
+    if (!sourceRef.current) {
+      try {
+        sourceRef.current = ctx.createMediaElementSource(audio);
+        sourceRef.current.connect(analyserRef.current);
+        analyserRef.current.connect(ctx.destination);
+      } catch (e) {
+        // Source already created for this element
+      }
+    }
+    
+    const analyser = analyserRef.current;
+    const canvas = canvasRef.current;
+    const canvasCtx = canvas.getContext("2d");
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const draw = () => {
+      animationRef.current = requestAnimationFrame(draw);
+      analyser.getByteFrequencyData(dataArray);
+      
+      canvasCtx.fillStyle = "rgba(0, 0, 0, 0.2)";
+      canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      const barWidth = (canvas.width / bufferLength) * 2.5;
+      let x = 0;
+      
+      for (let i = 0; i < bufferLength; i++) {
+        const barHeight = (dataArray[i] / 255) * canvas.height;
+        
+        // Cyan gradient
+        const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, 0);
+        gradient.addColorStop(0, "#06b6d4");
+        gradient.addColorStop(1, "#22d3ee");
+        canvasCtx.fillStyle = gradient;
+        
+        canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+        x += barWidth + 1;
+      }
+    };
+    
+    draw();
+    
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [isPlaying, playingId, recordId, audioRef]);
+  
+  return (
+    <canvas 
+      ref={canvasRef} 
+      className="waveform-canvas"
+      width="200"
+      height="40"
+    />
+  );
 };
 
 const MOCK_DATA = [
@@ -37,6 +137,11 @@ const MOCK_DATA = [
     status: "booked",
     created_at: "2026-01-23T10:42:00",
     recording_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    summary: "Customer called about HVAC repair. AC unit not cooling. Scheduled appointment for tomorrow at 2 PM.",
+    sentiment: "positive",
+    issue_type: "AC Repair",
+    service_address: "123 Main St, Detroit MI",
+    appointment_booked: true,
   },
   {
     id: 2,
@@ -46,6 +151,9 @@ const MOCK_DATA = [
     status: "missed",
     created_at: "2026-01-23T09:15:00",
     recording_url: null,
+    summary: "Caller hung up before providing details.",
+    sentiment: "neutral",
+    appointment_booked: false,
   },
   {
     id: 3,
@@ -55,6 +163,11 @@ const MOCK_DATA = [
     status: "inquiry",
     created_at: "2026-01-22T16:20:00",
     recording_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    summary: "Customer inquiring about furnace maintenance. Wants to schedule annual tune-up. Requested callback.",
+    sentiment: "positive",
+    issue_type: "Maintenance",
+    service_address: "456 Oak Ave, Detroit MI",
+    appointment_booked: false,
   },
 ];
 
@@ -68,6 +181,7 @@ export default function BlackBoxPage() {
   const [searchTerm, setSearchTerm] = React.useState("");
   const [playingId, setPlayingId] = React.useState(null);
   const [isPlaying, setIsPlaying] = React.useState(false);
+  const [currentTime, setCurrentTime] = React.useState(0);
   const audioRef = React.useRef(new Audio());
   const displayRecords = records.length ? records : MOCK_DATA;
   const filteredRecords = React.useMemo(() => {
@@ -76,7 +190,7 @@ export default function BlackBoxPage() {
     return displayRecords.filter((row) =>
       `${
         row.caller_name || ""
-      } ${row.caller_phone || row.caller_id || ""}`.toLowerCase().includes(needle)
+      } ${row.caller_phone || row.caller_id || ""} ${row.summary || ""}`.toLowerCase().includes(needle)
     );
   }, [displayRecords, searchTerm]);
   const [lastUpdated, setLastUpdated] = React.useState(null);
@@ -135,13 +249,38 @@ export default function BlackBoxPage() {
     event.stopPropagation();
   };
 
+  // Handle flag for review
+  const handleFlag = async (record) => {
+    try {
+      const newFlagged = !record.flagged_for_review;
+      // If we have a lead_id, flag it
+      if (record.lead_id || record.id) {
+        await flagLead(record.lead_id || record.id, newFlagged);
+      }
+      // Update local state
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === record.id ? { ...r, flagged_for_review: newFlagged } : r
+        )
+      );
+      if (activeRecord?.id === record.id) {
+        setActiveRecord({ ...activeRecord, flagged_for_review: newFlagged });
+      }
+    } catch (err) {
+      console.error("Failed to flag recording:", err);
+    }
+  };
+
   React.useEffect(() => {
     const audio = audioRef.current;
     const handleEnded = () => setIsPlaying(false);
+    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
     audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("timeupdate", handleTimeUpdate);
     return () => {
       audio.pause();
       audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
     };
   }, []);
 
@@ -196,7 +335,7 @@ export default function BlackBoxPage() {
           <div className="glass-panel" style={{ padding: "1.4rem" }}>
             <input
               className="glass-input"
-              placeholder="Search caller name or phone..."
+              placeholder="Search caller name, phone, or summary..."
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               style={{ width: "100%", marginBottom: "1rem" }}
@@ -217,10 +356,17 @@ export default function BlackBoxPage() {
                 <div className="blackbox-empty-row">Loading transmissions...</div>
               ) : filteredRecords.length ? (
                 filteredRecords.map((row) => (
-                  <div key={row.id} className="blackbox-row">
+                  <div 
+                    key={row.id} 
+                    className={`blackbox-row ${row.flagged_for_review ? "flagged-row" : ""}`}
+                    onClick={() => setActiveRecord(row)}
+                  >
                     <span className="blackbox-time">{formatTimestamp(row.created_at)}</span>
                     <span className="blackbox-caller">
-                      {row.caller_name}
+                      <div className="caller-name-row">
+                        {row.flagged_for_review && <span className="flag-icon">⚑</span>}
+                        {row.caller_name}
+                      </div>
                       <span className="blackbox-sub">
                         {row.caller_phone || row.caller_id || "--"}
                       </span>
@@ -238,19 +384,32 @@ export default function BlackBoxPage() {
                       >
                         {playingId === row.id && isPlaying ? "❚❚" : "▶"} Play
                       </button>
-                      <span className="waveform">
-                        <span />
-                        <span />
-                        <span />
-                        <span />
-                      </span>
+                      {playingId === row.id && isPlaying ? (
+                        <WaveformVisualizer 
+                          audioRef={audioRef}
+                          isPlaying={isPlaying}
+                          playingId={playingId}
+                          recordId={row.id}
+                        />
+                      ) : (
+                        <span className="waveform static">
+                          <span /><span /><span /><span />
+                        </span>
+                      )}
                     </span>
-                    <span className="blackbox-actions">
+                    <span className="blackbox-actions" onClick={(e) => e.stopPropagation()}>
                       <button
                         className="action-button"
                         onClick={() => setActiveRecord(row)}
                       >
-                        View Transcript
+                        View
+                      </button>
+                      <button
+                        className={`action-button flag-btn ${row.flagged_for_review ? "flagged" : ""}`}
+                        onClick={() => handleFlag(row)}
+                        title={row.flagged_for_review ? "Unflag" : "Flag for Review"}
+                      >
+                        {row.flagged_for_review ? "⚑" : "⚐"}
                       </button>
                       {row.recording_url ? (
                         <a
@@ -259,11 +418,9 @@ export default function BlackBoxPage() {
                           download={`recording-${row.id}.mp3`}
                           onClick={handleDownloadClick}
                         >
-                          Download
+                          ⬇
                         </a>
-                      ) : (
-                        <span className="action-button muted">Download</span>
-                      )}
+                      ) : null}
                     </span>
                   </div>
                 ))
@@ -280,23 +437,122 @@ export default function BlackBoxPage() {
         </div>
       </div>
 
+      {/* Slide Panel with AI Summary */}
       {activeRecord ? (
         <>
           <div className="slide-overlay" onClick={() => setActiveRecord(null)} />
-          <div className="slide-panel">
+          <div className="slide-panel enhanced">
             <div className="slide-panel-header">
               <div>
-                <div className="war-room-kicker">TRANSCRIPT</div>
+                <div className="war-room-kicker">CALL INTEL</div>
                 <div className="war-room-title" style={{ fontSize: "1.4rem" }}>
                   {activeRecord.caller_name}
                 </div>
               </div>
-              <button className="button-primary" onClick={() => setActiveRecord(null)}>
-                Close
-              </button>
+              <div className="slide-panel-actions">
+                <button
+                  className={`btn-flag ${activeRecord.flagged_for_review ? "flagged" : ""}`}
+                  onClick={() => handleFlag(activeRecord)}
+                >
+                  {activeRecord.flagged_for_review ? "⚑ Flagged" : "⚐ Flag for Review"}
+                </button>
+                <button className="button-primary" onClick={() => setActiveRecord(null)}>
+                  Close
+                </button>
+              </div>
             </div>
-            <div className="blackbox-transcript">
-              {activeRecord.transcript || "No transcript available."}
+            
+            {/* AI Summary Card */}
+            <div className="ai-summary-card glass-panel">
+              <h3>AI CALL SUMMARY</h3>
+              <div className="summary-grid">
+                <div className="summary-item">
+                  <label>Customer</label>
+                  <span>{activeRecord.caller_name || "Unknown"}</span>
+                </div>
+                <div className="summary-item">
+                  <label>Phone</label>
+                  <span>{activeRecord.caller_phone || activeRecord.caller_id || "--"}</span>
+                </div>
+                <div className="summary-item">
+                  <label>Issue Type</label>
+                  <span>{activeRecord.issue_type || "N/A"}</span>
+                </div>
+                <div className="summary-item">
+                  <label>Duration</label>
+                  <span>{formatDuration(activeRecord.duration)}</span>
+                </div>
+                <div className="summary-item">
+                  <label>Outcome</label>
+                  <span className={`badge ${outcomeTone(activeRecord.status || activeRecord.outcome)}`}>
+                    {activeRecord.status || activeRecord.outcome || "Inquiry"}
+                  </span>
+                </div>
+                <div className="summary-item">
+                  <label>Sentiment</label>
+                  <span className={`sentiment-badge ${getSentimentClass(activeRecord.sentiment)}`}>
+                    {activeRecord.sentiment || "Neutral"}
+                  </span>
+                </div>
+                <div className="summary-item">
+                  <label>Booked</label>
+                  <span className={activeRecord.appointment_booked ? "text-green" : "text-muted"}>
+                    {activeRecord.appointment_booked ? "Yes ✓" : "No"}
+                  </span>
+                </div>
+                {activeRecord.service_address && (
+                  <div className="summary-item full-width">
+                    <label>Service Address</label>
+                    <span>{activeRecord.service_address}</span>
+                  </div>
+                )}
+              </div>
+              <div className="summary-text-section">
+                <label>Summary</label>
+                <p className="summary-text">{activeRecord.summary || "No summary available."}</p>
+              </div>
+            </div>
+            
+            {/* Audio Player with Waveform */}
+            {activeRecord.recording_url && (
+              <div className="audio-section glass-panel">
+                <h4>Recording</h4>
+                <div className="audio-player-container">
+                  <button
+                    className="play-btn large"
+                    onClick={() => togglePlay(activeRecord)}
+                  >
+                    {playingId === activeRecord.id && isPlaying ? "❚❚" : "▶"}
+                  </button>
+                  <div className="waveform-container">
+                    {playingId === activeRecord.id ? (
+                      <WaveformVisualizer 
+                        audioRef={audioRef}
+                        isPlaying={isPlaying}
+                        playingId={playingId}
+                        recordId={activeRecord.id}
+                      />
+                    ) : (
+                      <div className="waveform-placeholder">Click play to visualize</div>
+                    )}
+                  </div>
+                  <a
+                    className="download-btn"
+                    href={activeRecord.recording_url}
+                    download={`recording-${activeRecord.id}.mp3`}
+                  >
+                    ⬇ Download
+                  </a>
+                </div>
+              </div>
+            )}
+            
+            {/* Transcript Section */}
+            <div className="transcript-section glass-panel">
+              <h4>Full Transcript</h4>
+              <div className="blackbox-transcript">
+                {activeRecord.transcript || "No transcript available."}
+              </div>
             </div>
           </div>
         </>
