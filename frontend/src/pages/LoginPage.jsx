@@ -1,6 +1,6 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import BackgroundGrid from "../components/BackgroundGrid.jsx";
 import { supabase } from "../lib/supabase";
 import { autoGrantAdmin, logBlackBoxEvent, verifyAdminCode, recordReferralSignup } from "../lib/api";
@@ -572,6 +572,36 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
             </div>
           ) : null}
         </form>
+        )}
+        
+        {/* Affiliate Program CTA */}
+        {!checkingSession && !recoveryMode && !embeddedMode && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.5, duration: 0.4 }}
+            style={{ marginTop: "1.5rem", textAlign: "center" }}
+          >
+            <Link
+              to="/affiliate"
+              className="affiliate-cta-link"
+              style={{
+                display: "inline-block",
+                padding: "0.8rem 1.5rem",
+                borderRadius: "999px",
+                border: "1px solid rgba(139, 92, 246, 0.4)",
+                background: "linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(34, 211, 238, 0.1))",
+                color: "#a78bfa",
+                fontWeight: 600,
+                fontSize: "0.85rem",
+                letterSpacing: "0.05rem",
+                textDecoration: "none",
+                transition: "all 0.2s ease",
+              }}
+            >
+              Make $25 + 10% Monthly — Join Our Affiliate Program
+            </Link>
+          </motion.div>
         )}
       </div>
     </div>
