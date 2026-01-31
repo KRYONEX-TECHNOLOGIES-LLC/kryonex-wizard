@@ -6177,12 +6177,12 @@ Business Variables:
       "Retell template agent missing config. Check RETELL_MASTER_AGENT_ID_HVAC points to a valid agent with response_engine and voice_id."
     );
   }
-  // Retell create-agent: response_engine with type, llm_id, version only. Use version 0 (latest) so we don't send template v6/deprecated.
+  // Retell create-agent: response_engine with type, llm_id, version. Copy version from master template so functions/KB are included.
   const re = template.response_engine || {};
   const response_engine = {
     type: re.type || "retell-llm",
     llm_id: re.llm_id,
-    version: 0,
+    version: re.version ?? 0,  // Use master's version (has functions), fallback to 0 only if not set
   };
   if (!response_engine.llm_id) {
     throw new Error("Template agent response_engine missing llm_id. Check RETELL_MASTER_AGENT_ID_HVAC points to a Retell-LLM agent.");
@@ -6365,8 +6365,9 @@ Business Variables:
 };
 
 /**
- * Number-only deploy: create Retell phone number with no agent. Nickname = business name so you can find it in Retell; assign template in Retell later.
- * Stores number in agents with agent_id 'pending'. DB tracks user + number + usage.
+ * Full deploy: create Retell agent clone from master template + phone number.
+ * Agent gets all functions/KB from master LLM. Phone number linked to agent.
+ * Stores real agent_id in database (not pending).
  */
 const provisionPhoneNumberOnly = async ({
   userId,
@@ -6375,27 +6376,113 @@ const provisionPhoneNumberOnly = async ({
   deployRequestId: reqId,
   transferNumber: transferNumberRaw,
   updateExisting = false,
+  industry = "hvac",
 }) => {
   const providerBaseUrl = (retellClient.defaults?.baseURL || "https://api.retellai.com").replace(/\/$/, "");
-  const phonePath = "/create-phone-number";
-  const phoneUrl = `${providerBaseUrl}${phonePath}`;
+  const nickname = String(businessName || "").trim() || "Business";
+  
+  // Step 1: Get master agent template (same as admin flow)
+  const sourceAgentId = industry === "plumbing" 
+    ? RETELL_MASTER_AGENT_ID_PLUMBING 
+    : RETELL_MASTER_AGENT_ID_HVAC;
+  
+  if (!sourceAgentId) {
+    throw new Error(`Missing RETELL_MASTER_AGENT_ID_${industry.toUpperCase()} env variable`);
+  }
+  
+  console.info("[provisionAgent] getting master template", {
+    deployRequestId: reqId,
+    sourceAgentId,
+    industry,
+  });
+  
+  let template;
+  try {
+    const getRes = await retellClient.get(`/get-agent/${encodeURIComponent(sourceAgentId)}`);
+    template = getRes.data?.agent ?? getRes.data;
+  } catch (err) {
+    console.error("[provisionAgent] failed to get master template", {
+      deployRequestId: reqId,
+      sourceAgentId,
+      error: err.message,
+      status: err.response?.status,
+    });
+    throw new Error(`Failed to get master agent template: ${err.message}`);
+  }
+  
+  if (!template?.response_engine || !template?.voice_id) {
+    throw new Error("Master agent template missing response_engine or voice_id");
+  }
+  
+  // Step 2: Create agent clone with correct LLM version (includes functions/KB)
+  const re = template.response_engine || {};
+  const response_engine = {
+    type: re.type || "retell-llm",
+    llm_id: re.llm_id,
+    version: re.version ?? 0,  // Use master's version (has functions)
+  };
+  
+  if (!response_engine.llm_id) {
+    throw new Error("Master agent missing llm_id in response_engine");
+  }
+  
+  const createAgentBody = {
+    response_engine,
+    voice_id: template.voice_id,
+    agent_name: `${nickname} AI Agent`,
+    webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/retell-webhook`,
+    webhook_timeout_ms: 10000,
+  };
+  
+  console.info("[provisionAgent] creating agent clone", {
+    deployRequestId: reqId,
+    llm_id: response_engine.llm_id,
+    llm_version: response_engine.version,
+    voice_id: template.voice_id,
+  });
+  
+  let agentId;
+  try {
+    const createRes = await retellClient.post("/create-agent", createAgentBody);
+    agentId = createRes.data?.agent_id ?? createRes.data?.agent?.agent_id;
+    if (!agentId) {
+      throw new Error("Retell create-agent did not return agent_id");
+    }
+    console.info("[provisionAgent] agent created", {
+      deployRequestId: reqId,
+      agent_id: agentId,
+    });
+  } catch (err) {
+    console.error("[provisionAgent] create-agent failed", {
+      deployRequestId: reqId,
+      error: err.message,
+      status: err.response?.status,
+      body: err.response?.data,
+    });
+    throw err;
+  }
+  
+  // Step 3: Create phone number linked to the new agent
   const phonePayload = {
-    inbound_agent_id: null,
-    outbound_agent_id: null,
+    inbound_agent_id: agentId,
+    outbound_agent_id: agentId,
     area_code: areaCode && String(areaCode).length === 3 ? Number(areaCode) : undefined,
     country_code: "US",
-    nickname: String(businessName || "").trim() || "Business",
+    nickname: `${nickname} Line`,
+    inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
   };
-  console.info("[provisionPhoneNumberOnly] provider call", {
+  
+  console.info("[provisionAgent] creating phone number", {
     deployRequestId: reqId,
-    providerUrl: phoneUrl,
-    requestBody: phonePayload,
+    agent_id: agentId,
+    area_code: phonePayload.area_code,
   });
+  
   let phoneResponse;
   try {
-    phoneResponse = await retellClient.post(phonePath, phonePayload);
+    phoneResponse = await retellClient.post("/create-phone-number", phonePayload);
   } catch (err) {
-    console.error("[provisionPhoneNumberOnly] provider call failed", {
+    console.error("[provisionAgent] create-phone-number failed", {
       deployRequestId: reqId,
       responseStatus: err.response?.status,
       responseBody: err.response?.data,
@@ -6403,6 +6490,13 @@ const provisionPhoneNumberOnly = async ({
     // Check for "no numbers available" error from Retell
     const retellMsg = err.response?.data?.message || "";
     if (err.response?.status === 404 && retellMsg.toLowerCase().includes("no phone numbers")) {
+      // Clean up the agent we created since phone failed
+      try {
+        await retellClient.delete(`/delete-agent/${agentId}`);
+        console.info("[provisionAgent] cleaned up agent after phone failure", { agent_id: agentId });
+      } catch (cleanupErr) {
+        console.warn("[provisionAgent] failed to cleanup agent", { agent_id: agentId, error: cleanupErr.message });
+      }
       const userError = new Error(`No phone numbers available for area code ${areaCode}. Please choose a different area code and try again.`);
       userError.retellStatus = err.response.status;
       userError.retellError = err.response.data;
@@ -6411,36 +6505,36 @@ const provisionPhoneNumberOnly = async ({
     }
     throw err;
   }
+  
   const phoneNumber = phoneResponse.data?.phone_number || phoneResponse.data?.number;
   if (!phoneNumber) {
     throw new Error("Retell create-phone-number did not return phone_number");
   }
-  console.info("[provisionPhoneNumberOnly] provider response", {
+  
+  console.info("[provisionAgent] phone number created", {
     deployRequestId: reqId,
-    status: phoneResponse.status,
-    responseBody: phoneResponse.data,
     phone_number: phoneNumber,
-    nickname: phonePayload.nickname,
+    agent_id: agentId,
   });
-
-  const pendingAgentId = `pending-${userId}`;
-  const nickname = String(phonePayload.nickname || "").trim() || null;
+  
+  // Step 4: Store in database with real agent_id (not pending)
   const transferNumber =
     transferNumberRaw != null
       ? String(transferNumberRaw).replace(/[^\d+]/g, "").trim() || null
       : null;
+  
   const agentRow = {
-    agent_id: pendingAgentId,
+    agent_id: agentId,  // Real Retell agent ID, not pending
     phone_number: phoneNumber,
-    voice_id: null,
-    llm_id: null,
+    voice_id: template.voice_id || null,
+    llm_id: response_engine.llm_id,
     prompt: null,
     area_code: areaCode || null,
     tone: null,
     schedule_summary: null,
     standard_fee: null,
     emergency_fee: null,
-    payment_id: "admin_onboarded",
+    payment_id: "user_deployed",
     transfer_number: transferNumber || null,
     dispatch_base_location: null,
     travel_limit_value: null,
@@ -6450,36 +6544,44 @@ const provisionPhoneNumberOnly = async ({
     nickname: nickname || null,
     provider_number_id: phoneNumber || null,
   };
+  
   if (updateExisting) {
     const { error: updateError } = await supabaseAdmin
       .from("agents")
       .update(agentRow)
       .eq("user_id", userId);
     if (updateError) {
-      console.error("[provisionPhoneNumberOnly] update failed", { userId, error: updateError.message });
+      console.error("[provisionAgent] update failed", { userId, error: updateError.message });
       throw new Error(updateError.message);
     }
-    console.info("[provisionPhoneNumberOnly] updated existing row", { userId, phone_number: phoneNumber });
+    console.info("[provisionAgent] updated existing row", { userId, phone_number: phoneNumber, agent_id: agentId });
   } else {
     const { error: insertError } = await supabaseAdmin.from("agents").insert({
       user_id: userId,
       ...agentRow,
     });
     if (insertError) {
-      console.error("[provisionPhoneNumberOnly] insert failed", { userId, error: insertError.message });
+      console.error("[provisionAgent] insert failed", { userId, error: insertError.message });
       throw new Error(insertError.message);
     }
   }
 
   await auditLog({
     userId,
-    action: "admin_agent_deployed",
+    action: "agent_deployed",
     entity: "agent",
-    entityId: pendingAgentId,
+    entityId: agentId,
   });
 
-  console.info("[provisionPhoneNumberOnly] done", { deployRequestId: reqId, phone_number: phoneNumber, agent_id: pendingAgentId, nickname: phonePayload.nickname });
-  return { phone_number: phoneNumber, agent_id: pendingAgentId };
+  console.info("[provisionAgent] done", {
+    deployRequestId: reqId,
+    phone_number: phoneNumber,
+    agent_id: agentId,
+    llm_id: response_engine.llm_id,
+    llm_version: response_engine.version,
+  });
+  
+  return { phone_number: phoneNumber, agent_id: agentId };
 };
 
 /**
@@ -6576,6 +6678,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
     options.transferNumber != null
       ? String(options.transferNumber || "").trim().replace(/[^\d+]/g, "") || null
       : null;
+  const industry = String(profile.industry || "hvac").toLowerCase();
   try {
     const result = await provisionPhoneNumberOnly({
       userId: targetUserId,
@@ -6584,6 +6687,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
       deployRequestId: reqId,
       transferNumber: transferNumber || undefined,
       updateExisting,
+      industry,  // Pass industry so correct master template is used
     });
     await supabaseAdmin
       .from("profiles")
