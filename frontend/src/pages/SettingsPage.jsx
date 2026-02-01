@@ -8,6 +8,15 @@ import { normalizePhone } from "../lib/phone.js";
 
 export default function SettingsPage() {
   const navigate = useNavigate();
+  const defaultBusinessHours = {
+    monday: { open: "08:00", close: "18:00", closed: false },
+    tuesday: { open: "08:00", close: "18:00", closed: false },
+    wednesday: { open: "08:00", close: "18:00", closed: false },
+    thursday: { open: "08:00", close: "18:00", closed: false },
+    friday: { open: "08:00", close: "18:00", closed: false },
+    saturday: { open: "09:00", close: "14:00", closed: false },
+    sunday: { open: null, close: null, closed: true },
+  };
   const [settings, setSettings] = React.useState({
     business_name: "",
     transfer_number: "",
@@ -22,6 +31,10 @@ export default function SettingsPage() {
       sms_on_booking: true,
       daily_summary: false,
     },
+    // Business Hours
+    business_hours: defaultBusinessHours,
+    business_timezone: "America/Chicago",
+    emergency_24_7: false,
     // SMS Automation
     post_call_sms_enabled: false,
     post_call_sms_template: "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.",
@@ -52,6 +65,9 @@ export default function SettingsPage() {
               ...prev.notification_preferences,
               ...(res.data.notification_preferences || {}),
             },
+            business_hours: res.data.business_hours || prev.business_hours,
+            business_timezone: res.data.business_timezone || prev.business_timezone,
+            emergency_24_7: res.data.emergency_24_7 ?? prev.emergency_24_7,
           }));
           setLastUpdated(new Date());
         }
@@ -115,6 +131,10 @@ export default function SettingsPage() {
         agent_tone: settings.agent_tone,
         industry: settings.industry,
         notification_preferences: settings.notification_preferences,
+        // Business Hours settings
+        business_hours: settings.business_hours,
+        business_timezone: settings.business_timezone,
+        emergency_24_7: settings.emergency_24_7,
         // SMS Automation settings
         post_call_sms_enabled: settings.post_call_sms_enabled,
         post_call_sms_template: settings.post_call_sms_template,
@@ -257,15 +277,101 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="settings-form-group">
-                  <label className="settings-label">Business Hours Summary</label>
+                  <label className="settings-label">Business Hours Summary (For Prompt)</label>
                   <textarea
                     className="glass-input glass-textarea"
                     value={settings.schedule_summary}
                     onChange={(e) => handleChange("schedule_summary", e.target.value)}
                     placeholder="Monday-Friday 8am-6pm, Saturday 9am-2pm, Closed Sunday"
-                    rows={3}
+                    rows={2}
                   />
-                  <span className="settings-hint">Brief description of your operating hours</span>
+                  <span className="settings-hint">Brief text the AI uses to describe your hours</span>
+                </div>
+              </div>
+
+              {/* Structured Business Hours */}
+              <div className="settings-section glass-panel">
+                <h2 className="settings-section-title">Business Hours</h2>
+                
+                <div className="settings-row">
+                  <div className="settings-form-group">
+                    <label className="settings-label">Timezone</label>
+                    <select
+                      className="glass-input"
+                      value={settings.business_timezone}
+                      onChange={(e) => handleChange("business_timezone", e.target.value)}
+                    >
+                      <option value="America/New_York">Eastern (ET)</option>
+                      <option value="America/Chicago">Central (CT)</option>
+                      <option value="America/Denver">Mountain (MT)</option>
+                      <option value="America/Phoenix">Arizona (MST)</option>
+                      <option value="America/Los_Angeles">Pacific (PT)</option>
+                      <option value="America/Anchorage">Alaska (AKT)</option>
+                      <option value="Pacific/Honolulu">Hawaii (HT)</option>
+                    </select>
+                  </div>
+                  <div className="settings-form-group">
+                    <label className="toggle settings-toggle-row">
+                      <input
+                        type="checkbox"
+                        checked={settings.emergency_24_7}
+                        onChange={(e) => handleChange("emergency_24_7", e.target.checked)}
+                      />
+                      <span className="toggle-slider" />
+                      <span className="toggle-label">24/7 Emergency Service</span>
+                    </label>
+                    <span className="settings-hint">Emergency calls bypass hours check</span>
+                  </div>
+                </div>
+
+                <div className="business-hours-grid">
+                  {["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => {
+                    const dayHours = settings.business_hours?.[day] || { open: "08:00", close: "18:00", closed: false };
+                    return (
+                      <div key={day} className="hours-day-row">
+                        <span className="hours-day-label">{day.charAt(0).toUpperCase() + day.slice(1)}</span>
+                        <label className="toggle hours-closed-toggle">
+                          <input
+                            type="checkbox"
+                            checked={!dayHours.closed}
+                            onChange={(e) => {
+                              const updated = { ...settings.business_hours };
+                              updated[day] = { ...dayHours, closed: !e.target.checked };
+                              handleChange("business_hours", updated);
+                            }}
+                          />
+                          <span className="toggle-slider small" />
+                        </label>
+                        {!dayHours.closed ? (
+                          <>
+                            <input
+                              type="time"
+                              className="glass-input hours-time-input"
+                              value={dayHours.open || "08:00"}
+                              onChange={(e) => {
+                                const updated = { ...settings.business_hours };
+                                updated[day] = { ...dayHours, open: e.target.value };
+                                handleChange("business_hours", updated);
+                              }}
+                            />
+                            <span className="hours-separator">to</span>
+                            <input
+                              type="time"
+                              className="glass-input hours-time-input"
+                              value={dayHours.close || "18:00"}
+                              onChange={(e) => {
+                                const updated = { ...settings.business_hours };
+                                updated[day] = { ...dayHours, close: e.target.value };
+                                handleChange("business_hours", updated);
+                              }}
+                            />
+                          </>
+                        ) : (
+                          <span className="hours-closed-label">Closed</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

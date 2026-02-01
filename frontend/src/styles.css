@@ -4224,6 +4224,74 @@ select option {
   margin-top: 0.4rem;
 }
 
+/* Business Hours Grid */
+.business-hours-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.hours-day-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.hours-day-row:last-child {
+  border-bottom: none;
+}
+
+.hours-day-label {
+  width: 100px;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.hours-closed-toggle {
+  margin: 0;
+}
+
+.toggle-slider.small {
+  width: 36px;
+  height: 18px;
+}
+
+.toggle-slider.small:before {
+  width: 14px;
+  height: 14px;
+}
+
+input:checked + .toggle-slider.small:before {
+  transform: translateX(18px);
+}
+
+.hours-time-input {
+  width: 110px !important;
+  padding: 0.4rem 0.6rem !important;
+  font-size: 0.85rem !important;
+}
+
+.hours-separator {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.hours-closed-label {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.3);
+  font-style: italic;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
 .glass-input.readonly {
   background: rgba(0, 0, 0, 0.3);
   color: rgba(255, 255, 255, 0.5);

@@ -264,6 +264,14 @@ const formatDate = (date) =>
   `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 const formatTime = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 
+const formatPrimaryService = (industry) => {
+  const value = String(industry || "").trim();
+  const normalized = value.toLowerCase();
+  if (normalized === "hvac") return "HVAC";
+  if (normalized === "plumbing") return "Plumbing";
+  return value;
+};
+
 const enforceIpAllowlist = (req, res, next) => {
   if (!allowlist.length) return next();
   const ip =
@@ -3231,6 +3239,77 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     return { ok: true, lead_id: leadRow.id };
   }
 
+  if (toolName === "after_hours_check") {
+    // Get business hours config from profile
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("business_hours, business_timezone, emergency_24_7")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const isEmergency = args.is_emergency === true || args.emergency === true;
+    const emergency24_7 = profile?.emergency_24_7 === true;
+
+    // If emergency mode is on and this is emergency, always open
+    if (isEmergency && emergency24_7) {
+      return {
+        ok: true,
+        is_open: true,
+        reason: "24/7 emergency service available",
+        emergency_mode: true,
+      };
+    }
+
+    const timezone = profile?.business_timezone || "America/Chicago";
+    const hours = profile?.business_hours || {};
+
+    // Get current time in business timezone
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      weekday: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(now);
+    const weekday = parts.find((p) => p.type === "weekday")?.value?.toLowerCase() || "monday";
+    const hourStr = parts.find((p) => p.type === "hour")?.value || "12";
+    const minuteStr = parts.find((p) => p.type === "minute")?.value || "00";
+    const currentTime = `${hourStr}:${minuteStr}`;
+
+    const dayHours = hours[weekday] || {};
+    const isClosed = dayHours.closed === true;
+    const openTime = dayHours.open || null;
+    const closeTime = dayHours.close || null;
+
+    if (isClosed || !openTime || !closeTime) {
+      return {
+        ok: true,
+        is_open: false,
+        reason: `Closed on ${weekday.charAt(0).toUpperCase() + weekday.slice(1)}`,
+        current_time: currentTime,
+        timezone,
+        emergency_available: emergency24_7,
+      };
+    }
+
+    // Compare times (simple string comparison works for HH:MM format)
+    const isOpen = currentTime >= openTime && currentTime < closeTime;
+
+    return {
+      ok: true,
+      is_open: isOpen,
+      reason: isOpen
+        ? `Open now (${openTime} - ${closeTime})`
+        : `Currently closed. Hours: ${openTime} - ${closeTime}`,
+      current_time: currentTime,
+      timezone,
+      hours_today: { open: openTime, close: closeTime },
+      emergency_available: emergency24_7,
+    };
+  }
+
   return { ok: false, error: "Unknown tool" };
 };
 
@@ -4293,6 +4372,7 @@ app.post(
       const dynamicVars = {
         business_name: String(businessName || ""),
         industry: String(industry || ""),
+        primary_service: String(formatPrimaryService(industry) || ""),
         transfer_number: String(cleanTransfer || ""),
         cal_com_link: String(calComLink || ""),
         agent_tone: String(tone || "Calm & Professional"),
@@ -4795,7 +4875,7 @@ app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     const [profileResult, agentResult] = await Promise.all([
       supabaseAdmin
         .from("profiles")
-        .select("business_name, email, phone, industry, google_review_url, review_request_enabled, review_request_template")
+        .select("business_name, email, phone, industry, google_review_url, review_request_enabled, review_request_template, business_hours, business_timezone, emergency_24_7")
         .eq("user_id", uid)
         .maybeSingle(),
       supabaseAdmin
@@ -4807,6 +4887,17 @@ app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     
     const profile = profileResult.data || {};
     const agent = agentResult.data || {};
+    
+    // Default business hours
+    const defaultHours = {
+      monday: { open: "08:00", close: "18:00", closed: false },
+      tuesday: { open: "08:00", close: "18:00", closed: false },
+      wednesday: { open: "08:00", close: "18:00", closed: false },
+      thursday: { open: "08:00", close: "18:00", closed: false },
+      friday: { open: "08:00", close: "18:00", closed: false },
+      saturday: { open: "09:00", close: "14:00", closed: false },
+      sunday: { open: null, close: null, closed: true },
+    };
     
     return res.json({
       business_name: profile.business_name || "",
@@ -4824,6 +4915,10 @@ app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
         sms_on_booking: true,
         daily_summary: false
       },
+      // Business hours settings
+      business_hours: profile.business_hours || defaultHours,
+      business_timezone: profile.business_timezone || "America/Chicago",
+      emergency_24_7: profile.emergency_24_7 || false,
       // Post-call SMS settings
       post_call_sms_enabled: agent.post_call_sms_enabled || false,
       post_call_sms_template: agent.post_call_sms_template || "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.",
@@ -4860,6 +4955,10 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
       review_request_enabled,
       google_review_url,
       review_request_template,
+      // Business Hours settings
+      business_hours,
+      business_timezone,
+      emergency_24_7,
     } = req.body;
     
     // Update profile if business_name or review settings provided
@@ -4869,6 +4968,10 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     if (review_request_enabled !== undefined) profileUpdates.review_request_enabled = review_request_enabled;
     if (google_review_url !== undefined) profileUpdates.google_review_url = google_review_url;
     if (review_request_template !== undefined) profileUpdates.review_request_template = review_request_template;
+    // Business hours fields
+    if (business_hours !== undefined) profileUpdates.business_hours = business_hours;
+    if (business_timezone !== undefined) profileUpdates.business_timezone = business_timezone;
+    if (emergency_24_7 !== undefined) profileUpdates.emergency_24_7 = emergency_24_7;
     
     if (Object.keys(profileUpdates).length > 0) {
       const { error: profileError } = await supabaseAdmin
@@ -6850,7 +6953,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     const [{ data: profile }, { data: integration }] = await Promise.all([
       supabaseAdmin
         .from("profiles")
-        .select("business_name, cal_com_url")
+        .select("business_name, cal_com_url, industry")
         .eq("user_id", agentRow.user_id)
         .maybeSingle(),
       supabaseAdmin
@@ -6871,6 +6974,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     }
     const dynamicVariables = {
       business_name: businessName,
+      primary_service: String(formatPrimaryService(profile?.industry) || ""),
       cal_com_link: String(profile?.cal_com_url || integration?.booking_url || ""),
       transfer_number: String(agentRow.transfer_number || ""),
       agent_tone: String(agentRow.tone || "Calm & Professional"),
@@ -8042,21 +8146,32 @@ app.post(
   rateLimit({ keyPrefix: "consent", limit: 6, windowMs: 60_000 }),
   async (req, res) => {
     try {
-      await supabaseAdmin.from("consent_logs").insert({
-        user_id: req.user.id,
-        version: currentConsentVersion,
-        ip:
-          req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-          req.socket?.remoteAddress ||
-          null,
-        user_agent: req.headers["user-agent"] || null,
-      });
+      // Try to log consent (non-blocking if table doesn't exist)
+      try {
+        await supabaseAdmin.from("consent_logs").insert({
+          user_id: req.user.id,
+          version: currentConsentVersion,
+          ip:
+            req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+            req.socket?.remoteAddress ||
+            null,
+          user_agent: req.headers["user-agent"] || null,
+        });
+      } catch (logErr) {
+        console.warn("[consent] consent_logs insert failed (table may not exist):", logErr.message);
+      }
 
-      await supabaseAdmin.from("profiles").upsert({
+      // Update profile with consent - this is the critical part
+      const { error: profileError } = await supabaseAdmin.from("profiles").upsert({
         user_id: req.user.id,
         consent_accepted_at: new Date().toISOString(),
         consent_version: currentConsentVersion,
       });
+
+      if (profileError) {
+        console.error("[consent] profile upsert failed:", profileError.message);
+        return res.status(500).json({ error: profileError.message });
+      }
 
       await auditLog({
         userId: req.user.id,
@@ -8068,6 +8183,7 @@ app.post(
 
       return res.json({ ok: true, version: currentConsentVersion });
     } catch (err) {
+      console.error("[consent] error:", err.message);
       return res.status(500).json({ error: err.message });
     }
   }
@@ -8781,6 +8897,7 @@ const createAdminAgent = async ({ userId, businessName, areaCode, industry: indu
   const dynamicVars = {
     business_name: String(businessName || ""),
     industry: String(industry || ""),
+    primary_service: String(formatPrimaryService(industry) || ""),
     transfer_number: "",
     cal_com_link: "",
     agent_tone: String(tone || ADMIN_ONBOARD_DEFAULTS.tone),
