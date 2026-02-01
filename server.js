@@ -2055,8 +2055,9 @@ const getDashboardStats = async (userId) => {
 const getEnhancedDashboardStats = async (userId) => {
   const avgJobValue = 450;
   const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
+  // Use UTC-aware dates to match Supabase timestamp storage
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - now.getUTCDay())).toISOString();
   
   // Parallel queries for efficiency
   const [
@@ -3409,8 +3410,10 @@ app.get("/api/calcom/status", requireAuth, resolveEffectiveUser, async (req, res
       .eq("provider", "calcom")
       .maybeSingle(),
   ]);
+  // Check if integration exists with active token, regardless of booking URL
+  const hasActiveIntegration = integration?.is_active && integration?.access_token;
   const calUrl = profile?.cal_com_url || integration?.booking_url || null;
-  const connected = Boolean(calUrl);
+  const connected = Boolean(hasActiveIntegration || calUrl);
   return res.json({ connected, cal_com_url: calUrl });
 });
 
@@ -3757,7 +3760,7 @@ const retellWebhookHandler = async (req, res) => {
         },
       });
       
-      const { error: leadError } = await supabaseAdmin.from("leads").insert({
+      const { data: newLead, error: leadError } = await supabaseAdmin.from("leads").insert({
         user_id: agentRow.user_id,
         owner_id: agentRow.user_id,
         agent_id: agentId,
@@ -3782,10 +3785,24 @@ const retellWebhookHandler = async (req, res) => {
           from_number: fromNumber || null,
           to_number: normalizedToNumber || null,
         },
-      });
+      }).select("id").single();
 
       if (leadError) {
         return res.status(500).json({ error: leadError.message });
+      }
+
+      // Also insert into call_recordings for Black Box page
+      try {
+        await supabaseAdmin.from("call_recordings").insert({
+          seller_id: agentRow.user_id,
+          lead_id: newLead?.id || null,
+          duration: durationSeconds || 0,
+          recording_url: recordingUrl,
+          outcome: leadStatus,
+        });
+        console.log("📞 [call_ended] call_recording inserted for Black Box");
+      } catch (recErr) {
+        console.warn("📞 [call_ended] call_recordings insert failed (non-fatal):", recErr.message);
       }
       
       // Store call event (completed)
