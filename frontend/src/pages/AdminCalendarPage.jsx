@@ -1,62 +1,15 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Play, ArrowLeft, ArrowRight, X, Send } from "lucide-react";
+import { Play, ArrowLeft, ArrowRight, X, Send, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
 import { getSavedState, saveState } from "../lib/persistence.js";
+import { getAdminAppointments } from "../lib/api.js";
 
 const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const CALENDAR_MONTH_KEY = "calendar.currentMonth";
 const CALENDAR_SELECTED_KEY = "calendar.selectedDate";
-const CALENDAR_ROSTER_KEY = "calendar.activeRoster";
-
-const dayInsights = {
-  "2026-01-05": { revenue: 12500, staff: 4 },
-  "2026-01-12": { revenue: 9800, staff: 3 },
-  "2026-01-14": { revenue: 15450, staff: 5 },
-  "2026-01-24": { revenue: 16800, staff: 6 },
-};
-
-const dayBriefs = {
-  "2026-01-05": {
-    roster: [
-      { name: "John Doe", shift: "09:00 - 17:00" },
-      { name: "Sarah Lee", shift: "12:00 - 20:00" },
-      { name: "Maya Patel", shift: "08:00 - 16:00" },
-    ],
-    schedule: [
-      { title: "Apex Plumbing Demo", time: "09:30", value: 4200, closer: "John Doe", type: "demo" },
-      { title: "Northwind HVAC Closing", time: "13:15", value: 6100, closer: "Sarah Lee", type: "closing" },
-      { title: "Sterling HVAC Inbound", time: "16:30", value: 2100, closer: "Maya Patel", type: "call" },
-    ],
-    stats: { demos: 3, target: "Atlanta Suburbs" },
-  },
-  "2026-01-12": {
-    roster: [
-      { name: "Ari Chen", shift: "07:00 - 15:00" },
-      { name: "Ryder Cole", shift: "10:00 - 18:00" },
-    ],
-    schedule: [
-      { title: "Metro HVAC Demo", time: "10:00", value: 3800, closer: "Ari Chen", type: "demo" },
-      { title: "Ridgeway Plumbing Follow Up", time: "14:00", value: 2700, closer: "Ryder Cole", type: "closing" },
-    ],
-    stats: { demos: 2, target: "Toledo Metro" },
-  },
-  "2026-01-24": {
-    roster: [
-      { name: "Kai Mendoza", shift: "08:00 - 14:00" },
-      { name: "Jordan Park", shift: "11:00 - 19:00" },
-      { name: "Taylor Brooks", shift: "09:00 - 17:00" },
-    ],
-    schedule: [
-      { title: "North City Demo", time: "09:00", value: 4500, closer: "Kai Mendoza", type: "demo" },
-      { title: "Steel River Closing", time: "12:30", value: 7200, closer: "Jordan Park", type: "closing" },
-      { title: "Apex Plumbing Demo", time: "15:00", value: 4200, closer: "Taylor Brooks", type: "demo" },
-    ],
-    stats: { demos: 3, target: "Cleveland Corridor" },
-  },
-};
 
 const formatDateKey = (date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${
@@ -69,6 +22,12 @@ const formatCurrency = (value) =>
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(value);
+
+const formatTime = (dateStr) => {
+  if (!dateStr) return "--";
+  const date = new Date(dateStr);
+  return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
+};
 
 const buildMonthGrid = (month) => {
   const startOfMonth = new Date(month.getFullYear(), month.getMonth(), 1);
@@ -85,17 +44,6 @@ const buildMonthGrid = (month) => {
       key: formatDateKey(cell),
     };
   });
-};
-
-const DAILY_GOAL = 20000;
-
-const fallbackDetails = {
-  roster: [
-    { name: "Field Team Standby", shift: "On Call" },
-    { name: "Support Pool", shift: "Remote" },
-  ],
-  schedule: [],
-  stats: { demos: 0, target: "HVAC + Plumbing" },
 };
 
 export default function AdminCalendarPage() {
@@ -115,15 +63,47 @@ export default function AdminCalendarPage() {
   );
   const monthGrid = React.useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
 
+  // Real appointments data
+  const [appointments, setAppointments] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+
+  // Fetch real appointments
+  const fetchAppointments = React.useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await getAdminAppointments();
+      setAppointments(response.data?.appointments || []);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || "Failed to load appointments");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchAppointments();
+    const interval = setInterval(fetchAppointments, 30000);
+    return () => clearInterval(interval);
+  }, [fetchAppointments]);
+
+  // Group appointments by date
+  const appointmentsByDate = React.useMemo(() => {
+    const grouped = {};
+    appointments.forEach((apt) => {
+      const dateKey = formatDateKey(new Date(apt.start_time));
+      if (!grouped[dateKey]) {
+        grouped[dateKey] = [];
+      }
+      grouped[dateKey].push(apt);
+    });
+    return grouped;
+  }, [appointments]);
+
   const selectedKey = selectedDate ? formatDateKey(selectedDate) : null;
-  const selectedDetails = selectedKey ? dayBriefs[selectedKey] || fallbackDetails : null;
-  const highlightRevenue = selectedKey ? dayInsights[selectedKey] : null;
+  const selectedAppointments = selectedKey ? appointmentsByDate[selectedKey] || [] : [];
   const selectedDateObj = selectedDate;
-  const storedRoster = getSavedState(CALENDAR_ROSTER_KEY);
-  const defaultRoster = dayBriefs[formatDateKey(today)]?.roster?.[0]?.name || null;
-  const [activeRoster, setActiveRoster] = React.useState(
-    () => storedRoster || defaultRoster
-  );
 
   const updateCurrentMonth = (updater) => {
     setCurrentMonth((prev) => {
@@ -138,11 +118,6 @@ export default function AdminCalendarPage() {
     saveState(CALENDAR_SELECTED_KEY, value ? value.toISOString() : null);
   };
 
-  const persistActiveRoster = (value) => {
-    setActiveRoster(value);
-    saveState(CALENDAR_ROSTER_KEY, value);
-  };
-
   const monthLabel = currentMonth.toLocaleString("default", {
     month: "long",
     year: "numeric",
@@ -152,19 +127,6 @@ export default function AdminCalendarPage() {
     updateCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
   const goToNextMonth = () =>
     updateCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
-  const bookedValue = selectedDetails
-    ? selectedDetails.schedule.reduce((sum, event) => sum + (event.value || 0), 0)
-    : 0;
-  const progressPercent = Math.min((bookedValue / DAILY_GOAL) * 100, 100);
-
-  React.useEffect(() => {
-    if (!selectedDetails) {
-      persistActiveRoster(null);
-      return;
-    }
-    const firstName = selectedDetails.roster[0]?.name || null;
-    persistActiveRoster(firstName);
-  }, [selectedDetails, selectedKey]);
 
   return (
     <div className="min-h-screen bg-void-black text-white relative overflow-hidden">
@@ -205,8 +167,16 @@ export default function AdminCalendarPage() {
               </div>
               <div className="flex items-center gap-3">
                 <p className="text-sm text-white/60">
-                  A familiar month view spotlighting revenue potential and staffing.
+                  All appointments across all users.
                 </p>
+                <button 
+                  className="button-secondary flex items-center gap-2"
+                  onClick={fetchAppointments}
+                  disabled={loading}
+                >
+                  <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+                  Refresh
+                </button>
                 <button aria-label="Next month" onClick={goToNextMonth} className="nav-dot">
                   <ArrowRight size={16} />
                 </button>
@@ -226,10 +196,11 @@ export default function AdminCalendarPage() {
                 </div>
               ))}
               {monthGrid.map((cell) => {
-                const revenueCell = dayInsights[cell.key]?.revenue;
-                const staffCell = dayInsights[cell.key]?.staff;
+                const dayAppointments = appointmentsByDate[cell.key] || [];
+                const appointmentCount = dayAppointments.length;
                 const isToday = cell.key === formatDateKey(today);
                 const isSelected = selectedKey ? cell.key === selectedKey : false;
+                const hasAppointments = appointmentCount > 0;
                 return (
                   <button
                     key={cell.key}
@@ -239,18 +210,28 @@ export default function AdminCalendarPage() {
                       cell.isCurrentMonth ? "" : "calendar-cell-inactive"
                     } ${isToday ? "calendar-cell-today" : ""} ${
                       isSelected ? "calendar-cell-selected" : ""
-                    }`}
+                    } ${hasAppointments ? "calendar-cell-has-events" : ""}`}
                     disabled={!cell.isCurrentMonth}
                   >
                     {cell.isCurrentMonth ? (
                       <>
                         <div className="calendar-date">{cell.date.getDate()}</div>
-                        <div className="calendar-revenue">
-                          {revenueCell ? formatCurrency(revenueCell) : "—"}
-                        </div>
-                        <div className="calendar-staff">
-                          {staffCell ? `${staffCell} Agents` : "Staff data"}
-                        </div>
+                        {hasAppointments ? (
+                          <>
+                            <div className="calendar-revenue text-neon-cyan">
+                              {appointmentCount} Appt{appointmentCount !== 1 ? "s" : ""}
+                            </div>
+                            <div className="calendar-staff">
+                              {dayAppointments.slice(0, 2).map((apt) => apt.business_name || "Client").join(", ")}
+                              {appointmentCount > 2 ? ` +${appointmentCount - 2}` : ""}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="calendar-revenue text-white/30">—</div>
+                            <div className="calendar-staff text-white/20">No appointments</div>
+                          </>
+                        )}
                       </>
                     ) : (
                       <div className="calendar-placeholder" aria-hidden="true" />
@@ -263,7 +244,7 @@ export default function AdminCalendarPage() {
         </div>
       </div>
 
-      {selectedDate && selectedDetails && (
+      {selectedDate && (
         <>
           <motion.div
             className="slide-overlay"
@@ -281,7 +262,7 @@ export default function AdminCalendarPage() {
           >
             <div className="slide-panel-header">
               <div>
-                <p className="text-xs text-white/50">Operations Briefing</p>
+                <p className="text-xs text-white/50">Appointments Overview</p>
                 <h2 className="text-2xl font-semibold">
                   {selectedDateObj.toLocaleDateString("en-US", {
                     month: "long",
@@ -291,7 +272,7 @@ export default function AdminCalendarPage() {
                 </h2>
               </div>
               <button
-                aria-label="Close briefing"
+                aria-label="Close panel"
                 className="nav-dot"
                 onClick={() => persistSelectedDate(null)}
               >
@@ -300,62 +281,33 @@ export default function AdminCalendarPage() {
             </div>
 
             <section className="slide-section">
-              <p className="section-label">Section A · The Roster</p>
-              <div className="slide-list">
-                {selectedDetails.roster.map((person) => {
-                  const isActive = activeRoster === person.name;
-                  return (
-                    <div
-                      key={person.name}
-                      className={`slide-row roster-card ${isActive ? "roster-card-active" : ""}`}
-                      onClick={() => setActiveRoster(person.name)}
-                    >
-                      <div>
-                        <div className="font-semibold">{person.name}</div>
-                        <div className="text-xs text-white/50">{person.shift}</div>
-                      </div>
-                      <div className="roster-actions">
-                        <span
-                          className={`status-dot ${
-                            isActive ? "status-dot-active" : "status-dot-inactive"
-                          }`}
-                        />
-                        <button
-                          type="button"
-                          className="roster-message"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            console.log(`Open chat with ${person.name}`);
-                          }}
-                        >
-                          <Send size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="slide-section">
-              <p className="section-label">Section B · The Schedule</p>
+              <p className="section-label">Scheduled Appointments</p>
               <div className="slide-list slide-list-gap">
-                {selectedDetails.schedule.length === 0 ? (
-                  <div className="slide-empty">No demos booked. Keep dialing.</div>
+                {selectedAppointments.length === 0 ? (
+                  <div className="slide-empty">No appointments scheduled for this day.</div>
                 ) : (
-                  selectedDetails.schedule.map((event) => (
-                    <div key={event.title} className="event-card">
+                  selectedAppointments.map((apt) => (
+                    <div key={apt.id} className="event-card">
                       <div className="event-meta">
-                        <span className="text-xs text-white/50">{event.time}</span>
-                        <span className="badge badge-outline">{event.type.toUpperCase()}</span>
+                        <span className="text-xs text-white/50">{formatTime(apt.start_time)}</span>
+                        <span className={`badge badge-outline ${apt.status === "completed" ? "text-neon-green" : apt.status === "cancelled" ? "text-neon-pink" : ""}`}>
+                          {(apt.status || "scheduled").toUpperCase()}
+                        </span>
                       </div>
-                      <div className="text-sm font-semibold">{event.title}</div>
+                      <div className="text-sm font-semibold">{apt.customer_name || "Customer"}</div>
                       <div className="text-xs text-white/60">
-                        Closer: {event.closer} · {formatCurrency(event.value)}
+                        Business: {apt.business_name || "Unknown"}
                       </div>
-                      <button className="zoom-button event-zoom">
-                        <Play size={12} /> Join Zoom
-                      </button>
+                      {apt.service_address && (
+                        <div className="text-xs text-white/40 mt-1">
+                          📍 {apt.service_address}
+                        </div>
+                      )}
+                      {apt.notes && (
+                        <div className="text-xs text-white/40 mt-1">
+                          📝 {apt.notes}
+                        </div>
+                      )}
                     </div>
                   ))
                 )}
@@ -363,25 +315,18 @@ export default function AdminCalendarPage() {
             </section>
 
             <section className="slide-section">
-              <p className="section-label">Section C · Stats</p>
+              <p className="section-label">Day Summary</p>
               <div className="stat-row">
-                <div className="stat-pill">{selectedDetails.stats.demos} Demos Booked</div>
+                <div className="stat-pill">{selectedAppointments.length} Appointments</div>
+                <div className="stat-pill">
+                  {selectedAppointments.filter(a => a.status === "completed").length} Completed
+                </div>
+              </div>
+              <div className="stat-row mt-2">
                 <div className="stat-pill stat-pill-highlight">
-                  Target: {selectedDetails.stats.target}
+                  {[...new Set(selectedAppointments.map(a => a.business_name))].length} Businesses
                 </div>
               </div>
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
-              </div>
-              <div className="progress-label">
-                <span>Booked {formatCurrency(bookedValue)}</span>
-                <span>Goal {formatCurrency(DAILY_GOAL)}</span>
-              </div>
-              {highlightRevenue && (
-                <div className="stat-footnote">
-                  Revenue potential: {formatCurrency(highlightRevenue)}
-                </div>
-              )}
             </section>
           </motion.div>
         </>

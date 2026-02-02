@@ -35,6 +35,8 @@ export const updateSettings = (data) => api.put("/api/settings", data);
 export const getLeads = (filters = {}) => api.get("/leads", { params: filters });
 export const getFilteredLeads = (filters) => api.get("/leads", { params: filters });
 export const getAdminLeads = () => api.get("/admin/leads");
+export const getAdminAppointments = () => api.get("/admin/appointments");
+export const getAdminUsageStats = () => api.get("/admin/usage-stats");
 export const updateLeadStatus = (leadId, status) =>
   api.post("/leads/update-status", { leadId, status });
 export const flagLead = (leadId, flagged) =>

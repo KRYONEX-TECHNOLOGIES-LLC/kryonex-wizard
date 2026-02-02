@@ -318,8 +318,13 @@ export default function AdminUsersPage() {
                   className="grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 hover:border-neon-cyan/40 transition cursor-pointer"
                 >
                   <div>
-                    <div className="text-sm font-semibold">
+                    <div className="text-sm font-semibold flex items-center gap-2">
                       {user.business_name}
+                      {!user.has_business_name && (
+                        <span className="text-[0.6rem] uppercase tracking-widest text-amber-400/80 bg-amber-400/10 px-2 py-0.5 rounded-full">
+                          Needs Setup
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-white/40">{user.id}</div>
                   </div>
@@ -401,8 +406,13 @@ export default function AdminUsersPage() {
                 <div className="text-xs uppercase tracking-[0.3em] text-white/40">
                   Fleet Registry
                 </div>
-                <div className="text-xl font-semibold">
+                <div className="text-xl font-semibold flex items-center gap-2">
                   {selectedUser?.user?.business_name || "Select a client"}
+                  {selectedUser?.user && !selectedUser.user.has_business_name && (
+                    <span className="text-[0.6rem] uppercase tracking-widest text-amber-400/80 bg-amber-400/10 px-2 py-0.5 rounded-full">
+                      Needs Setup
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-white/50">
                   {selectedUser?.user?.email || ""}

@@ -2983,6 +2983,49 @@ const CAL_API_VERSION_BOOKINGS = "2024-08-13";
 const CAL_API_VERSION_EVENT_TYPES = "2024-08-13";
 const calClient = axios.create({ baseURL: "https://api.cal.com/v2" });
 
+// Token refresh: refresh Cal.com OAuth token if expired or expiring soon
+const refreshCalcomToken = async (userId, refreshToken) => {
+  if (!refreshToken || !CALCOM_CLIENT_ID || !CALCOM_CLIENT_SECRET) {
+    console.warn("[calcom] Cannot refresh token - missing credentials");
+    return null;
+  }
+  try {
+    const response = await axios.post("https://app.cal.com/api/auth/oauth/token", {
+      client_id: CALCOM_CLIENT_ID,
+      client_secret: CALCOM_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    });
+    const newAccessToken = response.data?.access_token;
+    const newRefreshToken = response.data?.refresh_token || refreshToken;
+    const expiresIn = response.data?.expires_in || 2592000; // default 30 days
+    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+
+    if (!newAccessToken) {
+      console.error("[calcom] Token refresh returned no access_token");
+      return null;
+    }
+
+    // Update stored tokens
+    await supabaseAdmin
+      .from("integrations")
+      .update({
+        access_token: encryptCalcomToken(newAccessToken),
+        refresh_token: encryptCalcomToken(newRefreshToken),
+        expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId)
+      .eq("provider", "calcom");
+
+    console.log("[calcom] Token refreshed for user", userId);
+    return newAccessToken;
+  } catch (err) {
+    console.error("[calcom] Token refresh failed:", err.response?.data || err.message);
+    return null;
+  }
+};
+
 const getCalIntegration = async (userId) => {
   const { data } = await supabaseAdmin
     .from("integrations")
@@ -2991,11 +3034,81 @@ const getCalIntegration = async (userId) => {
     .eq("provider", "calcom")
     .maybeSingle();
   if (!data?.is_active || !data?.access_token) return null;
+
+  let accessToken = decryptCalcomToken(data.access_token);
+  const refreshToken = decryptCalcomToken(data.refresh_token);
+
+  // Check if token is expired or expiring within 5 minutes
+  const expiresAt = data.expires_at ? new Date(data.expires_at) : null;
+  const isExpiringSoon = expiresAt && (expiresAt.getTime() - Date.now() < 5 * 60 * 1000);
+
+  if (isExpiringSoon && refreshToken) {
+    console.log("[calcom] Token expiring soon, refreshing...");
+    const newToken = await refreshCalcomToken(userId, refreshToken);
+    if (newToken) {
+      accessToken = newToken;
+    }
+  }
+
   return {
     ...data,
-    access_token: decryptCalcomToken(data.access_token),
-    refresh_token: decryptCalcomToken(data.refresh_token),
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    user_id: userId,
   };
+};
+
+// Retry wrapper for Cal.com API calls with auto-refresh on 401
+const calApiWithRetry = async (userId, apiCall, maxRetries = 2) => {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (err) {
+      lastError = err;
+      const status = err.response?.status;
+
+      // If 401 Unauthorized, try to refresh token and retry
+      if (status === 401 && attempt < maxRetries) {
+        console.log("[calcom] Got 401, attempting token refresh...");
+        const integration = await supabaseAdmin
+          .from("integrations")
+          .select("refresh_token")
+          .eq("user_id", userId)
+          .eq("provider", "calcom")
+          .maybeSingle();
+        const refreshToken = integration.data?.refresh_token
+          ? decryptCalcomToken(integration.data.refresh_token)
+          : null;
+        if (refreshToken) {
+          const newToken = await refreshCalcomToken(userId, refreshToken);
+          if (newToken) {
+            // Update the config for retry - caller should re-fetch
+            continue;
+          }
+        }
+      }
+
+      // If 429 rate limit, wait and retry
+      if (status === 429 && attempt < maxRetries) {
+        const retryAfter = parseInt(err.response?.headers?.["retry-after"] || "2", 10);
+        console.log(`[calcom] Rate limited, waiting ${retryAfter}s...`);
+        await new Promise((r) => setTimeout(r, retryAfter * 1000));
+        continue;
+      }
+
+      // If 5xx server error, brief retry
+      if (status >= 500 && attempt < maxRetries) {
+        console.log(`[calcom] Server error ${status}, retrying in 1s...`);
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+
+      // Non-retryable error
+      throw err;
+    }
+  }
+  throw lastError;
 };
 
 const getCalConfig = async (userId) => {
@@ -3017,7 +3130,7 @@ const getCalConfig = async (userId) => {
   };
 };
 
-const fetchCalSlots = async ({ config, start, end, durationMinutes }) => {
+const fetchCalSlots = async ({ config, userId, start, end, durationMinutes }) => {
   const params = {
     start: start.toISOString(),
     end: end.toISOString(),
@@ -3040,17 +3153,24 @@ const fetchCalSlots = async ({ config, start, end, durationMinutes }) => {
     throw new Error("Cal.com event type is not configured");
   }
 
-  const response = await calClient.get("/slots", {
-    params,
-    headers: {
-      Authorization: `Bearer ${config.cal_access_token || config.cal_api_key}`,
-      "cal-api-version": CAL_API_VERSION_SLOTS,
-    },
+  // Use retry wrapper with auto-refresh
+  return calApiWithRetry(userId, async () => {
+    // Re-fetch token in case it was refreshed
+    const freshConfig = await getCalConfig(userId);
+    const token = freshConfig?.cal_access_token || config.cal_access_token || config.cal_api_key;
+    
+    const response = await calClient.get("/slots", {
+      params,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "cal-api-version": CAL_API_VERSION_SLOTS,
+      },
+    });
+    return response.data?.data || {};
   });
-  return response.data?.data || {};
 };
 
-const createCalBooking = async ({ config, start, args }) => {
+const createCalBooking = async ({ config, userId, start, args }) => {
   const body = {
     start: start.toISOString(),
     attendee: {
@@ -3074,14 +3194,21 @@ const createCalBooking = async ({ config, start, args }) => {
       : undefined,
   };
 
-  const response = await calClient.post("/bookings", body, {
-    headers: {
-      Authorization: `Bearer ${config.cal_access_token || config.cal_api_key}`,
-      "cal-api-version": CAL_API_VERSION_BOOKINGS,
-      "Content-Type": "application/json",
-    },
+  // Use retry wrapper with auto-refresh
+  return calApiWithRetry(userId, async () => {
+    // Re-fetch token in case it was refreshed
+    const freshConfig = await getCalConfig(userId);
+    const token = freshConfig?.cal_access_token || config.cal_access_token || config.cal_api_key;
+
+    const response = await calClient.post("/bookings", body, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "cal-api-version": CAL_API_VERSION_BOOKINGS,
+        "Content-Type": "application/json",
+      },
+    });
+    return response.data?.data || response.data;
   });
-  return response.data?.data || response.data;
 };
 
 const handleToolCall = async ({ tool, agentId, userId }) => {
@@ -3098,6 +3225,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     if (calConfig) {
       const slots = await fetchCalSlots({
         config: calConfig,
+        userId,
         start,
         end,
         durationMinutes: args.duration_minutes,
@@ -3123,7 +3251,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     }
     const calConfig = await getCalConfig(userId);
     if (calConfig) {
-      const booking = await createCalBooking({ config: calConfig, start, args });
+      const booking = await createCalBooking({ config: calConfig, userId, start, args });
       
       // Also insert into appointments table so it appears in calendar UI
       const { data: appointmentData, error: appointmentError } = await supabaseAdmin
@@ -3307,6 +3435,276 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       timezone,
       hours_today: { open: openTime, close: closeTime },
       emergency_available: emergency24_7,
+    };
+  }
+
+  if (toolName === "cancel_booking" || toolName === "cancel_appointment") {
+    // Find booking by cal_booking_uid, appointment_id, or customer_phone
+    const customerPhone = args.customer_phone || args.phone || null;
+    const bookingUid = args.cal_booking_uid || args.booking_uid || args.uid || null;
+    const appointmentId = args.appointment_id || args.id || null;
+    const reason = args.reason || "Cancelled by customer";
+
+    let appointment = null;
+    // Priority 1: cal_booking_uid
+    if (bookingUid) {
+      const { data } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("cal_booking_uid", bookingUid)
+        .maybeSingle();
+      appointment = data;
+    }
+    // Priority 2: appointment_id
+    if (!appointment && appointmentId) {
+      const { data } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("id", appointmentId)
+        .maybeSingle();
+      appointment = data;
+    }
+    // Priority 3: customer_phone (most recent upcoming)
+    if (!appointment && customerPhone) {
+      const { data } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("customer_phone", customerPhone)
+        .in("status", ["booked", "confirmed", "rescheduled"])
+        .gte("start_time", new Date().toISOString())
+        .order("start_time", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      appointment = data;
+    }
+
+    if (!appointment) {
+      return { ok: false, source: "internal", error: "No appointment found matching the provided identifiers" };
+    }
+
+    // Idempotency: already cancelled
+    if (appointment.status === "cancelled") {
+      return {
+        ok: true,
+        source: appointment.cal_booking_uid ? "cal.com" : "internal",
+        status: "already_cancelled",
+        appointment_id: appointment.id,
+        customer_name: appointment.customer_name,
+        original_time: appointment.start_time,
+      };
+    }
+
+    // Cancel in Cal.com if linked
+    let calCancelled = false;
+    if (appointment.cal_booking_uid) {
+      try {
+        const calConfig = await getCalConfig(userId);
+        if (calConfig?.cal_access_token) {
+          await calApiWithRetry(userId, async () => {
+            const freshConfig = await getCalConfig(userId);
+            const token = freshConfig?.cal_access_token || calConfig.cal_access_token;
+            await calClient.delete(`/bookings/${appointment.cal_booking_uid}`, {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "cal-api-version": CAL_API_VERSION_BOOKINGS,
+              },
+              data: { cancellationReason: reason },
+            });
+          });
+          calCancelled = true;
+        }
+      } catch (calErr) {
+        console.warn("[cancel_appointment] Cal.com cancel failed:", calErr.message);
+        // Continue with local cancellation
+      }
+    }
+
+    // Update local
+    await supabaseAdmin
+      .from("appointments")
+      .update({
+        status: "cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", appointment.id);
+
+    await logEvent({
+      userId,
+      actionType: "APPOINTMENT_CANCELLED",
+      metaData: { appointment_id: appointment.id, reason, cal_synced: calCancelled },
+    });
+
+    return {
+      ok: true,
+      source: calCancelled ? "cal.com" : "internal",
+      status: "cancelled",
+      appointment_id: appointment.id,
+      customer_name: appointment.customer_name,
+      original_time: appointment.start_time,
+      appointment: { id: appointment.id, status: "cancelled" },
+    };
+  }
+
+  if (toolName === "reschedule_booking" || toolName === "reschedule_appointment") {
+    const customerPhone = args.customer_phone || args.phone || null;
+    const bookingUid = args.cal_booking_uid || args.booking_uid || args.uid || null;
+    const appointmentId = args.appointment_id || args.id || null;
+    const newStartIso = args.new_start_time_iso || args.new_start || null;
+    const newDate = args.new_start_date || args.new_date || null;
+    const newTime = args.new_start_time || args.new_time || null;
+    const reason = args.reason || null;
+
+    // Parse new time
+    let newStart;
+    if (newStartIso) {
+      newStart = new Date(newStartIso);
+    } else if (newDate && newTime) {
+      newStart = new Date(`${newDate}T${newTime}`);
+    }
+    if (!newStart || isNaN(newStart.getTime())) {
+      return { ok: false, source: "internal", error: "Valid new time required (new_start_time_iso or new_start_date + new_start_time)" };
+    }
+
+    // Validate time is in future (allow 5 min grace)
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    if (newStart < fiveMinAgo) {
+      return { ok: false, source: "internal", error: "New appointment time must be in the future" };
+    }
+
+    // Find appointment - Priority: cal_booking_uid > appointment_id > customer_phone
+    let appointment = null;
+    if (bookingUid) {
+      const { data } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("cal_booking_uid", bookingUid)
+        .maybeSingle();
+      appointment = data;
+    }
+    if (!appointment && appointmentId) {
+      const { data } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("id", appointmentId)
+        .maybeSingle();
+      appointment = data;
+    }
+    if (!appointment && customerPhone) {
+      const { data } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("customer_phone", customerPhone)
+        .in("status", ["booked", "confirmed", "rescheduled"])
+        .gte("start_time", new Date().toISOString())
+        .order("start_time", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      appointment = data;
+    }
+
+    if (!appointment) {
+      return { ok: false, source: "internal", error: "No appointment found matching the provided identifiers" };
+    }
+
+    // Cannot reschedule cancelled appointments
+    if (appointment.status === "cancelled") {
+      return { ok: false, source: "internal", error: "Cannot reschedule a cancelled appointment" };
+    }
+
+    const durationMs = (args.duration_minutes || 60) * 60 * 1000;
+    const newEnd = new Date(newStart.getTime() + durationMs);
+
+    // Idempotency: same time = no change
+    const existingStart = new Date(appointment.start_time);
+    if (Math.abs(existingStart.getTime() - newStart.getTime()) < 60000) {
+      return {
+        ok: true,
+        source: appointment.cal_booking_uid ? "cal.com" : "internal",
+        status: "no_change",
+        appointment_id: appointment.id,
+        customer_name: appointment.customer_name,
+        start_time: appointment.start_time,
+      };
+    }
+
+    // Reschedule in Cal.com if linked
+    let calRescheduled = false;
+    let newCalUid = appointment.cal_booking_uid;
+    if (appointment.cal_booking_uid) {
+      try {
+        const calConfig = await getCalConfig(userId);
+        if (calConfig?.cal_access_token) {
+          const calResult = await calApiWithRetry(userId, async () => {
+            const freshConfig = await getCalConfig(userId);
+            const token = freshConfig?.cal_access_token || calConfig.cal_access_token;
+            const response = await calClient.post(
+              `/bookings/${appointment.cal_booking_uid}/reschedule`,
+              {
+                start: newStart.toISOString(),
+                ...(reason && { rescheduleReason: reason }),
+              },
+              {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "cal-api-version": CAL_API_VERSION_BOOKINGS,
+                  "Content-Type": "application/json",
+                },
+              }
+            );
+            return response.data?.data || response.data;
+          });
+          calRescheduled = true;
+          newCalUid = calResult?.uid || calResult?.id || appointment.cal_booking_uid;
+        }
+      } catch (calErr) {
+        console.warn("[reschedule_appointment] Cal.com reschedule failed:", calErr.message);
+        // Continue with local reschedule
+      }
+    }
+
+    // Update local - keep status as "booked" per spec (or "rescheduled" for tracking)
+    const { data: updatedAppointment } = await supabaseAdmin
+      .from("appointments")
+      .update({
+        start_time: newStart.toISOString(),
+        end_time: newEnd.toISOString(),
+        cal_booking_uid: newCalUid,
+        status: "booked",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", appointment.id)
+      .select("*")
+      .single();
+
+    await logEvent({
+      userId,
+      actionType: "APPOINTMENT_RESCHEDULED",
+      metaData: {
+        appointment_id: appointment.id,
+        old_time: appointment.start_time,
+        new_time: newStart.toISOString(),
+        cal_synced: calRescheduled,
+        reason,
+      },
+    });
+
+    return {
+      ok: true,
+      source: calRescheduled ? "cal.com" : "internal",
+      status: "rescheduled",
+      appointment_id: appointment.id,
+      customer_name: appointment.customer_name,
+      old_time: appointment.start_time,
+      new_start: newStart.toISOString(),
+      new_end: newEnd.toISOString(),
+      booking: calRescheduled ? { uid: newCalUid } : undefined,
+      appointment: updatedAppointment,
     };
   }
 
@@ -7201,6 +7599,7 @@ app.post(
           console.log("[appointments] Cal.com connected, creating booking...");
           const calBooking = await createCalBooking({
             config: calConfig,
+            userId: uid,
             start: startTime,
             args: {
               customer_name,
@@ -7566,6 +7965,7 @@ app.post(
   }
 );
 
+// Cancel appointment - syncs with Cal.com if linked
 app.delete(
   "/appointments/:id",
   requireAuth,
@@ -7575,23 +7975,169 @@ app.delete(
     try {
       const uid = req.effectiveUserId ?? req.user.id;
       const { id } = req.params || {};
+      const { reason } = req.body || {};
       if (!id) {
         return res.status(400).json({ error: "appointment id is required" });
       }
-      const { data, error } = await supabaseAdmin
+
+      // Get appointment first to check for Cal.com booking
+      const { data: appointment, error: fetchError } = await supabaseAdmin
         .from("appointments")
-        .delete()
+        .select("id, cal_booking_uid, customer_name, customer_phone")
         .eq("id", id)
         .eq("user_id", uid)
-        .select("id")
         .maybeSingle();
+
+      if (fetchError || !appointment) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+
+      // Cancel in Cal.com if linked
+      let calCancelled = false;
+      if (appointment.cal_booking_uid) {
+        try {
+          const calConfig = await getCalConfig(uid);
+          if (calConfig?.cal_access_token) {
+            await calApiWithRetry(uid, async () => {
+              const freshConfig = await getCalConfig(uid);
+              const token = freshConfig?.cal_access_token || calConfig.cal_access_token;
+              await calClient.delete(`/bookings/${appointment.cal_booking_uid}`, {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "cal-api-version": CAL_API_VERSION_BOOKINGS,
+                },
+                data: { cancellationReason: reason || "Cancelled by business" },
+              });
+            });
+            calCancelled = true;
+            console.log("[appointments] Cal.com booking cancelled:", appointment.cal_booking_uid);
+          }
+        } catch (calErr) {
+          console.warn("[appointments] Cal.com cancel failed:", calErr.message);
+          // Continue with local delete even if Cal.com fails
+        }
+      }
+
+      // Update local appointment to cancelled (or delete)
+      const { error } = await supabaseAdmin
+        .from("appointments")
+        .update({ status: "cancelled", updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("user_id", uid);
+
       if (error) {
         return res.status(500).json({ error: error.message });
       }
-      if (!data) {
+
+      return res.json({ ok: true, status: "cancelled", cal_synced: calCancelled });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Reschedule appointment - syncs with Cal.com if linked
+app.patch(
+  "/appointments/:id/reschedule",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "appointments-reschedule", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      const { id } = req.params || {};
+      const { new_start_time_iso, new_start_date, new_start_time, duration_minutes } = req.body || {};
+
+      if (!id) {
+        return res.status(400).json({ error: "appointment id is required" });
+      }
+
+      // Parse new start time
+      let newStart;
+      if (new_start_time_iso) {
+        newStart = new Date(new_start_time_iso);
+      } else if (new_start_date && new_start_time) {
+        newStart = new Date(`${new_start_date}T${new_start_time}`);
+      }
+      if (!newStart || isNaN(newStart.getTime())) {
+        return res.status(400).json({ error: "Valid new start time required (new_start_time_iso or new_start_date + new_start_time)" });
+      }
+
+      // Get existing appointment
+      const { data: appointment, error: fetchError } = await supabaseAdmin
+        .from("appointments")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      if (fetchError || !appointment) {
         return res.status(404).json({ error: "Appointment not found" });
       }
-      return res.json({ deleted: true });
+
+      // Calculate new end time
+      const durationMs = (duration_minutes || 60) * 60 * 1000;
+      const newEnd = new Date(newStart.getTime() + durationMs);
+
+      // Reschedule in Cal.com if linked
+      let calRescheduled = false;
+      let newCalBookingUid = appointment.cal_booking_uid;
+      if (appointment.cal_booking_uid) {
+        try {
+          const calConfig = await getCalConfig(uid);
+          if (calConfig?.cal_access_token) {
+            const calResult = await calApiWithRetry(uid, async () => {
+              const freshConfig = await getCalConfig(uid);
+              const token = freshConfig?.cal_access_token || calConfig.cal_access_token;
+              const response = await calClient.post(
+                `/bookings/${appointment.cal_booking_uid}/reschedule`,
+                { start: newStart.toISOString() },
+                {
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "cal-api-version": CAL_API_VERSION_BOOKINGS,
+                    "Content-Type": "application/json",
+                  },
+                }
+              );
+              return response.data?.data || response.data;
+            });
+            calRescheduled = true;
+            newCalBookingUid = calResult?.uid || calResult?.id || appointment.cal_booking_uid;
+            console.log("[appointments] Cal.com booking rescheduled:", newCalBookingUid);
+          }
+        } catch (calErr) {
+          console.warn("[appointments] Cal.com reschedule failed:", calErr.message);
+          // Continue with local update even if Cal.com fails
+        }
+      }
+
+      // Update local appointment
+      const { data: updated, error } = await supabaseAdmin
+        .from("appointments")
+        .update({
+          start_time: newStart.toISOString(),
+          end_time: newEnd.toISOString(),
+          cal_booking_uid: newCalBookingUid,
+          status: "rescheduled",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("user_id", uid)
+        .select("*")
+        .single();
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json({
+        ok: true,
+        new_start: newStart.toISOString(),
+        new_end: newEnd.toISOString(),
+        cal_synced: calRescheduled,
+        appointment: updated,
+      });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -10595,9 +11141,13 @@ app.get(
           fleetStatus = "Pending Setup";
         }
 
+        // Use business_name, or fallback to email prefix, then "Pending Setup"
+        const displayName = profile.business_name || 
+          (user.email ? user.email.split("@")[0].replace(/[._-]/g, " ") : "Pending Setup");
+        
         return {
           id: user.id,
-          business_name: profile.business_name || "Unassigned",
+          business_name: displayName,
           email: user.email || "--",
           role: profile.role || "user",
           plan_type: subscription.plan_type || null,
@@ -10612,6 +11162,7 @@ app.get(
           created_at: user.created_at || null,
           agent_id: agent.agent_id || null,
           agent_phone: agent.phone_number || null,
+          has_business_name: Boolean(profile.business_name),
         };
       });
 
@@ -10749,17 +11300,23 @@ app.get(
         }
       }
 
+      // Use business_name, or fallback to email prefix, then "Pending Setup"
+      const userEmail = authUser?.user?.email || "";
+      const displayName = profile?.business_name || 
+        (userEmail ? userEmail.split("@")[0].replace(/[._-]/g, " ") : "Pending Setup");
+
       return res.json({
         user: {
           id: userId,
-          business_name: profile?.business_name || "Unassigned",
+          business_name: displayName,
+          has_business_name: Boolean(profile?.business_name),
           area_code: profile?.area_code || null,
           cal_com_url: profile?.cal_com_url || null,
           full_name:
             profile?.full_name ||
             authUser?.user?.user_metadata?.full_name ||
             null,
-          email: authUser?.user?.email || "--",
+          email: userEmail || "--",
           phone: authUser?.user?.phone || null,
           signup_date: authUser?.user?.created_at || null,
           ip_address: lastAudit?.ip || null,
@@ -10780,6 +11337,121 @@ app.get(
           transfer_number: agent?.transfer_number || null,
           script_version: agent?.llm_id || null,
         },
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Get all appointments across all users
+app.get(
+  "/admin/appointments",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("appointments")
+        .select(`
+          *,
+          profile:profiles(business_name, user_id)
+        `)
+        .order("start_time", { ascending: false })
+        .limit(200);
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      const appointments = (data || []).map((apt) => ({
+        ...apt,
+        business_name: apt.profile?.business_name || "Unknown Business",
+        user_id: apt.profile?.user_id || apt.user_id,
+      }));
+
+      return res.json({ appointments });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Get comprehensive usage stats across all users
+app.get(
+  "/admin/usage-stats",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { data: usageLimits, error } = await supabaseAdmin
+        .from("usage_limits")
+        .select(`
+          user_id,
+          call_used_seconds,
+          call_cap_seconds,
+          call_credit_seconds,
+          rollover_seconds,
+          sms_used,
+          sms_cap,
+          sms_credit,
+          hard_stop_active,
+          force_pause,
+          period_start,
+          period_end
+        `);
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id, business_name");
+
+      const profileMap = new Map(
+        (profiles || []).map((p) => [p.user_id, p])
+      );
+
+      const usageStats = (usageLimits || []).map((usage) => {
+        const profile = profileMap.get(usage.user_id) || {};
+        const totalSeconds =
+          (usage.call_cap_seconds || 0) +
+          (usage.call_credit_seconds || 0) +
+          (usage.rollover_seconds || 0);
+        const usedSeconds = usage.call_used_seconds || 0;
+        const remainingSeconds = Math.max(0, totalSeconds - usedSeconds);
+        const usagePercent = totalSeconds > 0 
+          ? Math.round((usedSeconds / totalSeconds) * 100) 
+          : 0;
+
+        return {
+          user_id: usage.user_id,
+          business_name: profile.business_name || "Unknown",
+          minutes_used: Math.floor(usedSeconds / 60),
+          minutes_total: Math.floor(totalSeconds / 60),
+          minutes_remaining: Math.floor(remainingSeconds / 60),
+          usage_percent: usagePercent,
+          sms_used: usage.sms_used || 0,
+          sms_remaining: Math.max(0, (usage.sms_cap || 0) + (usage.sms_credit || 0) - (usage.sms_used || 0)),
+          hard_stop_active: usage.hard_stop_active || false,
+          force_pause: usage.force_pause || false,
+          period_start: usage.period_start,
+          period_end: usage.period_end,
+        };
+      });
+
+      // Sort by usage percent descending (highest usage first)
+      usageStats.sort((a, b) => b.usage_percent - a.usage_percent);
+
+      return res.json({ 
+        usage_stats: usageStats,
+        totals: {
+          total_users: usageStats.length,
+          users_over_80_percent: usageStats.filter(u => u.usage_percent >= 80).length,
+          users_hard_stopped: usageStats.filter(u => u.hard_stop_active).length,
+          total_minutes_used: usageStats.reduce((sum, u) => sum + u.minutes_used, 0),
+        }
       });
     } catch (err) {
       return res.status(500).json({ error: err.message });
@@ -10894,12 +11566,16 @@ app.get(
       return res.json({
         call_minutes_remaining: Math.floor(remaining / 60),
         call_minutes_total: Math.floor(total / 60),
+        call_used_minutes: Math.floor((usage.call_used_seconds || 0) / 60),
         sms_remaining: Math.max(
           0,
-          usage.sms_cap + usage.sms_credit - usage.sms_used
+          (usage.sms_cap || 0) + (usage.sms_credit || 0) - (usage.sms_used || 0)
         ),
-        sms_total: usage.sms_cap,
-        limit_state: usage.limit_state,
+        sms_total: usage.sms_cap || 0,
+        sms_used: usage.sms_used || 0,
+        limit_state: usage.limit_state || "active",
+        period_start: usage.period_start,
+        period_end: usage.period_end,
       });
     } catch (err) {
       return res.status(500).json({ error: err.message });

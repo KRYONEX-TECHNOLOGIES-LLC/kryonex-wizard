@@ -1,11 +1,11 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Mail, MessageSquare, Phone, Search, Tag, Sparkles, Trash2 } from "lucide-react";
+import { Mail, MessageSquare, Phone, Search, Tag, Sparkles, Trash2, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
 import { supabase, supabaseReady } from "../lib/supabase";
-import { transferLeadsToDialer } from "../lib/api";
+import { getAdminLeads, transferLeadsToDialer } from "../lib/api";
 import { getSavedState, saveState } from "../lib/persistence.js";
 
 const TAG_OPTIONS = [
@@ -24,20 +24,10 @@ const STATUS_COLORS = {
   contacted: "bg-neon-purple/20 text-neon-purple border-neon-purple/40",
   nurture: "bg-neon-green/20 text-neon-green border-neon-green/40",
   stalled: "bg-neon-pink/20 text-neon-pink border-neon-pink/40",
+  booked: "bg-neon-green/20 text-neon-green border-neon-green/40",
 };
 
-const OUTCOMES = [
-  "Left voicemail",
-  "Requested ETA link",
-  "Wants pricing",
-  "No answer",
-  "Booked demo",
-  "Not qualified",
-];
-
-const industries = ["Plumbing", "HVAC"];
 const STORAGE_KEYS = {
-  leads: "leadGrid.leads",
   selectedIds: "leadGrid.selectedIds",
   tagEditor: "leadGrid.tagEditor",
   tagSearch: "leadGrid.tagSearch",
@@ -45,28 +35,10 @@ const STORAGE_KEYS = {
 };
 const CALL_CENTER_QUEUE_KEY = "callCenter.queue";
 
-const buildLead = (idx) => {
-  const dayOffset = Math.floor(Math.random() * 12);
-  const statusKeys = Object.keys(STATUS_COLORS);
-  const status = statusKeys[idx % statusKeys.length];
-  return {
-    id: `lead-${idx}`,
-    business_name: `Sector ${idx + 1} ${industries[idx % industries.length]}`,
-    contact: `Agent ${String.fromCharCode(65 + (idx % 12))}.`,
-    phone: `(555) 01${idx % 10}-2${(idx * 3) % 10}${(idx * 5) % 10}${idx % 10}`,
-    email: `lead${idx + 10}@sector.io`,
-    status,
-    tags: TAG_OPTIONS.filter((_, tagIdx) => (idx + tagIdx) % 5 === 0),
-    lastOutcome: OUTCOMES[idx % OUTCOMES.length],
-    lastActivity: new Date(Date.now() - dayOffset * 86400000),
-  };
+const dayDiff = (value) => {
+  if (!value) return 0;
+  return Math.floor((Date.now() - new Date(value).getTime()) / 86400000);
 };
-
-const buildBatch = (start, count) =>
-  Array.from({ length: count }).map((_, idx) => buildLead(start + idx));
-
-const dayDiff = (value) =>
-  Math.floor((Date.now() - new Date(value).getTime()) / 86400000);
 
 const isUuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -75,8 +47,10 @@ const isUuid = (value) =>
 
 export default function AdminLeadsPage() {
   const navigate = useNavigate();
-  const [leads, setLeads] = React.useState(() => getSavedState(STORAGE_KEYS.leads) || buildBatch(0, 24));
-  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [leads, setLeads] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const [searchFilter, setSearchFilter] = React.useState("");
   const [selectedIds, setSelectedIds] = React.useState(() => getSavedState(STORAGE_KEYS.selectedIds) || []);
   const [tagEditor, setTagEditor] = React.useState(() => getSavedState(STORAGE_KEYS.tagEditor) || null);
   const [tagSearch, setTagSearch] = React.useState(() => getSavedState(STORAGE_KEYS.tagSearch) || "");
@@ -84,39 +58,45 @@ export default function AdminLeadsPage() {
   const [toast, setToast] = React.useState("");
   const [transfering, setTransfering] = React.useState(false);
   const toastTimer = React.useRef(null);
-  const sentinelRef = React.useRef(null);
-  const leadsSaveTimer = React.useRef(null);
+
+  // Fetch real leads from backend
+  const fetchLeads = React.useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await getAdminLeads();
+      const allLeads = (response.data?.leads || []).map((lead) => ({
+        id: lead.id,
+        business_name: lead.business_name || lead.name || "Unknown Caller",
+        contact: lead.name || lead.customer_name || "--",
+        phone: lead.phone || lead.customer_phone || "--",
+        email: lead.email || "--",
+        status: lead.status || "new",
+        tags: lead.metadata?.tags || [],
+        lastOutcome: lead.outcome || lead.summary?.slice(0, 50) || "--",
+        lastActivity: lead.created_at || new Date().toISOString(),
+        user_id: lead.user_id,
+        sentiment: lead.sentiment,
+        flagged: lead.flagged,
+      }));
+      setLeads(allLeads);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || "Failed to load leads");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   React.useEffect(() => {
-    if (!sentinelRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && !loadingMore) {
-          if (leads.length === 0) return;
-          setLoadingMore(true);
-          setTimeout(() => {
-            setLeads((prev) => {
-              const next = [...prev, ...buildBatch(prev.length, 18)];
-              saveState(STORAGE_KEYS.leads, next);
-              return next;
-            });
-            setLoadingMore(false);
-          }, 600);
-        }
-      },
-      { threshold: 0.6 }
-    );
-    observer.observe(sentinelRef.current);
-    return () => observer.disconnect();
-  }, [loadingMore, leads.length]);
+    fetchLeads();
+    const interval = setInterval(fetchLeads, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
+  }, [fetchLeads]);
 
   React.useEffect(() => {
     return () => {
       if (toastTimer.current) {
         clearTimeout(toastTimer.current);
-      }
-      if (leadsSaveTimer.current) {
-        clearTimeout(leadsSaveTimer.current);
       }
     };
   }, []);
@@ -149,40 +129,6 @@ export default function AdminLeadsPage() {
   const persistSelectedIdsValue = (value) => {
     setSelectedIds(value);
     saveState(STORAGE_KEYS.selectedIds, value);
-  };
-
-  const scheduleLeadsSave = (next) => {
-    if (leadsSaveTimer.current) {
-      clearTimeout(leadsSaveTimer.current);
-    }
-    leadsSaveTimer.current = setTimeout(() => {
-      saveState(STORAGE_KEYS.leads, next);
-    }, 120);
-  };
-
-  const handleDeleteLead = (leadId) => {
-    setLeads((prev) => {
-      const next = prev.filter((lead) => lead.id !== leadId);
-      scheduleLeadsSave(next);
-      return next;
-    });
-    setSelectedIds((prev) => {
-      const next = prev.filter((id) => id !== leadId);
-      saveState(STORAGE_KEYS.selectedIds, next);
-      return next;
-    });
-    showToast("Lead removed.");
-  };
-
-  const handleResetLeads = () => {
-    const next = buildBatch(0, 24);
-    setLeads(next);
-    saveState(STORAGE_KEYS.leads, next);
-    persistSelectedIdsValue([]);
-    persistTagEditor(null);
-    persistTagSearch("");
-    persistTextModal(null);
-    showToast("Lead grid reset.");
   };
 
   const toggleTag = async (leadId, tag) => {
@@ -309,13 +255,13 @@ export default function AdminLeadsPage() {
           <div className="flex flex-wrap items-center justify-between gap-6">
             <div>
               <p className="text-xs uppercase tracking-[0.4em] text-white/50">
-                The Pipeline Engine
+                All Platform Leads
               </p>
               <h1 className="mt-2 text-3xl font-semibold">
                 Lead Grid Command
               </h1>
               <p className="mt-2 text-white/60">
-                Select leads, tag instantly, and move targets to the dialer.
+                Real leads from all users. Select, tag, and move to dialer.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -324,10 +270,12 @@ export default function AdminLeadsPage() {
                 <input
                   className="bg-transparent text-sm text-white/70 outline-none placeholder:text-white/30"
                   placeholder="Search lead, tag, status..."
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
                 />
               </div>
-              <button className="button-secondary" onClick={handleResetLeads} type="button">
-                Reset Data
+              <button className="button-secondary" onClick={fetchLeads} type="button" disabled={loading}>
+                <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
               </button>
               <button
                 className="glow-button"
@@ -338,13 +286,14 @@ export default function AdminLeadsPage() {
               </button>
             </div>
           </div>
+            {error && <div className="mt-3 text-neon-pink text-sm">{error}</div>}
             <div className="mt-5 flex flex-wrap gap-3 text-xs text-white/60">
               <div className="status-live">
                 <Sparkles size={12} />
                 {selectedIds.length} selected
               </div>
-              <div className="status-live">Auto-assign: Armed</div>
-              <div className="status-live">Queue: 24 leads</div>
+              <div className="status-live">Total: {leads.length} leads</div>
+              {loading && <div className="status-live">Loading...</div>}
             </div>
           </motion.div>
 
@@ -359,7 +308,25 @@ export default function AdminLeadsPage() {
               <div className="text-right">Actions</div>
             </div>
             <div className="lead-grid-body">
-              {leads.map((lead) => {
+              {loading && leads.length === 0 ? (
+                <div className="lead-row">
+                  <div className="col-span-7 text-center text-white/60 py-8">Loading leads...</div>
+                </div>
+              ) : leads.length === 0 ? (
+                <div className="lead-row">
+                  <div className="col-span-7 text-center text-white/60 py-8">No leads found. Leads will appear here as calls come in.</div>
+                </div>
+              ) : leads.filter((lead) => {
+                if (!searchFilter) return true;
+                const term = searchFilter.toLowerCase();
+                return (
+                  (lead.business_name || "").toLowerCase().includes(term) ||
+                  (lead.contact || "").toLowerCase().includes(term) ||
+                  (lead.phone || "").toLowerCase().includes(term) ||
+                  (lead.status || "").toLowerCase().includes(term) ||
+                  (lead.tags || []).some(tag => tag.toLowerCase().includes(term))
+                );
+              }).map((lead) => {
                 const days = dayDiff(lead.lastActivity);
                 const rowTone =
                   days >= 7
@@ -486,9 +453,6 @@ export default function AdminLeadsPage() {
                   </div>
                 );
               })}
-              <div ref={sentinelRef} className="lead-grid-sentinel">
-                {loadingMore ? "Loading more leads..." : "Scroll to load more"}
-              </div>
             </div>
           </div>
         </div>

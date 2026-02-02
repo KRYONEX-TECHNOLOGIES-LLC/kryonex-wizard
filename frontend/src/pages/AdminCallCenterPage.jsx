@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { createCallRecording, getDialerQueue, triggerDemoCall } from "../lib/api.js";
+import { createCallRecording, getAdminLeads, triggerDemoCall } from "../lib/api.js";
 import { getSavedState, saveState } from "../lib/persistence.js";
 import { normalizePhone } from "../lib/phone.js";
 
@@ -11,7 +11,6 @@ const keypadKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 const FINAL_LOGS_KEY = "kryonex_final_logs";
 const CALL_CENTER_QUEUE_KEY = "callCenter.queue";
 const CALL_CENTER_SELECTED_KEY = "callCenter.selectedLeadId";
-const LOCAL_DIALER_QUEUE_KEY = "kryonex_dialer_queue";
 
 const isUuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -114,103 +113,53 @@ export default function AdminCallCenterPage() {
     });
   };
 
-  const buildMockLeads = () => {
-    const names = [
-      "Sector 7 Plumbing",
-      "Omega HVAC",
-      "Titan Plumbing",
-      "Nova HVAC",
-      "Cedar Plumbing",
-      "Summit HVAC",
-      "Ridgeway Plumbing",
-      "Apex HVAC",
-      "Ironclad Plumbing",
-      "Atlas HVAC",
-      "Prairie Plumbing",
-      "Vertex HVAC",
-      "Union Plumbing",
-      "Pulse HVAC",
-      "Northwind Plumbing",
-      "Sterling HVAC",
-      "Copperline Plumbing",
-      "Forge HVAC",
-      "Harbor Plumbing",
-      "Evergreen HVAC",
-    ];
-    const statuses = ["New", "No Answer", "Warm"];
-    return names.map((name, index) => ({
-      id: `mock-${index + 1}`,
-      business_name: name,
-      phone: `(555) 01${String(index).padStart(2, "0")}-000${index % 9}`,
-      status: statuses[index % statuses.length],
-      last_outcome: statuses[(index + 1) % statuses.length],
-    }));
-  };
-
-  const isQueueMissing = (message = "") =>
-    message.toLowerCase().includes("dialer_queue") ||
-    message.toLowerCase().includes("schema cache") ||
-    message.toLowerCase().includes("relation");
-
+  // Fetch real leads from backend
   const fetchLeads = React.useCallback(async (options = {}) => {
     const { force = false } = options;
     setLoading(true);
     setError("");
     try {
+      // Check cached queue first unless forced refresh
       const persistedQueue = getSavedState(CALL_CENTER_QUEUE_KEY);
-      if (!force && Array.isArray(persistedQueue)) {
+      if (!force && Array.isArray(persistedQueue) && persistedQueue.length > 0) {
         persistQueue(persistedQueue);
         if (persistedQueue.length && !selectedLeadId) {
           const first = persistedQueue[0];
           persistSelectedLeadId(first?.id || "");
-          setDialNumber(first?.phone || "");
-        } else if (!persistedQueue.length) {
-          persistSelectedLeadId("");
-          setDialNumber("");
+          setDialNumber(first?.phone || first?.customer_phone || "");
         }
         setLoading(false);
-        setError("");
         return;
       }
-      const response = await getDialerQueue();
-      const queueLeads = response.data?.queue || [];
-      const cachedQueue = window.localStorage.getItem(LOCAL_DIALER_QUEUE_KEY);
-      const parsedQueue = cachedQueue ? JSON.parse(cachedQueue) : [];
-      const nextLeads = queueLeads.length ? queueLeads : parsedQueue;
-      persistQueue(nextLeads);
-      if (nextLeads.length && !selectedLeadId) {
-        const first = nextLeads[0];
+      
+      // Fetch real leads from admin endpoint
+      const response = await getAdminLeads();
+      const allLeads = response.data?.leads || [];
+      
+      // Transform leads for call center display
+      const callCenterLeads = allLeads.map((lead) => ({
+        id: lead.id,
+        business_name: lead.business_name || lead.name || "Unknown Caller",
+        phone: lead.phone || lead.customer_phone || "",
+        status: lead.status || "new",
+        last_outcome: lead.outcome || lead.summary?.slice(0, 40) || "--",
+        user_id: lead.user_id,
+        created_at: lead.created_at,
+      }));
+      
+      persistQueue(callCenterLeads);
+      if (callCenterLeads.length && !selectedLeadId) {
+        const first = callCenterLeads[0];
         persistSelectedLeadId(first.id);
         setDialNumber(first.phone || "");
-      } else if (!nextLeads.length) {
+      } else if (!callCenterLeads.length) {
         persistSelectedLeadId("");
         setDialNumber("");
       }
     } catch (err) {
-      const status = err.response?.status;
       const message = err.response?.data?.error || err.message || "";
-      if (
-        status === 404 ||
-        String(message).toLowerCase().includes("network") ||
-        isQueueMissing(String(message))
-      ) {
-        const cachedQueue = window.localStorage.getItem(LOCAL_DIALER_QUEUE_KEY);
-        const parsedQueue = cachedQueue ? JSON.parse(cachedQueue) : [];
-        const nextLeads = parsedQueue;
-        persistQueue(nextLeads);
-        if (nextLeads.length && !selectedLeadId) {
-          const first = nextLeads[0];
-          persistSelectedLeadId(first.id);
-          setDialNumber(first.phone || "");
-        } else if (!nextLeads.length) {
-          persistSelectedLeadId("");
-          setDialNumber("");
-        }
-        triggerToast("Dialer queue offline. Using local queue.");
-        setError("");
-      } else {
-        setError(message);
-      }
+      setError(message || "Failed to load leads");
+      triggerToast("Failed to load leads from server");
     } finally {
       setLoading(false);
     }
@@ -354,13 +303,11 @@ export default function AdminCallCenterPage() {
     triggerToast("Lead removed from queue.");
   };
 
-  const handleResetQueue = () => {
-    const next = buildMockLeads();
-    persistQueue(next);
-    const first = next[0];
-    persistSelectedLeadId(first?.id || "");
-    setDialNumber(first?.phone || "");
-    triggerToast("Dialer queue reset.");
+  const handleClearQueue = () => {
+    persistQueue([]);
+    persistSelectedLeadId("");
+    setDialNumber("");
+    triggerToast("Queue cleared. Click Refresh to reload leads.");
   };
 
   return (
@@ -396,8 +343,8 @@ export default function AdminCallCenterPage() {
                   Lead Grid
                 </div>
                 <div className="flex items-center gap-2">
-                  <button className="button-secondary" onClick={handleResetQueue} type="button">
-                    Reset Data
+                  <button className="button-secondary" onClick={handleClearQueue} type="button">
+                    Clear Queue
                   </button>
                   <button className="button-primary" onClick={() => fetchLeads({ force: true })}>
                     Refresh
