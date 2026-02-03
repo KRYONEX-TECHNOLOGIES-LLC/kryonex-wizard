@@ -166,6 +166,26 @@ CREATE INDEX IF NOT EXISTS idx_sms_keyword_created ON public.sms_keyword_respons
 COMMENT ON TABLE public.sms_keyword_responses IS 'Tracks keyword detection and auto-responses for inbound SMS';
 
 -- =============================================================================
+-- Update sms_opt_outs for GLOBAL opt-out support (shared number compliance)
+-- =============================================================================
+ALTER TABLE public.sms_opt_outs ADD COLUMN IF NOT EXISTS global_opt_out boolean DEFAULT false;
+ALTER TABLE public.sms_opt_outs ADD COLUMN IF NOT EXISTS opted_out_at timestamptz DEFAULT now();
+
+-- Index for fast global opt-out lookup
+CREATE INDEX IF NOT EXISTS idx_sms_opt_outs_global 
+  ON public.sms_opt_outs(phone, global_opt_out) 
+  WHERE global_opt_out = true;
+
+-- Allow phone-only entries for global opt-outs (no user_id required)
+-- This requires making user_id nullable or adding a unique constraint on phone alone
+-- For safety, we add a partial unique index for global opt-outs
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_opt_outs_phone_global 
+  ON public.sms_opt_outs(phone) 
+  WHERE global_opt_out = true AND user_id IS NULL;
+
+COMMENT ON COLUMN public.sms_opt_outs.global_opt_out IS 'If true, blocks ALL messages from shared number to this phone';
+
+-- =============================================================================
 -- Add required columns to messages table
 -- =============================================================================
 -- First ensure base columns exist (from shared_sms_upgrade)

@@ -638,6 +638,7 @@ const ALLOWED_SMS_SOURCES = [
 // SMS Keywords for auto-handling
 const SMS_KEYWORDS = {
   OPT_OUT: ["stop", "unsubscribe", "cancel", "end", "quit", "optout", "opt-out"],
+  OPT_IN: ["start", "unstop", "subscribe", "resume", "yes"],  // Re-subscribe keywords
   HELP: ["help", "info", "?"],
   CONFIRM: ["yes", "confirm", "ok", "y", "yep", "yeah", "confirmed"],
   DECLINE: ["no", "n", "nope", "decline"],
@@ -891,6 +892,12 @@ const detectKeyword = (body) => {
     return { type: "OPT_OUT", keyword: normalizedBody.split(" ")[0] };
   }
   
+  // Check for opt-in/re-subscribe keywords (START, UNSTOP)
+  // Note: "yes" is in both OPT_IN and CONFIRM - OPT_OUT takes priority, then we check context
+  if (SMS_KEYWORDS.OPT_IN.some(k => normalizedBody === k && k !== "yes")) {
+    return { type: "OPT_IN", keyword: normalizedBody };
+  }
+  
   // Check for help keywords
   if (SMS_KEYWORDS.HELP.some(k => normalizedBody === k)) {
     return { type: "HELP", keyword: normalizedBody };
@@ -1016,13 +1023,29 @@ const sendSmsInternal = async ({
     }
   }
 
+  // Check for opt-outs: per-tenant AND global (for shared number compliance)
+  const normalizedTo = normalizePhoneForLookup(to);
   const { data: optOut } = await supabaseAdmin
     .from("sms_opt_outs")
-    .select("id")
+    .select("id, global_opt_out")
     .eq("user_id", userId)
-    .eq("phone", to)
+    .eq("phone", normalizedTo)
     .maybeSingle();
-  if (optOut) {
+  
+  // Also check for GLOBAL opt-out (customer said STOP on shared number)
+  let globalOptOut = null;
+  if (MASTER_SMS_NUMBER) {
+    const { data: globalCheck } = await supabaseAdmin
+      .from("sms_opt_outs")
+      .select("id")
+      .eq("phone", normalizedTo)
+      .eq("global_opt_out", true)
+      .maybeSingle();
+    globalOptOut = globalCheck;
+  }
+  
+  if (optOut || globalOptOut) {
+    console.log("[sendSms] Blocked - recipient opted out", { phone: normalizedTo, global: !!globalOptOut });
     throw new Error("Recipient opted out");
   }
 
@@ -7722,27 +7745,8 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
         console.log("[sms-inbound] Routed via thread lock to:", userId);
       }
       
-      // STEP B: If no lock, check recent outbound (72h window)
-      if (!userId) {
-        const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
-        const { data: recentOutbound } = await supabaseAdmin
-          .from("messages")
-          .select("user_id")
-          .eq("to_number", normalizedFromNumber)
-          .eq("direction", "outbound")
-          .gte("created_at", seventyTwoHoursAgo)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        
-        if (recentOutbound?.user_id) {
-          userId = recentOutbound.user_id;
-          routingMethod = "recent_outbound";
-          console.log("[sms-inbound] Routed via recent outbound to:", userId);
-        }
-      }
-      
-      // STEP C: COLLISION DETECTION - Check if multiple tenants contacted this phone
+      // STEP B+C COMBINED: Check for collisions FIRST, then route if safe
+      // This ensures we never skip collision detection when thread lock is expired
       if (!userId) {
         const collisionCheck = await checkCollision(normalizedFromNumber);
         
@@ -7864,22 +7868,56 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
     if (detectedKeyword) {
       switch (detectedKeyword.type) {
         case "OPT_OUT": {
-          // Add to opt-out list
+          // GLOBAL STOP - opt out from ALL tenants on this shared number (safest for carrier compliance)
+          // This prevents complaints when customer says STOP but another tenant tries to message them
           await supabaseAdmin.from("sms_opt_outs").upsert({
             user_id: userId,
             phone: normalizedFromNumber,
+            global_opt_out: true,  // Mark as global for shared number
           }, { onConflict: "user_id,phone" });
           
-          autoResponse = `You've been unsubscribed from ${businessName}. Call ${businessPhone || "the office"} if you need service.`;
+          // Also insert a global opt-out record (no user_id) for master number blocking
+          if (MASTER_SMS_NUMBER) {
+            await supabaseAdmin.from("sms_opt_outs").upsert({
+              phone: normalizedFromNumber,
+              global_opt_out: true,
+              opted_out_at: new Date().toISOString(),
+            }, { onConflict: "phone", ignoreDuplicates: true }).catch(() => {});
+          }
+          
+          autoResponse = `You've been unsubscribed and will no longer receive texts from this number. Call the office directly if you need service.`;
           await sendAutoReply({ toNumber: fromNumber, body: autoResponse, source: "system_opt_out" });
           autoHandled = true;
-          actionTaken = "opt_out";
-          console.log("[sms-inbound] OPT_OUT processed for:", normalizedFromNumber);
+          actionTaken = "global_opt_out";
+          console.log("[sms-inbound] GLOBAL OPT_OUT processed for:", normalizedFromNumber);
+          break;
+        }
+        
+        case "OPT_IN": {
+          // Re-subscribe: Remove from opt-out list
+          await supabaseAdmin
+            .from("sms_opt_outs")
+            .delete()
+            .eq("phone", normalizedFromNumber);
+          
+          // Also remove global opt-out
+          await supabaseAdmin
+            .from("sms_opt_outs")
+            .delete()
+            .eq("phone", normalizedFromNumber)
+            .eq("global_opt_out", true);
+          
+          autoResponse = `You've been re-subscribed to notifications. Reply STOP anytime to opt out.`;
+          await sendAutoReply({ toNumber: fromNumber, body: autoResponse, source: "system_opt_in" });
+          autoHandled = true;
+          actionTaken = "opt_in";
+          console.log("[sms-inbound] OPT_IN processed for:", normalizedFromNumber);
           break;
         }
         
         case "HELP": {
-          autoResponse = `For assistance with ${businessName}, call ${businessPhone || "the office"}. Reply STOP to unsubscribe.`;
+          // Carrier-compliant HELP response with required elements
+          autoResponse = `${businessName}: Service appointment notifications. Msg frequency varies. Reply STOP to opt out. For help call ${businessPhone || "the office"}.`;
           await sendAutoReply({ toNumber: fromNumber, body: autoResponse, source: "system_help" });
           autoHandled = true;
           actionTaken = "help_sent";
