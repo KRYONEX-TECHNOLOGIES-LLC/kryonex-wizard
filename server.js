@@ -55,6 +55,7 @@ const {
   ADMIN_EMAIL,
   CONSENT_VERSION,
   RESEND_API_KEY,
+  MASTER_SMS_NUMBER,
 } = process.env;
 
 if (!RETELL_API_KEY) throw new Error("Missing RETELL_API_KEY");
@@ -614,6 +615,370 @@ const evaluateUsageThresholds = async (userId, usage) => {
 // END OPS INFRASTRUCTURE HELPERS
 // =============================================================================
 
+// =============================================================================
+// BULLETPROOF SMS SYSTEM - Thread Locking, Rate Limiting, Keyword Handling
+// =============================================================================
+
+// Allowed SMS source types - freeform manual sends are NOT allowed
+const ALLOWED_SMS_SOURCES = [
+  "auto_post_call",
+  "auto_reminder",
+  "auto_review_request",
+  "auto_eta",
+  "auto_confirmation",
+  "quick_action_enroute",
+  "quick_action_arrived",
+  "quick_action_complete",
+  "quick_action_delayed",
+  "system_disambiguation",
+  "system_opt_out",
+  "system_rate_limit",
+];
+
+// SMS Keywords for auto-handling
+const SMS_KEYWORDS = {
+  OPT_OUT: ["stop", "unsubscribe", "cancel", "end", "quit", "optout", "opt-out"],
+  HELP: ["help", "info", "?"],
+  CONFIRM: ["yes", "confirm", "ok", "y", "yep", "yeah", "confirmed"],
+  DECLINE: ["no", "n", "nope", "decline"],
+  RESCHEDULE: ["reschedule", "change", "move"],
+};
+
+// Update thread owner on every outbound SMS (sticky lock for 72h)
+const updateThreadOwner = async ({ toNumber, tenantId, businessName }) => {
+  if (!toNumber || !tenantId) return;
+  
+  const normalizedPhone = normalizePhoneForLookup(toNumber);
+  const lockDurationHours = 72;
+  const lockedUntil = new Date(Date.now() + lockDurationHours * 60 * 60 * 1000);
+  
+  try {
+    // Upsert - update if exists, insert if not
+    const { error } = await supabaseAdmin
+      .from("phone_thread_owner")
+      .upsert({
+        from_number: normalizedPhone,
+        tenant_id: tenantId,
+        locked_until: lockedUntil.toISOString(),
+        last_outbound_at: new Date().toISOString(),
+        business_name: businessName || null,
+        updated_at: new Date().toISOString(),
+      }, {
+        onConflict: "from_number",
+      });
+    
+    if (error) {
+      console.warn("[updateThreadOwner] Failed to update thread lock:", error.message);
+    } else {
+      console.log("[updateThreadOwner] Thread locked for", normalizedPhone, "to tenant", tenantId, "until", lockedUntil.toISOString());
+    }
+  } catch (err) {
+    console.warn("[updateThreadOwner] Error:", err.message);
+  }
+};
+
+// Get thread owner for inbound routing
+const getThreadOwner = async (fromNumber) => {
+  const normalizedPhone = normalizePhoneForLookup(fromNumber);
+  
+  const { data, error } = await supabaseAdmin
+    .from("phone_thread_owner")
+    .select("tenant_id, business_name, locked_until")
+    .eq("from_number", normalizedPhone)
+    .gt("locked_until", new Date().toISOString())
+    .maybeSingle();
+  
+  if (error || !data) return null;
+  return data;
+};
+
+// Check for collision - multiple tenants contacted this phone recently
+const checkCollision = async (fromNumber) => {
+  const normalizedPhone = normalizePhoneForLookup(fromNumber);
+  const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+  
+  // Find all unique tenants who sent outbound to this number in last 72h
+  const { data: recentOutbound, error } = await supabaseAdmin
+    .from("messages")
+    .select("user_id")
+    .eq("to_number", normalizedPhone)
+    .eq("direction", "outbound")
+    .gte("created_at", seventyTwoHoursAgo)
+    .order("created_at", { ascending: false });
+  
+  if (error || !recentOutbound?.length) {
+    return { hasCollision: false, tenants: [] };
+  }
+  
+  // Get unique tenant IDs
+  const uniqueTenantIds = [...new Set(recentOutbound.map(m => m.user_id))];
+  
+  if (uniqueTenantIds.length <= 1) {
+    return { hasCollision: false, tenants: uniqueTenantIds };
+  }
+  
+  // Multiple tenants - need to get their business names
+  const { data: profiles } = await supabaseAdmin
+    .from("profiles")
+    .select("user_id, business_name")
+    .in("user_id", uniqueTenantIds);
+  
+  const tenantsWithNames = uniqueTenantIds.map(id => {
+    const profile = profiles?.find(p => p.user_id === id);
+    return {
+      tenant_id: id,
+      business_name: profile?.business_name || `Business ${id.slice(0, 8)}`,
+    };
+  });
+  
+  return { hasCollision: true, tenants: tenantsWithNames };
+};
+
+// Log collision for audit
+const logCollision = async ({ fromNumber, tenants, disambiguationSent }) => {
+  try {
+    await supabaseAdmin.from("sms_collision_log").insert({
+      from_number: normalizePhoneForLookup(fromNumber),
+      tenant_ids: tenants.map(t => t.tenant_id),
+      business_names: tenants.map(t => t.business_name),
+      disambiguation_sent: disambiguationSent,
+    });
+  } catch (err) {
+    console.warn("[logCollision] Error:", err.message);
+  }
+};
+
+// Check pending collision waiting for customer response
+const getPendingCollision = async (fromNumber) => {
+  const normalizedPhone = normalizePhoneForLookup(fromNumber);
+  
+  const { data } = await supabaseAdmin
+    .from("sms_collision_log")
+    .select("*")
+    .eq("from_number", normalizedPhone)
+    .is("resolved_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  
+  return data;
+};
+
+// Resolve collision based on customer's choice
+const resolveCollision = async (collisionId, choice, tenantId) => {
+  await supabaseAdmin
+    .from("sms_collision_log")
+    .update({
+      customer_choice: choice,
+      resolved_tenant_id: tenantId,
+      resolved_at: new Date().toISOString(),
+    })
+    .eq("id", collisionId);
+};
+
+// Check inbound rate limit for a phone number
+const checkInboundRateLimit = async (fromNumber) => {
+  const normalizedPhone = normalizePhoneForLookup(fromNumber);
+  const now = new Date();
+  const tenMinAgo = new Date(now.getTime() - 10 * 60 * 1000);
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  
+  // Check if currently blocked
+  const { data: rateLimit } = await supabaseAdmin
+    .from("sms_inbound_rate_limits")
+    .select("blocked_until, block_reason")
+    .eq("from_number", normalizedPhone)
+    .gte("blocked_until", now.toISOString())
+    .maybeSingle();
+  
+  if (rateLimit?.blocked_until) {
+    return { allowed: false, reason: rateLimit.block_reason || "rate_limited" };
+  }
+  
+  // Count recent inbound from this number (10 min window)
+  const { count: recent10min } = await supabaseAdmin
+    .from("messages")
+    .select("*", { count: "exact", head: true })
+    .eq("from_number", normalizedPhone)
+    .eq("direction", "inbound")
+    .gte("created_at", tenMinAgo.toISOString());
+  
+  // Count today's inbound
+  const { count: todayCount } = await supabaseAdmin
+    .from("messages")
+    .select("*", { count: "exact", head: true })
+    .eq("from_number", normalizedPhone)
+    .eq("direction", "inbound")
+    .gte("created_at", todayStart.toISOString());
+  
+  // Check limits: 5 per 10 min, 20 per day
+  if ((recent10min || 0) >= 5) {
+    // Block for 10 minutes
+    const blockUntil = new Date(now.getTime() + 10 * 60 * 1000);
+    await supabaseAdmin.from("sms_inbound_rate_limits").upsert({
+      from_number: normalizedPhone,
+      window_date: now.toISOString().slice(0, 10),
+      count_10min: recent10min,
+      count_daily: todayCount,
+      blocked_until: blockUntil.toISOString(),
+      block_reason: "rate_limit_10min",
+      last_message_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    }, { onConflict: "from_number,window_date" });
+    
+    return { allowed: false, reason: "rate_limit_10min" };
+  }
+  
+  if ((todayCount || 0) >= 20) {
+    // Block until tomorrow
+    const tomorrow = new Date(todayStart);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    await supabaseAdmin.from("sms_inbound_rate_limits").upsert({
+      from_number: normalizedPhone,
+      window_date: now.toISOString().slice(0, 10),
+      count_10min: recent10min,
+      count_daily: todayCount,
+      blocked_until: tomorrow.toISOString(),
+      block_reason: "rate_limit_daily",
+      last_message_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    }, { onConflict: "from_number,window_date" });
+    
+    return { allowed: false, reason: "rate_limit_daily" };
+  }
+  
+  return { allowed: true };
+};
+
+// Check outbound throttle (60 SMS per minute per tenant)
+const checkOutboundThrottle = async (tenantId) => {
+  const now = new Date();
+  // Truncate to current minute
+  const windowMinute = new Date(now);
+  windowMinute.setSeconds(0, 0);
+  
+  const { data: throttle } = await supabaseAdmin
+    .from("sms_outbound_throttle")
+    .select("count")
+    .eq("tenant_id", tenantId)
+    .eq("window_minute", windowMinute.toISOString())
+    .maybeSingle();
+  
+  const currentCount = throttle?.count || 0;
+  
+  if (currentCount >= 60) {
+    return { allowed: false, reason: "outbound_throttle", waitMs: 60000 - (now.getTime() % 60000) };
+  }
+  
+  // Increment counter
+  await supabaseAdmin.from("sms_outbound_throttle").upsert({
+    tenant_id: tenantId,
+    window_minute: windowMinute.toISOString(),
+    count: currentCount + 1,
+  }, { onConflict: "tenant_id,window_minute" });
+  
+  return { allowed: true };
+};
+
+// Detect keyword in message body
+const detectKeyword = (body) => {
+  if (!body) return null;
+  const normalizedBody = body.trim().toLowerCase();
+  
+  // Check for opt-out keywords
+  if (SMS_KEYWORDS.OPT_OUT.some(k => normalizedBody === k || normalizedBody.startsWith(k + " "))) {
+    return { type: "OPT_OUT", keyword: normalizedBody.split(" ")[0] };
+  }
+  
+  // Check for help keywords
+  if (SMS_KEYWORDS.HELP.some(k => normalizedBody === k)) {
+    return { type: "HELP", keyword: normalizedBody };
+  }
+  
+  // Check for confirm keywords (exact match or starts with)
+  if (SMS_KEYWORDS.CONFIRM.some(k => normalizedBody === k || normalizedBody.startsWith(k + " ") || normalizedBody.startsWith(k + "!"))) {
+    return { type: "CONFIRM", keyword: normalizedBody.split(/[\s!]/)[0] };
+  }
+  
+  // Check for decline keywords
+  if (SMS_KEYWORDS.DECLINE.some(k => normalizedBody === k)) {
+    return { type: "DECLINE", keyword: normalizedBody };
+  }
+  
+  // Check for reschedule keywords
+  if (SMS_KEYWORDS.RESCHEDULE.some(k => normalizedBody.includes(k))) {
+    return { type: "RESCHEDULE", keyword: "reschedule" };
+  }
+  
+  // Check if it's a number (collision disambiguation response)
+  if (/^[1-9]$/.test(normalizedBody)) {
+    return { type: "COLLISION_CHOICE", keyword: normalizedBody, choice: parseInt(normalizedBody, 10) };
+  }
+  
+  return null;
+};
+
+// Log keyword response for audit
+const logKeywordResponse = async ({ fromNumber, tenantId, keyword, originalBody, autoResponse, action, appointmentId }) => {
+  try {
+    await supabaseAdmin.from("sms_keyword_responses").insert({
+      from_number: normalizePhoneForLookup(fromNumber),
+      tenant_id: tenantId || null,
+      keyword_detected: keyword,
+      original_body: originalBody,
+      auto_response_sent: autoResponse || null,
+      action_taken: action,
+      appointment_id: appointmentId || null,
+    });
+  } catch (err) {
+    console.warn("[logKeywordResponse] Error:", err.message);
+  }
+};
+
+// Send auto-reply (used for system responses like opt-out, disambiguation, rate limit)
+const sendAutoReply = async ({ toNumber, body, source }) => {
+  if (!MASTER_SMS_NUMBER) {
+    console.warn("[sendAutoReply] No MASTER_SMS_NUMBER configured, skipping auto-reply");
+    return null;
+  }
+  
+  try {
+    const payload = { to: toNumber, body, from_number: MASTER_SMS_NUMBER };
+    const response = await retellSmsClient.post("/sms", payload);
+    console.log("[sendAutoReply] Sent:", body.slice(0, 50));
+    return response.data;
+  } catch (err) {
+    console.error("[sendAutoReply] Failed:", err.message);
+    return null;
+  }
+};
+
+// Normalize phone number for lookup
+const normalizePhoneForLookup = (phone) => {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return String(phone).trim();
+};
+
+// Get business phone for "call us" messages
+const getBusinessPhone = async (tenantId) => {
+  if (!tenantId) return null;
+  const { data: agent } = await supabaseAdmin
+    .from("agents")
+    .select("phone_number")
+    .eq("user_id", tenantId)
+    .eq("is_active", true)
+    .maybeSingle();
+  return agent?.phone_number || null;
+};
+
+// =============================================================================
+// END BULLETPROOF SMS SYSTEM
+// =============================================================================
+
 const sendSmsInternal = async ({
   userId,
   to,
@@ -622,9 +987,33 @@ const sendSmsInternal = async ({
   source,
   req,
   bypassUsage = false,
+  skipBusinessPrefix = false,
 }) => {
   if (!body || !to) {
     throw new Error("body and to are required");
+  }
+
+  // BULLETPROOF SMS: Validate source type - reject freeform manual sends
+  const normalizedSource = (source || "manual").toLowerCase();
+  const isAllowedSource = ALLOWED_SMS_SOURCES.some(s => normalizedSource === s || normalizedSource.startsWith(s.split("_")[0]));
+  
+  if (!isAllowedSource && normalizedSource === "manual" && !bypassUsage) {
+    // Reject pure "manual" freeform messages - must use quick actions or automation
+    console.warn("[sendSms] Rejected freeform manual SMS - use quick actions or automated messages", { userId, source });
+    const err = new Error("Freeform SMS not allowed. Use quick actions or automated notifications.");
+    err.code = "FREEFORM_NOT_ALLOWED";
+    throw err;
+  }
+
+  // BULLETPROOF SMS: Check outbound throttle (60/min per tenant)
+  if (!bypassUsage) {
+    const throttleCheck = await checkOutboundThrottle(userId);
+    if (!throttleCheck.allowed) {
+      console.warn("[sendSms] Outbound throttle reached", { userId, waitMs: throttleCheck.waitMs });
+      const err = new Error("Sending too fast. Please wait a moment.");
+      err.code = "OUTBOUND_THROTTLE";
+      throw err;
+    }
   }
 
   const { data: optOut } = await supabaseAdmin
@@ -635,6 +1024,23 @@ const sendSmsInternal = async ({
     .maybeSingle();
   if (optOut) {
     throw new Error("Recipient opted out");
+  }
+
+  // Get user's profile for business name (needed for shared number branding)
+  const { data: userProfile } = await supabaseAdmin
+    .from("profiles")
+    .select("business_name")
+    .eq("user_id", userId)
+    .maybeSingle();
+  const businessName = userProfile?.business_name || "Your service provider";
+
+  // Prepend business name to message if using shared number (unless explicitly skipped)
+  let finalBody = body;
+  if (!skipBusinessPrefix && MASTER_SMS_NUMBER) {
+    // Only prepend if body doesn't already start with the business name
+    if (!body.startsWith(`[${businessName}]`)) {
+      finalBody = `[${businessName}] ${body}`;
+    }
   }
 
   const { data: subscription } = await supabaseAdmin
@@ -679,19 +1085,39 @@ const sendSmsInternal = async ({
     throw err;
   }
 
+  // Determine which phone number to send from:
+  // 1. If MASTER_SMS_NUMBER is set, use it (shared number model)
+  // 2. Otherwise, use the user's agent phone number
+  let fromNumber = MASTER_SMS_NUMBER || null;
+  if (!fromNumber) {
+    const { data: agentRow, error: agentError } = await supabaseAdmin
+      .from("agents")
+      .select("phone_number")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .maybeSingle();
+    if (agentError || !agentRow?.phone_number) {
+      throw new Error("Agent phone number not found and no MASTER_SMS_NUMBER configured");
+    }
+    fromNumber = agentRow.phone_number;
+  }
+
   if (String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true") {
     await supabaseAdmin.from("messages").insert({
       user_id: userId,
       lead_id: leadId || null,
       direction: "outbound",
-      body,
+      body: finalBody,
+      from_number: fromNumber,
+      to_number: to,
     });
     await auditLog({
       userId,
       action: "sms_sandboxed",
       entity: "message",
       entityId: leadId || null,
-      metadata: { to, source: source || "manual" },
+      metadata: { to, from: fromNumber, source: source || "manual" },
     });
     await logEvent({
       userId,
@@ -699,34 +1125,30 @@ const sendSmsInternal = async ({
       req,
       metaData: {
         direction: "outbound",
-        body,
+        body: finalBody,
         to,
+        from: fromNumber,
         source: source || "manual",
         cost: 0,
         sandbox: true,
       },
     });
+    // BULLETPROOF SMS: Update thread owner even in sandbox mode
+    await updateThreadOwner({ toNumber: to, tenantId: userId, businessName });
     return { sandbox: true };
   }
 
-  const { data: agentRow, error: agentError } = await supabaseAdmin
-    .from("agents")
-    .select("phone_number")
-    .eq("user_id", userId)
-    .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .maybeSingle();
-  if (agentError || !agentRow?.phone_number) {
-    throw new Error("Agent phone number not found");
-  }
-  const payload = { to, body, from_number: agentRow.phone_number };
+  const payload = { to, body: finalBody, from_number: fromNumber };
   const retellResponse = await retellSmsClient.post("/sms", payload);
 
+  // Store message with full phone tracking for conversation routing
   await supabaseAdmin.from("messages").insert({
     user_id: userId,
     lead_id: leadId || null,
     direction: "outbound",
-    body,
+    body: finalBody,
+    from_number: fromNumber,
+    to_number: to,
   });
 
   const nextSmsUsed = (usage.sms_used || 0) + 1;
@@ -749,7 +1171,7 @@ const sendSmsInternal = async ({
     action: "sms_sent",
     entity: "message",
     entityId: leadId || null,
-    metadata: { to, source: source || "manual" },
+    metadata: { to, from: fromNumber, source: source || "manual" },
   });
   await logEvent({
     userId,
@@ -757,11 +1179,19 @@ const sendSmsInternal = async ({
     req,
     metaData: {
       direction: "outbound",
-      body,
+      body: finalBody,
       to,
+      from: fromNumber,
       source: source || "manual",
       cost: retellResponse.data?.cost || retellResponse.data?.cost_cents || null,
     },
+  });
+
+  // BULLETPROOF SMS: Update thread owner for conversation routing
+  await updateThreadOwner({
+    toNumber: to,
+    tenantId: userId,
+    businessName,
   });
 
   return retellResponse.data;
@@ -780,66 +1210,96 @@ const sendSmsFromAgent = async ({ agentId, to, body, userId, source }) => {
     throw new Error("Agent phone number not found");
   }
 
+  const effectiveUserId = userId || agentRow.user_id;
+  
+  // Get user's profile for business name (shared number branding)
+  const { data: userProfile } = await supabaseAdmin
+    .from("profiles")
+    .select("business_name")
+    .eq("user_id", effectiveUserId)
+    .maybeSingle();
+  const businessName = userProfile?.business_name || "Your service provider";
+
+  // Prepend business name if using shared number
+  let finalBody = body;
+  if (MASTER_SMS_NUMBER && !body.startsWith(`[${businessName}]`)) {
+    finalBody = `[${businessName}] ${body}`;
+  }
+
+  // Use master number if set, otherwise use agent's number
+  const fromNumber = MASTER_SMS_NUMBER || agentRow.phone_number;
+
   if (String(RETELL_SMS_SANDBOX || "").toLowerCase() === "true") {
     await supabaseAdmin.from("messages").insert({
-      user_id: userId || agentRow.user_id,
+      user_id: effectiveUserId,
       lead_id: null,
       direction: "outbound",
-      body,
+      body: finalBody,
+      from_number: fromNumber,
+      to_number: to,
     });
     await auditLog({
-      userId: userId || agentRow.user_id,
+      userId: effectiveUserId,
       action: "sms_sandboxed",
       entity: "message",
       entityId: agentId,
-      metadata: { to, source: source || "agent_tool" },
+      metadata: { to, from: fromNumber, source: source || "agent_tool" },
     });
     await logEvent({
-      userId: userId || agentRow.user_id,
+      userId: effectiveUserId,
       actionType: "SMS_SENT",
       metaData: {
         direction: "outbound",
-        body,
+        body: finalBody,
         to,
+        from: fromNumber,
         source: source || "agent_tool",
         cost: 0,
         sandbox: true,
       },
     });
+    // BULLETPROOF SMS: Update thread owner
+    await updateThreadOwner({ toNumber: to, tenantId: effectiveUserId, businessName });
     return { sandbox: true };
   }
 
   const payload = {
     to,
-    body,
-    from_number: agentRow.phone_number,
+    body: finalBody,
+    from_number: fromNumber,
   };
   const retellResponse = await retellSmsClient.post("/sms", payload);
 
   await supabaseAdmin.from("messages").insert({
-    user_id: userId || agentRow.user_id,
+    user_id: effectiveUserId,
     lead_id: null,
     direction: "outbound",
-    body,
+    body: finalBody,
+    from_number: fromNumber,
+    to_number: to,
   });
   await auditLog({
-    userId: userId || agentRow.user_id,
+    userId: effectiveUserId,
     action: "sms_sent",
     entity: "message",
     entityId: agentId,
-    metadata: { to, source: source || "agent_tool" },
+    metadata: { to, from: fromNumber, source: source || "agent_tool" },
   });
   await logEvent({
-    userId: userId || agentRow.user_id,
+    userId: effectiveUserId,
     actionType: "SMS_SENT",
     metaData: {
       direction: "outbound",
-      body,
+      body: finalBody,
       to,
+      from: fromNumber,
       source: source || "agent_tool",
       cost: retellResponse.data?.cost || retellResponse.data?.cost_cents || null,
     },
   });
+
+  // BULLETPROOF SMS: Update thread owner for conversation routing
+  await updateThreadOwner({ toNumber: to, tenantId: effectiveUserId, businessName });
 
   return retellResponse.data;
 };
@@ -7107,25 +7567,20 @@ app.post(
         bypassUsage,
       });
 
-      await supabaseAdmin.from("messages").insert({
-        user_id: uid,
-        lead_id: leadId || null,
-        direction: "outbound",
-        body,
-      });
-
-      await auditLog({
-        userId: req.user.id,
-        action: "sms_sent",
-        entity: "message",
-        entityId: leadId || null,
-        metadata: { to: destination, source: source || "manual" },
-      });
+      // Note: sendSmsInternal already inserts to messages table and handles audit logging
+      // No need to duplicate here
 
       return res.json({ sent: true, sandbox: isSandbox, data: retellResponse });
     } catch (err) {
+      // Handle specific error codes from bulletproof SMS system
       if (err.code === "USAGE_CAP_REACHED") {
         return res.status(402).json({ error: "USAGE_CAP_REACHED" });
+      }
+      if (err.code === "FREEFORM_NOT_ALLOWED") {
+        return res.status(400).json({ error: "FREEFORM_NOT_ALLOWED", message: err.message });
+      }
+      if (err.code === "OUTBOUND_THROTTLE") {
+        return res.status(429).json({ error: "OUTBOUND_THROTTLE", message: err.message });
       }
       let message =
         err.response?.data?.error || err.response?.data || err.message;
@@ -7137,6 +7592,10 @@ app.post(
   }
 );
 
+// =============================================================================
+// BULLETPROOF SMS INBOUND HANDLER
+// Implements: Thread locking, collision detection, rate limiting, keyword handling
+// =============================================================================
 app.post("/webhooks/sms-inbound", async (req, res) => {
   const receivedAt = new Date().toISOString();
   try {
@@ -7145,6 +7604,8 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
     const fromNumber = payload.from_number || payload.from || payload.sender;
     const body = payload.body || payload.text || payload.message || "";
     const messageSid = payload.message_sid || payload.sid || payload.id || null;
+    
+    console.log("[sms-inbound] Received:", { fromNumber, toNumber, body: body.slice(0, 50) });
     
     // Generate idempotency key for deduplication
     const idempotencyKey = messageSid || generateIdempotencyKey(payload);
@@ -7159,6 +7620,8 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
       return res.status(400).json({ error: "to_number and from_number required" });
     }
     
+    const normalizedFromNumber = normalizePhoneForLookup(fromNumber);
+    
     // Persist raw webhook immediately (before processing)
     await persistRawWebhook({
       phoneNumber: toNumber,
@@ -7167,28 +7630,327 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
       idempotencyKey,
     });
     
-    const { data: agentRow } = await supabaseAdmin
-      .from("agents")
-      .select("user_id, agent_id")
-      .eq("phone_number", toNumber)
-      .maybeSingle();
-    
-    if (!agentRow?.user_id) {
-      // Store unknown phone for ops review
-      await storeUnknownPhone({ phoneNumber: toNumber, eventType: "sms_inbound", rawPayload: payload });
-      await markWebhookProcessed(idempotencyKey, "failed", "Agent not found for number");
-      return res.status(404).json({ error: "Agent not found for number" });
+    // ==========================================================================
+    // STEP 0: Check per-customer rate limit FIRST (prevent spam)
+    // ==========================================================================
+    const rateLimitCheck = await checkInboundRateLimit(normalizedFromNumber);
+    if (!rateLimitCheck.allowed) {
+      console.warn("[sms-inbound] Rate limit exceeded:", { fromNumber: normalizedFromNumber, reason: rateLimitCheck.reason });
+      
+      // Send one-time rate limit response (only if not already blocked today)
+      if (rateLimitCheck.reason === "rate_limit_10min") {
+        await sendAutoReply({
+          toNumber: fromNumber,
+          body: "Too many messages. Please wait a few minutes or call the office directly.",
+          source: "system_rate_limit",
+        });
+      }
+      
+      await markWebhookProcessed(idempotencyKey, "rate_limited", rateLimitCheck.reason);
+      return res.json({ ok: true, rate_limited: true, reason: rateLimitCheck.reason });
     }
     
-    // Store normalized SMS event
+    // ==========================================================================
+    // STEP 1: Detect keyword FIRST (before routing) for special handling
+    // ==========================================================================
+    const detectedKeyword = detectKeyword(body);
+    console.log("[sms-inbound] Keyword detection:", detectedKeyword);
+    
+    // ==========================================================================
+    // STEP 2: Check for pending collision disambiguation
+    // ==========================================================================
+    const pendingCollision = await getPendingCollision(normalizedFromNumber);
+    if (pendingCollision && detectedKeyword?.type === "COLLISION_CHOICE") {
+      // Customer is responding to "Which business?" prompt
+      const choice = detectedKeyword.choice;
+      const tenantIds = pendingCollision.tenant_ids || [];
+      
+      if (choice >= 1 && choice <= tenantIds.length) {
+        const selectedTenantId = tenantIds[choice - 1];
+        await resolveCollision(pendingCollision.id, choice, selectedTenantId);
+        
+        // Update thread owner with their choice
+        const businessNames = pendingCollision.business_names || [];
+        await updateThreadOwner({
+          toNumber: normalizedFromNumber,
+          tenantId: selectedTenantId,
+          businessName: businessNames[choice - 1] || null,
+        });
+        
+        // Get business phone for "call us" message
+        const businessPhone = await getBusinessPhone(selectedTenantId);
+        await sendAutoReply({
+          toNumber: fromNumber,
+          body: `Got it! For ${businessNames[choice - 1] || "that business"}, please call ${businessPhone || "the office"} or we'll reach out shortly.`,
+          source: "system_disambiguation",
+        });
+        
+        await logKeywordResponse({
+          fromNumber: normalizedFromNumber,
+          tenantId: selectedTenantId,
+          keyword: `collision_choice_${choice}`,
+          originalBody: body,
+          autoResponse: "Collision resolved",
+          action: "collision_resolved",
+        });
+        
+        await markWebhookProcessed(idempotencyKey, "success", "collision_resolved");
+        return res.json({ ok: true, collision_resolved: true, tenant_id: selectedTenantId });
+      }
+    }
+    
+    // ==========================================================================
+    // STEP 3: BULLETPROOF ROUTING - Thread lock > Recent outbound > Lead match
+    // ==========================================================================
+    let userId = null;
+    let agentId = null;
+    let routingMethod = null;
+    let businessName = null;
+    
+    // Check if this is a shared number (MASTER_SMS_NUMBER)
+    const isSharedNumber = MASTER_SMS_NUMBER && (toNumber === MASTER_SMS_NUMBER || normalizePhoneForLookup(toNumber) === normalizePhoneForLookup(MASTER_SMS_NUMBER));
+    
+    if (isSharedNumber) {
+      console.log("[sms-inbound] Shared number mode - bulletproof routing");
+      
+      // STEP A: Check phone_thread_owner (sticky lock) - STRONGEST
+      const threadOwner = await getThreadOwner(normalizedFromNumber);
+      if (threadOwner?.tenant_id) {
+        userId = threadOwner.tenant_id;
+        businessName = threadOwner.business_name;
+        routingMethod = "thread_lock";
+        console.log("[sms-inbound] Routed via thread lock to:", userId);
+      }
+      
+      // STEP B: If no lock, check recent outbound (72h window)
+      if (!userId) {
+        const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+        const { data: recentOutbound } = await supabaseAdmin
+          .from("messages")
+          .select("user_id")
+          .eq("to_number", normalizedFromNumber)
+          .eq("direction", "outbound")
+          .gte("created_at", seventyTwoHoursAgo)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (recentOutbound?.user_id) {
+          userId = recentOutbound.user_id;
+          routingMethod = "recent_outbound";
+          console.log("[sms-inbound] Routed via recent outbound to:", userId);
+        }
+      }
+      
+      // STEP C: COLLISION DETECTION - Check if multiple tenants contacted this phone
+      if (!userId) {
+        const collisionCheck = await checkCollision(normalizedFromNumber);
+        
+        if (collisionCheck.hasCollision && collisionCheck.tenants.length > 1) {
+          // Multiple tenants - send disambiguation prompt
+          console.log("[sms-inbound] COLLISION DETECTED:", collisionCheck.tenants.map(t => t.business_name));
+          
+          const options = collisionCheck.tenants.map((t, i) => `${i + 1} for ${t.business_name}`).join(", ");
+          await sendAutoReply({
+            toNumber: fromNumber,
+            body: `Which business is this about? Reply ${options}`,
+            source: "system_disambiguation",
+          });
+          
+          await logCollision({
+            fromNumber: normalizedFromNumber,
+            tenants: collisionCheck.tenants,
+            disambiguationSent: true,
+          });
+          
+          // Store the message but mark as pending collision
+          await supabaseAdmin.from("messages").insert({
+            user_id: collisionCheck.tenants[0].tenant_id, // Temporarily assign to first
+            direction: "inbound",
+            body,
+            from_number: normalizedFromNumber,
+            to_number: toNumber,
+            keyword_detected: "collision_pending",
+            auto_handled: false,
+            routing_method: "collision_pending",
+          });
+          
+          await markWebhookProcessed(idempotencyKey, "collision_pending");
+          return res.json({ ok: true, collision_pending: true, tenants: collisionCheck.tenants.length });
+        } else if (collisionCheck.tenants.length === 1) {
+          // Only one tenant - safe to route
+          userId = collisionCheck.tenants[0].tenant_id;
+          businessName = collisionCheck.tenants[0].business_name;
+          routingMethod = "single_tenant_history";
+          console.log("[sms-inbound] Routed via single tenant history to:", userId);
+        }
+      }
+      
+      // STEP D: Fallback - Check leads table
+      if (!userId) {
+        const { data: leadMatch } = await supabaseAdmin
+          .from("leads")
+          .select("user_id")
+          .eq("phone", normalizedFromNumber)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (leadMatch?.user_id) {
+          userId = leadMatch.user_id;
+          routingMethod = "lead_match";
+          console.log("[sms-inbound] Routed via lead match to:", userId);
+        }
+      }
+      
+      // STEP E: UNKNOWN NUMBER - Cannot route, respond with "call the office"
+      if (!userId) {
+        console.warn("[sms-inbound] UNKNOWN NUMBER - no routing possible:", normalizedFromNumber);
+        
+        await sendAutoReply({
+          toNumber: fromNumber,
+          body: "I don't see an active conversation with this number. Please call the office directly for assistance.",
+          source: "system_unknown",
+        });
+        
+        await storeUnknownPhone({
+          phoneNumber: normalizedFromNumber,
+          eventType: "sms_inbound_unknown",
+          rawPayload: { ...payload, routing_note: "No thread lock, no recent outbound, no lead match" },
+        });
+        
+        await markWebhookProcessed(idempotencyKey, "unknown_number");
+        return res.json({ ok: true, unknown_number: true });
+      }
+    } else {
+      // DEDICATED NUMBER: Route by agent phone number (original logic)
+      const { data: agentRow } = await supabaseAdmin
+        .from("agents")
+        .select("user_id, agent_id")
+        .eq("phone_number", toNumber)
+        .maybeSingle();
+      
+      if (!agentRow?.user_id) {
+        await storeUnknownPhone({ phoneNumber: toNumber, eventType: "sms_inbound", rawPayload: payload });
+        await markWebhookProcessed(idempotencyKey, "failed", "Agent not found for number");
+        return res.status(404).json({ error: "Agent not found for number" });
+      }
+      
+      userId = agentRow.user_id;
+      agentId = agentRow.agent_id;
+      routingMethod = "agent_phone_number";
+    }
+    
+    // ==========================================================================
+    // STEP 4: Get business info for keyword responses
+    // ==========================================================================
+    if (!businessName) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("business_name")
+        .eq("user_id", userId)
+        .maybeSingle();
+      businessName = profile?.business_name || "the business";
+    }
+    const businessPhone = await getBusinessPhone(userId);
+    
+    // ==========================================================================
+    // STEP 5: KEYWORD HANDLING - Auto-respond to known keywords
+    // ==========================================================================
+    let autoHandled = false;
+    let autoResponse = null;
+    let actionTaken = null;
+    
+    if (detectedKeyword) {
+      switch (detectedKeyword.type) {
+        case "OPT_OUT": {
+          // Add to opt-out list
+          await supabaseAdmin.from("sms_opt_outs").upsert({
+            user_id: userId,
+            phone: normalizedFromNumber,
+          }, { onConflict: "user_id,phone" });
+          
+          autoResponse = `You've been unsubscribed from ${businessName}. Call ${businessPhone || "the office"} if you need service.`;
+          await sendAutoReply({ toNumber: fromNumber, body: autoResponse, source: "system_opt_out" });
+          autoHandled = true;
+          actionTaken = "opt_out";
+          console.log("[sms-inbound] OPT_OUT processed for:", normalizedFromNumber);
+          break;
+        }
+        
+        case "HELP": {
+          autoResponse = `For assistance with ${businessName}, call ${businessPhone || "the office"}. Reply STOP to unsubscribe.`;
+          await sendAutoReply({ toNumber: fromNumber, body: autoResponse, source: "system_help" });
+          autoHandled = true;
+          actionTaken = "help_sent";
+          break;
+        }
+        
+        case "CONFIRM": {
+          // Find pending appointment for this customer
+          const { data: pendingAppt } = await supabaseAdmin
+            .from("appointments")
+            .select("id, start_time")
+            .eq("user_id", userId)
+            .eq("customer_phone", normalizedFromNumber)
+            .in("status", ["booked", "pending"])
+            .gte("start_time", new Date().toISOString())
+            .order("start_time", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          
+          if (pendingAppt) {
+            await supabaseAdmin.from("appointments").update({ status: "confirmed" }).eq("id", pendingAppt.id);
+            actionTaken = "appointment_confirmed";
+            autoHandled = true;
+            // No auto-response needed for confirmation - just log it
+          } else {
+            actionTaken = "confirm_no_appointment";
+          }
+          break;
+        }
+        
+        case "DECLINE": {
+          actionTaken = "declined";
+          // Log but don't auto-respond - let business handle
+          break;
+        }
+        
+        case "RESCHEDULE": {
+          // Get reschedule link or phone
+          autoResponse = `To reschedule with ${businessName}, please call ${businessPhone || "the office"}.`;
+          await sendAutoReply({ toNumber: fromNumber, body: autoResponse, source: "system_reschedule" });
+          autoHandled = true;
+          actionTaken = "reschedule_link_sent";
+          break;
+        }
+        
+        default:
+          actionTaken = "logged";
+      }
+      
+      // Log keyword response
+      await logKeywordResponse({
+        fromNumber: normalizedFromNumber,
+        tenantId: userId,
+        keyword: detectedKeyword.keyword,
+        originalBody: body,
+        autoResponse,
+        action: actionTaken,
+      });
+    }
+    
+    // ==========================================================================
+    // STEP 6: Store message and finalize
+    // ==========================================================================
     await storeSmsEvent({
       idempotencyKey,
       phoneNumber: toNumber,
-      userId: agentRow.user_id,
-      agentId: agentRow.agent_id,
+      userId,
+      agentId,
       messageSid,
       direction: "inbound",
-      fromNumber,
+      fromNumber: normalizedFromNumber,
       toNumber,
       body,
       status: "received",
@@ -7196,31 +7958,54 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
     });
     
     await supabaseAdmin.from("messages").insert({
-      user_id: agentRow.user_id,
+      user_id: userId,
       direction: "inbound",
       body,
+      from_number: normalizedFromNumber,
+      to_number: toNumber,
+      keyword_detected: detectedKeyword?.keyword || null,
+      auto_handled: autoHandled,
+      routing_method: routingMethod,
     });
+    
     await auditLog({
-      userId: agentRow.user_id,
+      userId,
       action: "sms_received",
       entity: "message",
-      entityId: agentRow.agent_id || null,
-      metadata: { from: fromNumber, to: toNumber },
+      entityId: agentId || null,
+      metadata: {
+        from: normalizedFromNumber,
+        to: toNumber,
+        routing_method: routingMethod,
+        keyword: detectedKeyword?.type || null,
+        auto_handled: autoHandled,
+      },
     });
+    
     await logEvent({
-      userId: agentRow.user_id,
+      userId,
       actionType: "SMS_RECEIVED",
       req,
       metaData: {
         direction: "inbound",
-        body,
-        from: fromNumber,
+        body: body.slice(0, 100),
+        from: normalizedFromNumber,
         to: toNumber,
+        routing_method: routingMethod,
+        keyword_detected: detectedKeyword?.keyword || null,
+        auto_handled: autoHandled,
       },
     });
     
     await markWebhookProcessed(idempotencyKey, "success");
-    return res.json({ ok: true });
+    
+    return res.json({
+      ok: true,
+      routing_method: routingMethod,
+      keyword_detected: detectedKeyword?.type || null,
+      auto_handled: autoHandled,
+    });
+    
   } catch (err) {
     console.error("[sms-inbound] error", err.message);
     return res.status(500).json({ error: err.message });
