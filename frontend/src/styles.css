@@ -8682,8 +8682,8 @@ input:checked + .toggle-slider.small:before {
     gap: 0.75rem;
   }
   
-  /* Side nav - hide on mobile, use drawer */
-  .side-nav {
+  /* Side nav - hide on mobile, use drawer (but not the drawer itself) */
+  .side-nav:not(.side-nav-drawer) {
     display: none;
   }
   
@@ -8847,8 +8847,8 @@ input:checked + .toggle-slider.small:before {
     font-size: 1.5rem;
   }
   
-  /* Side nav - hide on tablet, use drawer */
-  .side-nav {
+  /* Side nav - hide on tablet, use drawer (but not the drawer itself) */
+  .side-nav:not(.side-nav-drawer) {
     display: none;
   }
   

@@ -4702,7 +4702,7 @@ const retellWebhookHandler = async (req, res) => {
             : String(toNumber).trim();
       }
 
-      // PHONE NUMBER IS THE ONLY LOOKUP METHOD - NO AGENT_ID FALLBACK
+      // PRIMARY: Look up by phone_number, FALLBACK: agent_id
       let agentRow = null;
       if (normalizedToNumber) {
         const { data: phoneRow } = await supabaseAdmin
@@ -4711,6 +4711,18 @@ const retellWebhookHandler = async (req, res) => {
           .eq("phone_number", normalizedToNumber)
           .maybeSingle();
         if (phoneRow?.user_id) agentRow = phoneRow;
+      }
+      // Fallback: Look up by agent_id if phone lookup failed
+      if (!agentRow?.user_id && agentId) {
+        const { data: agentIdRow } = await supabaseAdmin
+          .from("agents")
+          .select("user_id")
+          .eq("agent_id", agentId)
+          .maybeSingle();
+        if (agentIdRow?.user_id) {
+          agentRow = agentIdRow;
+          console.warn("📞 [call_started] Found user via agent_id fallback");
+        }
       }
 
       if (agentRow?.user_id) {
@@ -4876,10 +4888,12 @@ const retellWebhookHandler = async (req, res) => {
         fromNumber,
       });
 
-      // PHONE NUMBER IS THE ONLY LOOKUP METHOD - NO AGENT_ID FALLBACK
-      // This prevents accidental mis-attribution if multiple numbers share an agent
+      // PRIMARY: Look up by phone_number (most reliable)
+      // FALLBACK: Look up by agent_id if phone lookup fails
       let agentRow = null;
+      let lookupMethod = null;
 
+      // Try phone number first
       if (normalizedToNumber) {
         const { data: phoneRow } = await supabaseAdmin
           .from("agents")
@@ -4889,12 +4903,34 @@ const retellWebhookHandler = async (req, res) => {
         
         if (phoneRow?.user_id) {
           agentRow = phoneRow;
+          lookupMethod = "phone_number";
         }
       }
 
-      console.log("📞 [call_ended] agent lookup (phone_number ONLY):", {
+      // Fallback: Look up by agent_id if phone lookup failed
+      if (!agentRow?.user_id && agentId) {
+        const { data: agentIdRow } = await supabaseAdmin
+          .from("agents")
+          .select("user_id, agent_id, phone_number, post_call_sms_enabled, post_call_sms_template, post_call_sms_delay_seconds")
+          .eq("agent_id", agentId)
+          .maybeSingle();
+        
+        if (agentIdRow?.user_id) {
+          agentRow = agentIdRow;
+          lookupMethod = "agent_id";
+          console.warn("📞 [call_ended] Found user via agent_id fallback - phone_number mismatch:", {
+            expectedPhone: agentIdRow.phone_number,
+            receivedPhone: normalizedToNumber,
+            agentId,
+          });
+        }
+      }
+
+      console.log("📞 [call_ended] agent lookup result:", {
         toNumber: normalizedToNumber,
+        agentId,
         found: !!agentRow,
+        lookupMethod,
         user_id: agentRow?.user_id || null,
       });
 
@@ -4999,14 +5035,30 @@ const retellWebhookHandler = async (req, res) => {
 
       // Also insert into call_recordings for Black Box page
       try {
+        // Map leadStatus to valid call_outcome enum values
+        // Enum values: 'No Answer', 'Gatekeeper', 'Not Interested', 'Hangup', 'Pitch Delivered', 'Demo Set'
+        let callOutcome = "Pitch Delivered"; // Default for completed calls
+        const statusLower = (leadStatus || "").toLowerCase();
+        if (statusLower.includes("book") || statusLower.includes("appointment")) {
+          callOutcome = "Demo Set";
+        } else if (statusLower.includes("not interested") || statusLower.includes("declined")) {
+          callOutcome = "Not Interested";
+        } else if (statusLower.includes("no answer") || statusLower.includes("missed")) {
+          callOutcome = "No Answer";
+        } else if (statusLower.includes("hangup") || statusLower.includes("hung up")) {
+          callOutcome = "Hangup";
+        } else if (statusLower.includes("callback") || statusLower.includes("transfer")) {
+          callOutcome = "Gatekeeper";
+        }
+        
         await supabaseAdmin.from("call_recordings").insert({
           seller_id: agentRow.user_id,
           lead_id: newLead?.id || null,
           duration: durationSeconds || 0,
           recording_url: recordingUrl,
-          outcome: leadStatus,
+          outcome: callOutcome,
         });
-        console.log("📞 [call_ended] call_recording inserted for Black Box");
+        console.log("📞 [call_ended] call_recording inserted for Black Box:", { callOutcome, leadStatus });
       } catch (recErr) {
         console.warn("📞 [call_ended] call_recordings insert failed (non-fatal):", recErr.message);
       }

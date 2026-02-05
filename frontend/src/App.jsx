@@ -1,5 +1,5 @@
 import React from "react";
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import LandingGate from "./components/LandingGate.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import WizardPage from "./pages/WizardPage.jsx";
@@ -40,23 +40,6 @@ import RequireOnboarding from "./components/RequireOnboarding.jsx";
 import { supabaseReady } from "./lib/supabase";
 import RequireAdmin from "./components/RequireAdmin.jsx";
 import RequireRole from "./components/RequireRole.jsx";
-import SideNav from "./components/SideNav.jsx";
-
-// Pages that don't show the mobile drawer navigation
-const NO_DRAWER_ROUTES = ["/", "/login", "/wizard", "/thank-you", "/affiliate", "/admin/stripe-success"];
-
-function MobileDrawerNav() {
-  const location = useLocation();
-  
-  // Don't show drawer on certain pages
-  const isExcludedRoute = NO_DRAWER_ROUTES.includes(location.pathname) ||
-    location.pathname.startsWith("/track/") ||
-    location.pathname.startsWith("/tech/track/");
-  
-  if (isExcludedRoute) return null;
-  
-  return <SideNav isDrawer={true} />;
-}
 
 export default function App() {
   if (!supabaseReady) {
@@ -87,9 +70,6 @@ export default function App() {
   }
 
   return (
-    <>
-    {/* Global mobile drawer navigation */}
-    <MobileDrawerNav />
     <Routes>
       <Route path="/" element={<LandingGate />} />
       <Route path="/login" element={<LoginPage />} />
@@ -385,6 +365,5 @@ export default function App() {
       <Route path="/tech/track/:token" element={<TechTrackingPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-    </>
   );
 }
