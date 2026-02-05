@@ -11,6 +11,7 @@ const keypadKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 const FINAL_LOGS_KEY = "kryonex_final_logs";
 const CALL_CENTER_QUEUE_KEY = "callCenter.queue";
 const CALL_CENTER_SELECTED_KEY = "callCenter.selectedLeadId";
+const LOCAL_DIALER_QUEUE_KEY = "kryonex_dialer_queue"; // Sync key for other components
 
 const isUuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(

@@ -128,48 +128,7 @@ const WaveformVisualizer = ({ audioRef, isPlaying, playingId, recordId }) => {
   );
 };
 
-const MOCK_DATA = [
-  {
-    id: 1,
-    caller_id: "+1 (555) 019-2834",
-    caller_name: "John Doe (Lead)",
-    duration: "03:12",
-    status: "booked",
-    created_at: "2026-01-23T10:42:00",
-    recording_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-    summary: "Customer called about HVAC repair. AC unit not cooling. Scheduled appointment for tomorrow at 2 PM.",
-    sentiment: "positive",
-    issue_type: "AC Repair",
-    service_address: "123 Main St, Detroit MI",
-    appointment_booked: true,
-  },
-  {
-    id: 2,
-    caller_id: "+1 (555) 999-8888",
-    caller_name: "Unknown Caller",
-    duration: "00:45",
-    status: "missed",
-    created_at: "2026-01-23T09:15:00",
-    recording_url: null,
-    summary: "Caller hung up before providing details.",
-    sentiment: "neutral",
-    appointment_booked: false,
-  },
-  {
-    id: 3,
-    caller_id: "Sarah Smith",
-    caller_name: "Sarah Smith",
-    duration: "05:30",
-    status: "inquiry",
-    created_at: "2026-01-22T16:20:00",
-    recording_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-    summary: "Customer inquiring about furnace maintenance. Wants to schedule annual tune-up. Requested callback.",
-    sentiment: "positive",
-    issue_type: "Maintenance",
-    service_address: "456 Oak Ave, Detroit MI",
-    appointment_booked: false,
-  },
-];
+// Real data only - no mock data for production
 
 export default function BlackBoxPage() {
   const navigate = useNavigate();
@@ -183,16 +142,15 @@ export default function BlackBoxPage() {
   const [isPlaying, setIsPlaying] = React.useState(false);
   const [currentTime, setCurrentTime] = React.useState(0);
   const audioRef = React.useRef(new Audio());
-  const displayRecords = records.length ? records : MOCK_DATA;
   const filteredRecords = React.useMemo(() => {
     const needle = searchTerm.toLowerCase().trim();
-    if (!needle) return displayRecords;
-    return displayRecords.filter((row) =>
+    if (!needle) return records;
+    return records.filter((row) =>
       `${
         row.caller_name || ""
       } ${row.caller_phone || row.caller_id || ""} ${row.summary || ""}`.toLowerCase().includes(needle)
     );
-  }, [displayRecords, searchTerm]);
+  }, [records, searchTerm]);
   const [lastUpdated, setLastUpdated] = React.useState(null);
 
   React.useEffect(() => {

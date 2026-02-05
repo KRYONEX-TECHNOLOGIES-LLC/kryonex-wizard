@@ -214,8 +214,70 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================
+-- 12. PAYOUT REQUESTS TABLE - Track payout request history
+-- ============================================
+CREATE TABLE IF NOT EXISTS public.payout_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  amount_cents integer NOT NULL,
+  status text DEFAULT 'pending',  -- pending, processing, completed, rejected
+  payment_method text DEFAULT 'manual',  -- manual, paypal, stripe, bank_transfer
+  payment_email text,  -- PayPal email or bank info reference
+  notes text,
+  admin_notes text,  -- Internal notes from admin
+  processed_by uuid REFERENCES auth.users(id),  -- Admin who processed
+  processed_at timestamptz,
+  rejection_reason text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Indexes for payout requests
+CREATE INDEX IF NOT EXISTS idx_payout_requests_user ON public.payout_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_payout_requests_status ON public.payout_requests(status);
+CREATE INDEX IF NOT EXISTS idx_payout_requests_created ON public.payout_requests(created_at DESC);
+
+-- Enable RLS
+ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
+
+-- ============================================
+-- 13. RLS POLICIES - Payout Requests
+-- ============================================
+-- Users can view their own payout requests
+DROP POLICY IF EXISTS "Users can view own payout requests" ON public.payout_requests;
+CREATE POLICY "Users can view own payout requests"
+ON public.payout_requests FOR SELECT
+USING (auth.uid() = user_id);
+
+-- Users can create their own payout requests
+DROP POLICY IF EXISTS "Users can create own payout requests" ON public.payout_requests;
+CREATE POLICY "Users can create own payout requests"
+ON public.payout_requests FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+-- Admin full access to payout requests
+DROP POLICY IF EXISTS "Admins full access payout_requests" ON public.payout_requests;
+CREATE POLICY "Admins full access payout_requests"
+ON public.payout_requests FOR ALL
+USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE profiles.user_id = auth.uid()
+    AND profiles.role = 'admin'
+  )
+);
+
+-- ============================================
+-- 14. ADD payout fields to profiles for payment info storage
+-- ============================================
+ALTER TABLE public.profiles 
+ADD COLUMN IF NOT EXISTS payout_email text,
+ADD COLUMN IF NOT EXISTS payout_method text DEFAULT 'paypal';
+
+-- ============================================
 -- DONE! Verify by running:
 -- SELECT * FROM public.referral_settings;
 -- SELECT column_name FROM information_schema.columns WHERE table_name = 'referral_codes';
 -- SELECT column_name FROM information_schema.columns WHERE table_name = 'referrals';
+-- SELECT column_name FROM information_schema.columns WHERE table_name = 'payout_requests';
 -- ============================================

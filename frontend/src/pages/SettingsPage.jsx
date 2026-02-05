@@ -6,6 +6,56 @@ import { getSettings, updateSettings } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { normalizePhone } from "../lib/phone.js";
 
+// Auto-generate schedule summary from business hours
+const generateScheduleSummary = (businessHours) => {
+  if (!businessHours) return "";
+  
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const dayAbbrev = { monday: "Mon", tuesday: "Tue", wednesday: "Wed", thursday: "Thu", friday: "Fri", saturday: "Sat", sunday: "Sun" };
+  
+  const formatTime = (time24) => {
+    if (!time24) return "";
+    const [h, m] = time24.split(":");
+    const hour = parseInt(h);
+    const ampm = hour >= 12 ? "pm" : "am";
+    const hour12 = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+    return m === "00" ? `${hour12}${ampm}` : `${hour12}:${m}${ampm}`;
+  };
+  
+  // Group consecutive days with same hours
+  const groups = [];
+  let currentGroup = null;
+  
+  for (const day of days) {
+    const h = businessHours[day] || { closed: true };
+    const key = h.closed ? "closed" : `${h.open}-${h.close}`;
+    
+    if (currentGroup && currentGroup.key === key) {
+      currentGroup.endDay = day;
+    } else {
+      if (currentGroup) groups.push(currentGroup);
+      currentGroup = { startDay: day, endDay: day, key, hours: h };
+    }
+  }
+  if (currentGroup) groups.push(currentGroup);
+  
+  // Format output
+  const parts = [];
+  for (const g of groups) {
+    const dayRange = g.startDay === g.endDay 
+      ? dayAbbrev[g.startDay] 
+      : `${dayAbbrev[g.startDay]}-${dayAbbrev[g.endDay]}`;
+    
+    if (g.hours.closed) {
+      parts.push(`${dayRange} Closed`);
+    } else {
+      parts.push(`${dayRange} ${formatTime(g.hours.open)}-${formatTime(g.hours.close)}`);
+    }
+  }
+  
+  return parts.join(", ");
+};
+
 export default function SettingsPage() {
   const navigate = useNavigate();
   const defaultBusinessHours = {
@@ -39,10 +89,6 @@ export default function SettingsPage() {
     post_call_sms_enabled: false,
     post_call_sms_template: "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.",
     post_call_sms_delay_seconds: 60,
-    // Review Requests
-    review_request_enabled: false,
-    google_review_url: "",
-    review_request_template: "Thanks for choosing {business}! We hope you had a great experience. Please leave us a review: {review_link}",
   });
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -122,12 +168,15 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveStatus("");
     try {
+      // Auto-generate schedule summary from business hours
+      const autoScheduleSummary = generateScheduleSummary(settings.business_hours);
+      
       await updateSettings({
         business_name: settings.business_name,
         transfer_number: settings.transfer_number,
         service_call_fee: settings.service_call_fee,
         emergency_fee: settings.emergency_fee,
-        schedule_summary: settings.schedule_summary,
+        schedule_summary: autoScheduleSummary,
         agent_tone: settings.agent_tone,
         industry: settings.industry,
         notification_preferences: settings.notification_preferences,
@@ -139,10 +188,6 @@ export default function SettingsPage() {
         post_call_sms_enabled: settings.post_call_sms_enabled,
         post_call_sms_template: settings.post_call_sms_template,
         post_call_sms_delay_seconds: settings.post_call_sms_delay_seconds,
-        // Review Request settings
-        review_request_enabled: settings.review_request_enabled,
-        google_review_url: settings.google_review_url,
-        review_request_template: settings.review_request_template,
       });
       setSaveStatus("Settings saved successfully!");
       setLastUpdated(new Date());
@@ -197,37 +242,39 @@ export default function SettingsPage() {
             </div>
           ) : (
             <div className="settings-container">
-              {/* Business Information */}
+              {/* Business Information & Call Handling - Side by Side */}
               <div className="settings-section glass-panel">
                 <h2 className="settings-section-title">Business Information</h2>
                 
-                <div className="settings-form-group">
-                  <label className="settings-label">Business Name</label>
-                  <input
-                    type="text"
-                    className="glass-input"
-                    value={settings.business_name}
-                    onChange={(e) => handleChange("business_name", e.target.value)}
-                    placeholder="Your Business Name"
-                  />
-                  <span className="settings-hint">This name will be used by the AI when answering calls</span>
+                <div className="settings-form-row">
+                  <div className="settings-form-group">
+                    <label className="settings-label">Business Name</label>
+                    <input
+                      type="text"
+                      className="glass-input"
+                      value={settings.business_name}
+                      onChange={(e) => handleChange("business_name", e.target.value)}
+                      placeholder="Your Business Name"
+                    />
+                    <span className="settings-hint">Used by the AI when answering calls</span>
+                  </div>
+
+                  <div className="settings-form-group">
+                    <label className="settings-label">Industry</label>
+                    <select
+                      className="glass-select"
+                      value={settings.industry}
+                      onChange={(e) => handleChange("industry", e.target.value)}
+                    >
+                      <option value="hvac">HVAC</option>
+                      <option value="plumbing">Plumbing</option>
+                      <option value="electrical">Electrical</option>
+                      <option value="general">General Contractor</option>
+                    </select>
+                  </div>
                 </div>
 
-                <div className="settings-form-group">
-                  <label className="settings-label">Industry</label>
-                  <select
-                    className="glass-select"
-                    value={settings.industry}
-                    onChange={(e) => handleChange("industry", e.target.value)}
-                  >
-                    <option value="hvac">HVAC</option>
-                    <option value="plumbing">Plumbing</option>
-                    <option value="electrical">Electrical</option>
-                    <option value="general">General Contractor</option>
-                  </select>
-                </div>
-
-                <div className="settings-form-group">
+                <div className="settings-form-group" style={{ marginTop: "1rem" }}>
                   <label className="settings-label">AI Phone Number</label>
                   <input
                     type="text"
@@ -235,8 +282,9 @@ export default function SettingsPage() {
                     value={settings.phone_number || "Not assigned"}
                     readOnly
                     disabled
+                    style={{ maxWidth: "280px" }}
                   />
-                  <span className="settings-hint">This is your AI agent's phone number (read-only)</span>
+                  <span className="settings-hint">Your AI agent's phone number (read-only)</span>
                 </div>
               </div>
 
@@ -244,62 +292,53 @@ export default function SettingsPage() {
               <div className="settings-section glass-panel">
                 <h2 className="settings-section-title">Call Handling</h2>
                 
-                <div className="settings-form-group">
-                  <label className="settings-label">Transfer Number</label>
-                  <input
-                    type="tel"
-                    className="glass-input"
-                    value={settings.transfer_number}
-                    onChange={(e) => handleChange("transfer_number", e.target.value)}
-                    onBlur={(e) => {
-                      const normalized = normalizePhone(e.target.value);
-                      if (normalized) {
-                        handleChange("transfer_number", normalized);
-                      }
-                    }}
-                    placeholder="+1 555 123 4567"
-                  />
-                  <span className="settings-hint">Calls will be transferred to this number when needed</span>
-                </div>
+                <div className="settings-form-row">
+                  <div className="settings-form-group">
+                    <label className="settings-label">Transfer Number</label>
+                    <input
+                      type="tel"
+                      className="glass-input"
+                      value={settings.transfer_number}
+                      onChange={(e) => handleChange("transfer_number", e.target.value)}
+                      onBlur={(e) => {
+                        const normalized = normalizePhone(e.target.value);
+                        if (normalized) {
+                          handleChange("transfer_number", normalized);
+                        }
+                      }}
+                      placeholder="+1 555 123 4567"
+                    />
+                    <span className="settings-hint">Transfer destination when needed</span>
+                  </div>
 
-                <div className="settings-form-group">
-                  <label className="settings-label">Agent Tone</label>
-                  <select
-                    className="glass-select"
-                    value={settings.agent_tone}
-                    onChange={(e) => handleChange("agent_tone", e.target.value)}
-                  >
-                    {toneOptions.map((tone) => (
-                      <option key={tone} value={tone}>{tone}</option>
-                    ))}
-                  </select>
-                  <span className="settings-hint">How the AI agent should sound on calls</span>
-                </div>
-
-                <div className="settings-form-group">
-                  <label className="settings-label">Business Hours Summary (For Prompt)</label>
-                  <textarea
-                    className="glass-input glass-textarea"
-                    value={settings.schedule_summary}
-                    onChange={(e) => handleChange("schedule_summary", e.target.value)}
-                    placeholder="Monday-Friday 8am-6pm, Saturday 9am-2pm, Closed Sunday"
-                    rows={2}
-                  />
-                  <span className="settings-hint">Brief text the AI uses to describe your hours</span>
+                  <div className="settings-form-group">
+                    <label className="settings-label">Agent Tone</label>
+                    <select
+                      className="glass-select"
+                      value={settings.agent_tone}
+                      onChange={(e) => handleChange("agent_tone", e.target.value)}
+                    >
+                      {toneOptions.map((tone) => (
+                        <option key={tone} value={tone}>{tone}</option>
+                      ))}
+                    </select>
+                    <span className="settings-hint">How the AI should sound on calls</span>
+                  </div>
                 </div>
               </div>
 
-              {/* Structured Business Hours */}
-              <div className="settings-section glass-panel">
+              {/* Structured Business Hours - Full Width */}
+              <div className="settings-section glass-panel full-width">
                 <h2 className="settings-section-title">Business Hours</h2>
                 
-                <div className="settings-row">
+                <div className="settings-form-row" style={{ marginBottom: "1.5rem" }}>
                   <div className="settings-form-group">
                     <label className="settings-label">Timezone</label>
                     <select
                       className="glass-input"
                       value={settings.business_timezone}
                       onChange={(e) => handleChange("business_timezone", e.target.value)}
+                      style={{ maxWidth: "200px" }}
                     >
                       <option value="America/New_York">Eastern (ET)</option>
                       <option value="America/Chicago">Central (CT)</option>
@@ -324,7 +363,7 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                <div className="business-hours-grid">
+                <div className="business-hours-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "0.5rem 2rem" }}>
                   {["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => {
                     const dayHours = settings.business_hours?.[day] || { open: "08:00", close: "18:00", closed: false };
                     return (
@@ -379,7 +418,7 @@ export default function SettingsPage() {
               <div className="settings-section glass-panel">
                 <h2 className="settings-section-title">Service Pricing</h2>
                 
-                <div className="settings-row">
+                <div className="settings-form-row">
                   <div className="settings-form-group">
                     <label className="settings-label">Standard Service Call Fee</label>
                     <div className="input-with-prefix">
@@ -408,123 +447,14 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 </div>
-                <span className="settings-hint">The AI will quote these fees when customers ask about pricing</span>
-              </div>
-
-              {/* SMS Automation - Post-Call Follow-Up */}
-              <div className="settings-section glass-panel premium-feature">
-                <div className="section-header-with-badge">
-                  <h2 className="settings-section-title">Post-Call SMS Follow-Up</h2>
-                  <span className="premium-badge">$29/mo Add-On</span>
-                </div>
-                <p className="settings-description">
-                  Automatically send a text message to customers after every call. Keeps your business top of mind!
-                </p>
-                
-                <div className="settings-toggle-group">
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.post_call_sms_enabled}
-                      onChange={(e) => handleChange("post_call_sms_enabled", e.target.checked)}
-                    />
-                    <span className="toggle-slider"></span>
-                    <span className="toggle-label">Enable Post-Call SMS</span>
-                  </label>
-                </div>
-
-                {settings.post_call_sms_enabled && (
-                  <>
-                    <div className="settings-form-group">
-                      <label className="settings-label">SMS Template</label>
-                      <textarea
-                        className="glass-input glass-textarea"
-                        value={settings.post_call_sms_template}
-                        onChange={(e) => handleChange("post_call_sms_template", e.target.value)}
-                        placeholder="Thanks for calling {business}! We'll follow up shortly."
-                        rows={3}
-                      />
-                      <span className="settings-hint">
-                        Variables: {"{business}"} = Your business name, {"{customer_name}"} = Caller's name
-                      </span>
-                    </div>
-
-                    <div className="settings-form-group">
-                      <label className="settings-label">Send Delay (seconds)</label>
-                      <input
-                        type="number"
-                        className="glass-input"
-                        value={settings.post_call_sms_delay_seconds}
-                        onChange={(e) => handleChange("post_call_sms_delay_seconds", parseInt(e.target.value) || 60)}
-                        min="30"
-                        max="3600"
-                      />
-                      <span className="settings-hint">Wait this many seconds after the call ends before sending (30-3600)</span>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Review Request Automation */}
-              <div className="settings-section glass-panel premium-feature">
-                <div className="section-header-with-badge">
-                  <h2 className="settings-section-title">Review Request Automation</h2>
-                  <span className="premium-badge">$19/mo Add-On</span>
-                </div>
-                <p className="settings-description">
-                  Automatically request Google reviews after completed appointments. More reviews = more business!
-                </p>
-                
-                <div className="settings-toggle-group">
-                  <label className="settings-toggle">
-                    <input
-                      type="checkbox"
-                      checked={settings.review_request_enabled}
-                      onChange={(e) => handleChange("review_request_enabled", e.target.checked)}
-                    />
-                    <span className="toggle-slider"></span>
-                    <span className="toggle-label">Enable Review Requests</span>
-                  </label>
-                </div>
-
-                {settings.review_request_enabled && (
-                  <>
-                    <div className="settings-form-group">
-                      <label className="settings-label">Google Review Link</label>
-                      <input
-                        type="url"
-                        className="glass-input"
-                        value={settings.google_review_url}
-                        onChange={(e) => handleChange("google_review_url", e.target.value)}
-                        placeholder="https://g.page/r/YOUR-BUSINESS/review"
-                      />
-                      <span className="settings-hint">
-                        Find this in your Google Business Profile under "Get more reviews"
-                      </span>
-                    </div>
-
-                    <div className="settings-form-group">
-                      <label className="settings-label">Review Request Template</label>
-                      <textarea
-                        className="glass-input glass-textarea"
-                        value={settings.review_request_template}
-                        onChange={(e) => handleChange("review_request_template", e.target.value)}
-                        placeholder="Thanks for choosing us! Leave a review: {review_link}"
-                        rows={3}
-                      />
-                      <span className="settings-hint">
-                        Variables: {"{business}"} = Your business name, {"{review_link}"} = Your Google review link
-                      </span>
-                    </div>
-                  </>
-                )}
+                <span className="settings-hint" style={{ marginTop: "0.5rem", display: "block" }}>The AI will quote these fees when customers ask about pricing</span>
               </div>
 
               {/* Notifications */}
               <div className="settings-section glass-panel">
                 <h2 className="settings-section-title">Notifications</h2>
                 
-                <div className="settings-toggle-group">
+                <div className="settings-toggle-group" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                   <label className="settings-toggle">
                     <input
                       type="checkbox"
@@ -557,8 +487,64 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {/* Save Button */}
-              <div className="settings-actions">
+              {/* SMS Automation - Post-Call Follow-Up - Full Width */}
+              <div className="settings-section glass-panel full-width">
+                <h2 className="settings-section-title">Post-Call SMS Follow-Up</h2>
+                <p className="settings-description">
+                  Automatically send a text message to customers after every call. Keeps your business top of mind!
+                </p>
+                
+                <div className="settings-form-row" style={{ alignItems: "start" }}>
+                  <div style={{ flex: 1 }}>
+                    <div className="settings-toggle-group" style={{ marginBottom: "1rem" }}>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.post_call_sms_enabled}
+                          onChange={(e) => handleChange("post_call_sms_enabled", e.target.checked)}
+                        />
+                        <span className="toggle-slider"></span>
+                        <span className="toggle-label">Enable Post-Call SMS</span>
+                      </label>
+                    </div>
+
+                    {settings.post_call_sms_enabled && (
+                      <div className="settings-form-group">
+                        <label className="settings-label">Send Delay (seconds)</label>
+                        <input
+                          type="number"
+                          className="glass-input"
+                          value={settings.post_call_sms_delay_seconds}
+                          onChange={(e) => handleChange("post_call_sms_delay_seconds", parseInt(e.target.value) || 60)}
+                          min="30"
+                          max="3600"
+                          style={{ maxWidth: "150px" }}
+                        />
+                        <span className="settings-hint">Wait time after call ends (30-3600)</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {settings.post_call_sms_enabled && (
+                    <div className="settings-form-group" style={{ flex: 2 }}>
+                      <label className="settings-label">SMS Template</label>
+                      <textarea
+                        className="glass-input glass-textarea"
+                        value={settings.post_call_sms_template}
+                        onChange={(e) => handleChange("post_call_sms_template", e.target.value)}
+                        placeholder="Thanks for calling {business}! We'll follow up shortly."
+                        rows={3}
+                      />
+                      <span className="settings-hint">
+                        Variables: {"{business}"} = Your business name, {"{customer_name}"} = Caller's name
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Save Button - Full Width */}
+              <div className="settings-actions full-width" style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "1rem" }}>
                 {saveStatus && (
                   <div className={`save-status ${saveStatus.includes("success") ? "success" : "error"}`}>
                     {saveStatus}
@@ -568,6 +554,7 @@ export default function SettingsPage() {
                   className="button-primary glow-button"
                   onClick={handleSave}
                   disabled={saving}
+                  style={{ minWidth: "160px" }}
                 >
                   {saving ? "Saving..." : "Save Settings"}
                 </button>

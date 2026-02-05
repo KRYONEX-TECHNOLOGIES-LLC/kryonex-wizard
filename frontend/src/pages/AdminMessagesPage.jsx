@@ -1,174 +1,107 @@
 import React from "react";
 import { motion } from "framer-motion";
 import {
-  Bolt,
-  Mail,
   MessageSquare,
+  RefreshCw,
+  Search,
+  ArrowUpRight,
+  ArrowDownLeft,
   Phone,
-  Send,
-  Sparkles,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { getSavedState, saveState } from "../lib/persistence.js";
 
-const CHANNEL_ICON = {
-  sms: MessageSquare,
-  email: Mail,
-  whatsapp: Phone,
+// Real data fetch from admin endpoint
+const fetchAdminMessages = async (token) => {
+  const baseUrl = import.meta.env.VITE_API_URL || "";
+  const response = await fetch(`${baseUrl}/admin/messages`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    throw new Error("Failed to fetch messages");
+  }
+  return response.json();
 };
 
-const MACROS = [
-  "Booking Confirmed ✅",
-  "Sending price list now.",
-  "Technician is en route.",
-  "Can we confirm your address?",
-];
-
-const mockThreads = [
-  {
-    id: "thread-1",
-    name: "Apex Plumbing",
-    channel: "sms",
-    unread: 2,
-    messages: [
-      { id: 1, from: "client", text: "Do you handle emergency leaks?", time: "2:18 PM", channel: "sms" },
-      { id: 2, from: "system", text: "We can dispatch within 30 mins. Need your address.", time: "2:19 PM", channel: "sms" },
-    ],
-  },
-  {
-    id: "thread-2",
-    name: "Northwind HVAC",
-    channel: "email",
-    unread: 0,
-    messages: [
-      { id: 1, from: "client", text: "Can I get a quote for 2 locations?", time: "1:05 PM", channel: "email" },
-      { id: 2, from: "system", text: "Absolutely. Please share addresses and preferred time.", time: "1:06 PM", channel: "email" },
-    ],
-  },
-  {
-    id: "thread-3",
-    name: "Ridgeway HVAC",
-    channel: "whatsapp",
-    unread: 1,
-    messages: [
-      { id: 1, from: "client", text: "Are you open this weekend?", time: "11:32 AM", channel: "whatsapp" },
-    ],
-  },
-];
-
-const getSuggestions = (thread) => {
-  const last = thread.messages[thread.messages.length - 1]?.text || "";
-  if (last.toLowerCase().includes("quote")) {
-    return ["We can do that. Which addresses?", "Are both sites in the same city?", "We offer multi-location pricing tiers."];
-  }
-  if (last.toLowerCase().includes("weekend")) {
-    return ["Yes, we have weekend coverage.", "We can schedule Saturday or Sunday.", "Any preferred time window?"];
-  }
-  return ["Got it — can you share your address?", "Thanks! What time works best?", "We can dispatch in 30 minutes."];
+const formatTime = (dateString) => {
+  if (!dateString) return "--";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
 
 export default function AdminMessagesPage() {
   const navigate = useNavigate();
-  const [threads, setThreads] = React.useState(() => getSavedState("messages.threads") || mockThreads);
-  const [activeId, setActiveId] = React.useState(() => getSavedState("messages.activeId") || mockThreads[0]?.id);
-  const [draft, setDraft] = React.useState(() => getSavedState("messages.draft") || "");
-  const [showMacros, setShowMacros] = React.useState(false);
-  const [typing, setTyping] = React.useState(false);
+  const [messages, setMessages] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const [search, setSearch] = React.useState("");
 
-  const persistThreads = (value) => {
-    setThreads(value);
-    saveState("messages.threads", value);
-  };
+  const loadMessages = React.useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      // Get token from supabase session
+      const { supabase } = await import("../lib/supabase");
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      
+      if (!token) {
+        setError("Not authenticated");
+        setLoading(false);
+        return;
+      }
+      
+      const data = await fetchAdminMessages(token);
+      setMessages(data.messages || []);
+    } catch (err) {
+      console.error("Error loading messages:", err);
+      setError(err.message || "Failed to load messages");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const updateThreads = (updater) => {
-    setThreads((prev) => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      saveState("messages.threads", next);
-      return next;
-    });
-  };
+  React.useEffect(() => {
+    loadMessages();
+  }, [loadMessages]);
 
-  const persistActiveId = (value) => {
-    setActiveId(value);
-    saveState("messages.activeId", value);
-  };
+  // Auto-refresh every 30 seconds
+  React.useEffect(() => {
+    const interval = setInterval(loadMessages, 30000);
+    return () => clearInterval(interval);
+  }, [loadMessages]);
 
-  const persistDraft = (value) => {
-    setDraft(value);
-    saveState("messages.draft", value);
-  };
-
-  const activeThread = threads.find((thread) => thread.id === activeId) || threads[0];
-  const suggestions = activeThread ? getSuggestions(activeThread) : [];
-
-  const handleArchiveThread = (threadId) => {
-    updateThreads((prev) => {
-      const next = prev.filter((thread) => thread.id !== threadId);
-      const nextActive = next[0]?.id || "";
-      persistActiveId(nextActive);
-      return next;
-    });
-  };
-
-  const handleResetThreads = () => {
-    persistThreads(mockThreads);
-    persistActiveId(mockThreads[0]?.id || "");
-    persistDraft("");
-  };
-
-  const sendMessage = (text) => {
-    if (!text.trim() || !activeThread) return;
-    updateThreads((prev) =>
-      prev.map((thread) => {
-        if (thread.id !== activeThread.id) return thread;
-        return {
-          ...thread,
-          messages: [
-            ...thread.messages,
-            {
-              id: Date.now(),
-              from: "agent",
-              text,
-              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-              channel: thread.channel,
-            },
-          ],
-        };
-      })
+  const filteredMessages = messages.filter((msg) => {
+    if (!search) return true;
+    const searchLower = search.toLowerCase();
+    return (
+      (msg.body || "").toLowerCase().includes(searchLower) ||
+      (msg.from_number || "").includes(search) ||
+      (msg.to_number || "").includes(search) ||
+      (msg.business_name || "").toLowerCase().includes(searchLower)
     );
-    persistDraft("");
-    setTyping(true);
-    setTimeout(() => {
-      updateThreads((prev) =>
-        prev.map((thread) => {
-          if (thread.id !== activeThread.id) return thread;
-          return {
-            ...thread,
-            messages: [
-              ...thread.messages,
-              {
-                id: Date.now() + 1,
-                from: "system",
-                text: "Follow-up queued. Awaiting client response.",
-                time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                channel: thread.channel,
-              },
-            ],
-          };
-        })
-      );
-      setTyping(false);
-    }, 1600);
-  };
+  });
+
+  const inboundCount = messages.filter(m => m.direction === "inbound").length;
+  const outboundCount = messages.filter(m => m.direction === "outbound").length;
 
   return (
     <div className="min-h-screen bg-void-black text-white relative overflow-hidden">
       <TopMenu />
       <div className="absolute inset-0 bg-grid-lines opacity-35" />
-      <div className="absolute -top-20 right-0 h-72 w-72 rounded-full bg-neon-purple/20 blur-[140px]" />
-      <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[160px]" />
 
       <div className="relative z-10 px-6 py-10 dashboard-layout w-full">
         <SideNav
@@ -191,164 +124,118 @@ export default function AdminMessagesPage() {
             <div className="flex items-center justify-between flex-wrap gap-6">
               <div>
                 <p className="text-xs uppercase tracking-[0.4em] text-white/50">
-                  Tactical Comms Link
+                  Platform SMS Intel
                 </p>
-                <h1 className="mt-2 text-3xl font-semibold">Messages</h1>
+                <h1 className="mt-2 text-3xl font-semibold">Admin Messages</h1>
                 <p className="mt-2 text-white/60">
-                  Orchestrate omnichannel conversations with AI-accelerated replies.
+                  View all SMS messages across all tenants.
                 </p>
               </div>
-              <div className="status-live">
-                <Sparkles size={12} /> {threads.length} active threads
+              <div className="flex items-center gap-4">
+                <div className="flex gap-4 text-sm">
+                  <div className="flex items-center gap-2">
+                    <ArrowDownLeft size={14} className="text-green-400" />
+                    <span className="text-white/60">{inboundCount} inbound</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ArrowUpRight size={14} className="text-cyan-400" />
+                    <span className="text-white/60">{outboundCount} outbound</span>
+                  </div>
+                </div>
+                <button 
+                  className="button-primary flex items-center gap-2" 
+                  onClick={loadMessages}
+                  disabled={loading}
+                >
+                  <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
+                  Refresh
+                </button>
               </div>
-              <button className="button-secondary" onClick={handleResetThreads} type="button">
-                Reset Data
-              </button>
             </div>
           </motion.div>
 
-          <div className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
-            <div className="glass-panel rounded-3xl border border-white/10 bg-black/40 p-4">
-              <div className="text-xs uppercase tracking-[0.4em] text-white/50 mb-4">
-                Threads
-              </div>
-              <div className="space-y-3 max-h-[620px] overflow-y-auto pr-1">
-                {threads.length ? (
-                  threads.map((thread) => {
-                    const Icon = CHANNEL_ICON[thread.channel] || MessageSquare;
-                    return (
-                      <button
-                        key={thread.id}
-                        onClick={() => persistActiveId(thread.id)}
-                        className={`thread-item ${
-                          thread.id === activeId ? "active" : ""
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <Icon size={16} className="text-neon-cyan" />
-                            <div>
-                              <div className="text-sm font-semibold">{thread.name}</div>
-                              <div className="text-xs text-white/40">
-                                {thread.messages[thread.messages.length - 1]?.text}
-                              </div>
-                            </div>
-                          </div>
-                          {thread.unread ? (
-                            <span className="thread-unread">{thread.unread}</span>
-                          ) : null}
-                        </div>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div className="text-white/60 px-2">No threads archived yet.</div>
-                )}
-              </div>
+          {error && (
+            <div className="glass-panel rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-red-400">
+              {error}
+            </div>
+          )}
+
+          <div className="glass-panel rounded-3xl border border-white/10 p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <Search size={18} className="text-white/40" />
+              <input
+                className="glass-input flex-1"
+                placeholder="Search messages, phone numbers, businesses..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
             </div>
 
-            <div className="glass-panel rounded-3xl border border-white/10 bg-black/40 p-6 flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs uppercase tracking-[0.4em] text-white/50">
-                    Active Thread
-                  </div>
-                  <div className="text-lg font-semibold">{activeThread?.name}</div>
+            <div className="space-y-3 max-h-[600px] overflow-y-auto">
+              {loading ? (
+                <div className="text-center py-12 text-white/60">
+                  Loading messages...
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="status-live">Omnichannel Online</div>
-                  {activeThread ? (
-                    <button
-                      className="button-secondary"
-                      onClick={() => handleArchiveThread(activeThread.id)}
-                      type="button"
-                    >
-                      Archive
-                    </button>
-                  ) : null}
+              ) : filteredMessages.length === 0 ? (
+                <div className="text-center py-12">
+                  <MessageSquare size={48} className="mx-auto mb-4 text-white/20" />
+                  <p className="text-white/60">
+                    {search ? "No messages match your search" : "No messages yet"}
+                  </p>
                 </div>
-              </div>
-
-              <div className="glass-panel rounded-2xl border border-white/10 p-4">
-                <div className="text-xs uppercase tracking-widest text-white/40 mb-2">
-                  AI Suggested Replies
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {suggestions.map((reply) => (
-                    <button
-                      key={reply}
-                      className="suggestion-pill"
-                      onClick={() => sendMessage(reply)}
-                    >
-                      {reply}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="chat-window">
-                {activeThread?.messages?.length ? (
-                  activeThread.messages.map((message) => {
-                    const Icon = CHANNEL_ICON[message.channel] || MessageSquare;
-                    return (
-                      <div
-                        key={message.id}
-                        className={`chat-bubble ${message.from}`}
-                      >
-                        <div className="flex items-center gap-2 text-xs text-white/50">
-                          <Icon size={12} />
-                          {message.time}
-                        </div>
-                        <div className="text-sm">{message.text}</div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="text-white/60">No active thread selected.</div>
-                )}
-                {typing ? <div className="typing-indicator">System is typing…</div> : null}
-              </div>
-
-              <div className="glass-panel rounded-2xl border border-white/10 p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-xs uppercase tracking-widest text-white/40">
-                    Send Message
-                  </div>
-                  <button
-                    className="macro-button"
-                    onClick={() => setShowMacros((prev) => !prev)}
+              ) : (
+                filteredMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className="glass-panel rounded-xl border border-white/5 p-4 hover:border-white/20 transition"
                   >
-                    <Bolt size={14} /> Macros
-                  </button>
-                </div>
-                {showMacros ? (
-                  <div className="macro-panel">
-                    {MACROS.map((macro) => (
-                    <button
-                      key={macro}
-                      className="macro-item"
-                      onClick={() => {
-                        persistDraft(macro);
-                        setShowMacros(false);
-                      }}
-                    >
-                        {macro}
-                      </button>
-                    ))}
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          {msg.direction === "inbound" ? (
+                            <ArrowDownLeft size={16} className="text-green-400" />
+                          ) : (
+                            <ArrowUpRight size={16} className="text-cyan-400" />
+                          )}
+                          <span className="text-xs uppercase tracking-wider text-white/40">
+                            {msg.direction}
+                          </span>
+                          {msg.keyword_detected && (
+                            <span className="px-2 py-0.5 text-[10px] uppercase bg-purple-500/20 text-purple-400 rounded-full">
+                              {msg.keyword_detected}
+                            </span>
+                          )}
+                          {msg.auto_handled && (
+                            <span className="px-2 py-0.5 text-[10px] uppercase bg-blue-500/20 text-blue-400 rounded-full">
+                              Auto-handled
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-white/90 mb-2">{msg.body || "—"}</p>
+                        <div className="flex items-center gap-4 text-xs text-white/40">
+                          <span className="flex items-center gap-1">
+                            <Phone size={12} />
+                            {msg.direction === "inbound" ? msg.from_number : msg.to_number}
+                          </span>
+                          {msg.business_name && (
+                            <span className="text-white/60">{msg.business_name}</span>
+                          )}
+                          {msg.routing_method && (
+                            <span className="text-white/30">via {msg.routing_method}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right text-xs text-white/40 shrink-0">
+                        {formatTime(msg.created_at)}
+                      </div>
+                    </div>
                   </div>
-                ) : null}
-                <div className="flex gap-3 mt-3">
-                    <input
-                      className="glass-input w-full text-sm text-white"
-                      placeholder="Type your response..."
-                      value={draft}
-                      onChange={(event) => persistDraft(event.target.value)}
-                    />
-                  <button className="glow-button" onClick={() => sendMessage(draft)}>
-                    <Send size={16} />
-                  </button>
-                </div>
-              </div>
+                ))
+              )}
+            </div>
+
+            <div className="mt-4 text-center text-xs text-white/30">
+              {filteredMessages.length} messages • Auto-refresh every 30s
             </div>
           </div>
         </div>

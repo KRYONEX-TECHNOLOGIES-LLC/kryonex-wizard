@@ -145,7 +145,9 @@ export const logBlackBoxEvent = (action_type, meta_data) =>
 export const getReferralCode = () => api.get("/referral/my-code");
 export const getReferralStats = () => api.get("/referral/stats");
 export const getReferralHistory = () => api.get("/referral/history");
-export const requestReferralPayout = () => api.post("/referral/request-payout");
+export const requestReferralPayout = (paymentDetails) => 
+  api.post("/referral/request-payout", paymentDetails || {});
+export const getPayoutHistory = () => api.get("/referral/payout-history");
 export const recordReferralSignup = (referralCode) => 
   api.post("/referral/record-signup", { referral_code: referralCode });
 

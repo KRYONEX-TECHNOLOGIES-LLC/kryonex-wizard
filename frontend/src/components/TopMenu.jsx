@@ -9,10 +9,28 @@ import {
   verifyAdminCode,
 } from "../lib/api";
 import { getImpersonation, clearImpersonation, IMPERSONATION_EVENT } from "../lib/impersonation";
+import { useMobileNav } from "./SideNav";
+
+// Hamburger button component for mobile navigation
+function HamburgerButton({ isOpen, onClick }) {
+  return (
+    <button 
+      className={`mobile-menu-toggle ${isOpen ? 'active' : ''}`}
+      onClick={onClick}
+      aria-label={isOpen ? "Close menu" : "Open menu"}
+      type="button"
+    >
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+  );
+}
 
 export default function TopMenu() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { isOpen: mobileNavOpen, setIsOpen: setMobileNavOpen } = useMobileNav();
   const wizardMaintenance =
     String(import.meta.env.VITE_WIZARD_MAINTENANCE || "").toLowerCase() === "true";
   const [open, setOpen] = React.useState(false);
@@ -208,6 +226,14 @@ export default function TopMenu() {
 
   return (
     <>
+      {/* Hamburger menu for mobile - positioned at left */}
+      <div className="mobile-nav-trigger">
+        <HamburgerButton 
+          isOpen={mobileNavOpen} 
+          onClick={() => setMobileNavOpen(!mobileNavOpen)} 
+        />
+      </div>
+      
       <div className={`top-menu-view-badge ${badgeClass}`}>{badgeLabel}</div>
       <div className="top-menu">
         <button
@@ -215,7 +241,8 @@ export default function TopMenu() {
           onClick={() => setOpen((prev) => !prev)}
           type="button"
         >
-          <span>MENU</span>
+          <span className="hide-mobile-text">MENU</span>
+          <span className="show-mobile-icon">☰</span>
           <span
             className={`status-dot status-${String(subscription.status || "")
               .toLowerCase()

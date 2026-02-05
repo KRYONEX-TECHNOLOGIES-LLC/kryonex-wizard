@@ -2205,7 +2205,15 @@ app.post(
   }
 );
 
-app.use(express.json({ limit: "1mb" }));
+// Configure JSON parsing with raw body capture for webhook signature verification
+// Also limit body size for security (prevents DoS attacks with large payloads)
+app.use(express.json({ 
+  limit: "1mb",
+  verify: (req, res, buf) => {
+    // Store raw body for webhook signature verification
+    req.rawBody = buf.toString("utf8");
+  }
+}));
 
 const retellClient = axios.create({
   baseURL: "https://api.retellai.com",
@@ -2223,7 +2231,27 @@ const retellSmsClient = axios.create({
   },
 });
 
+// ==========================================
+// RATE LIMITING SYSTEM
+// ==========================================
 const rateBuckets = new Map();
+
+// Clean up old rate limit buckets periodically (every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [key, bucket] of rateBuckets.entries()) {
+    if (now > bucket.resetAt + 60000) { // Remove buckets that expired 1 minute ago
+      rateBuckets.delete(key);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`[rate-limit] Cleaned ${cleaned} expired rate limit buckets`);
+  }
+}, 5 * 60 * 1000);
+
+// Per-route rate limiter middleware
 const rateLimit = ({ keyPrefix, limit, windowMs }) => (req, res, next) => {
   const key = `${keyPrefix}:${req.user?.id || req.ip}`;
   const now = Date.now();
@@ -2235,8 +2263,190 @@ const rateLimit = ({ keyPrefix, limit, windowMs }) => (req, res, next) => {
   bucket.count += 1;
   rateBuckets.set(key, bucket);
   if (bucket.count > limit) {
-    return res.status(429).json({ error: "Too many requests" });
+    console.warn(`[rate-limit] ${keyPrefix} limit exceeded for ${req.user?.id || req.ip}`);
+    return res.status(429).json({ error: "Too many requests. Please wait before trying again." });
   }
+  return next();
+};
+
+// Global rate limiter - applies to all requests per IP
+// Allows 200 requests per minute per IP (very generous, just prevents abuse)
+const globalRateLimitBuckets = new Map();
+const globalRateLimit = (req, res, next) => {
+  // Skip rate limiting for webhooks (they come from trusted sources)
+  if (req.path.includes("/webhook") || req.path.includes("/stripe")) {
+    return next();
+  }
+  
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0] || req.ip || "unknown";
+  const key = `global:${ip}`;
+  const now = Date.now();
+  const windowMs = 60000; // 1 minute
+  const limit = 200; // 200 requests per minute per IP
+  
+  const bucket = globalRateLimitBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+  if (now > bucket.resetAt) {
+    bucket.count = 0;
+    bucket.resetAt = now + windowMs;
+  }
+  bucket.count += 1;
+  globalRateLimitBuckets.set(key, bucket);
+  
+  // Add rate limit headers
+  res.set({
+    "X-RateLimit-Limit": limit,
+    "X-RateLimit-Remaining": Math.max(0, limit - bucket.count),
+    "X-RateLimit-Reset": Math.ceil(bucket.resetAt / 1000),
+  });
+  
+  if (bucket.count > limit) {
+    console.warn(`[global-rate-limit] IP ${ip} exceeded global rate limit`);
+    return res.status(429).json({ error: "Too many requests. Please slow down." });
+  }
+  return next();
+};
+
+// Apply global rate limit to all requests
+app.use(globalRateLimit);
+
+// Auth-specific stricter rate limiter for login/signup attempts
+// 10 attempts per 5 minutes per IP
+const authRateLimitBuckets = new Map();
+const authRateLimit = (req, res, next) => {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0] || req.ip || "unknown";
+  const key = `auth:${ip}`;
+  const now = Date.now();
+  const windowMs = 5 * 60 * 1000; // 5 minutes
+  const limit = 10;
+  
+  const bucket = authRateLimitBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+  if (now > bucket.resetAt) {
+    bucket.count = 0;
+    bucket.resetAt = now + windowMs;
+  }
+  bucket.count += 1;
+  authRateLimitBuckets.set(key, bucket);
+  
+  if (bucket.count > limit) {
+    console.warn(`[auth-rate-limit] IP ${ip} exceeded auth rate limit`);
+    return res.status(429).json({ error: "Too many authentication attempts. Please try again in a few minutes." });
+  }
+  return next();
+};
+
+// ==========================================
+// INPUT VALIDATION UTILITIES
+// ==========================================
+
+// Common validation patterns
+const validationPatterns = {
+  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  phone: /^\+?[1-9]\d{1,14}$/,
+  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  url: /^https?:\/\/.+/,
+  alphanumeric: /^[a-zA-Z0-9]+$/,
+  safeString: /^[a-zA-Z0-9\s\-_.,!?'"()@#$%&*+=/\\:;]+$/,
+};
+
+// Sanitize string input - remove dangerous characters
+const sanitizeString = (str, maxLength = 1000) => {
+  if (typeof str !== "string") return "";
+  return str
+    .slice(0, maxLength)
+    .replace(/[<>]/g, "") // Remove HTML tags
+    .trim();
+};
+
+// Sanitize phone number
+const sanitizePhone = (phone) => {
+  if (typeof phone !== "string") return null;
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 15) return null;
+  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+};
+
+// Validate email format
+const isValidEmail = (email) => {
+  return typeof email === "string" && validationPatterns.email.test(email);
+};
+
+// Validate UUID format
+const isValidUuid = (uuid) => {
+  return typeof uuid === "string" && validationPatterns.uuid.test(uuid);
+};
+
+// Validate and sanitize URL
+const sanitizeUrl = (url) => {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim().slice(0, 2000);
+  return validationPatterns.url.test(trimmed) ? trimmed : null;
+};
+
+// Input validation middleware factory
+const validateBody = (schema) => (req, res, next) => {
+  const errors = [];
+  const body = req.body || {};
+  
+  for (const [field, rules] of Object.entries(schema)) {
+    const value = body[field];
+    
+    if (rules.required && (value === undefined || value === null || value === "")) {
+      errors.push(`${field} is required`);
+      continue;
+    }
+    
+    if (value === undefined || value === null) continue;
+    
+    if (rules.type === "string" && typeof value !== "string") {
+      errors.push(`${field} must be a string`);
+    } else if (rules.type === "number" && typeof value !== "number") {
+      errors.push(`${field} must be a number`);
+    } else if (rules.type === "boolean" && typeof value !== "boolean") {
+      errors.push(`${field} must be a boolean`);
+    } else if (rules.type === "array" && !Array.isArray(value)) {
+      errors.push(`${field} must be an array`);
+    }
+    
+    if (typeof value === "string") {
+      if (rules.minLength && value.length < rules.minLength) {
+        errors.push(`${field} must be at least ${rules.minLength} characters`);
+      }
+      if (rules.maxLength && value.length > rules.maxLength) {
+        errors.push(`${field} must be at most ${rules.maxLength} characters`);
+      }
+      if (rules.pattern && !rules.pattern.test(value)) {
+        errors.push(`${field} has invalid format`);
+      }
+      if (rules.email && !isValidEmail(value)) {
+        errors.push(`${field} must be a valid email`);
+      }
+      if (rules.uuid && !isValidUuid(value)) {
+        errors.push(`${field} must be a valid UUID`);
+      }
+    }
+    
+    if (typeof value === "number") {
+      if (rules.min !== undefined && value < rules.min) {
+        errors.push(`${field} must be at least ${rules.min}`);
+      }
+      if (rules.max !== undefined && value > rules.max) {
+        errors.push(`${field} must be at most ${rules.max}`);
+      }
+    }
+    
+    if (Array.isArray(value) && rules.maxItems && value.length > rules.maxItems) {
+      errors.push(`${field} must have at most ${rules.maxItems} items`);
+    }
+    
+    if (rules.enum && !rules.enum.includes(value)) {
+      errors.push(`${field} must be one of: ${rules.enum.join(", ")}`);
+    }
+  }
+  
+  if (errors.length > 0) {
+    return res.status(400).json({ error: errors.join(". ") });
+  }
+  
   return next();
 };
 
@@ -2718,16 +2928,13 @@ const requireAuth = async (req, res, next) => {
     const bearerToken = authHeader.startsWith("Bearer ")
       ? authHeader.slice(7)
       : null;
-    const queryToken =
-      typeof req.query.access_token === "string"
-        ? req.query.access_token
-        : typeof req.query.accessToken === "string"
-        ? req.query.accessToken
-        : null;
-    const token = bearerToken || queryToken;
+    
+    // SECURITY: Query param tokens removed for security (tokens in URLs can be logged and leaked)
+    // All API requests should use Authorization: Bearer <token> header
+    const token = bearerToken;
 
     if (!token) {
-      return res.status(401).json({ error: "Missing auth token" });
+      return res.status(401).json({ error: "Missing auth token. Use Authorization: Bearer <token> header." });
     }
 
     const { data, error } = await supabaseAdmin.auth.getUser(token);
@@ -4416,12 +4623,51 @@ app.post("/api/calcom/disconnect", requireAuth, resolveEffectiveUser, async (req
   }
 });
 
+// Helper: Verify Retell webhook signature (HMAC-SHA256)
+const verifyRetellSignature = (rawBody, signature, secret) => {
+  if (!secret) {
+    // If no secret configured, skip verification (development mode)
+    console.warn("[retell-webhook] RETELL_WEBHOOK_SECRET not configured, skipping signature verification");
+    return true;
+  }
+  if (!signature) {
+    console.warn("[retell-webhook] No x-retell-signature header found");
+    return false;
+  }
+  
+  try {
+    // Retell uses HMAC-SHA256 with the raw body
+    const expectedSignature = crypto
+      .createHmac("sha256", secret)
+      .update(rawBody, "utf8")
+      .digest("hex");
+    
+    // Use timing-safe comparison to prevent timing attacks
+    const signatureBuffer = Buffer.from(signature, "hex");
+    const expectedBuffer = Buffer.from(expectedSignature, "hex");
+    
+    if (signatureBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+    
+    return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
+  } catch (err) {
+    console.error("[retell-webhook] Signature verification error:", err.message);
+    return false;
+  }
+};
+
 const retellWebhookHandler = async (req, res) => {
   try {
     lastRetellWebhookAt = new Date().toISOString();
-    // Note: Retell uses x-retell-signature header with HMAC, not a simple secret
-    // For now, we skip verification - the webhook URL is private and only known to Retell
-    // TODO: Implement proper HMAC signature verification per Retell docs if needed
+    
+    // Verify Retell webhook signature for security
+    const signature = req.headers["x-retell-signature"];
+    if (RETELL_WEBHOOK_SECRET && !verifyRetellSignature(req.rawBody || JSON.stringify(req.body), signature, RETELL_WEBHOOK_SECRET)) {
+      console.error("[retell-webhook] Invalid signature - rejecting request");
+      return res.status(401).json({ error: "Invalid webhook signature" });
+    }
+    
     const payload = req.body || {};
     const eventType =
       payload.event_type || payload.event || payload.type || "unknown";
@@ -6129,6 +6375,21 @@ app.get("/referral/history", requireAuth, async (req, res) => {
 app.post("/referral/request-payout", requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
+    const { payment_email, payment_method } = req.body;
+    
+    // Check for pending payout requests
+    const { data: pendingRequests } = await supabaseAdmin
+      .from("payout_requests")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("status", "pending")
+      .limit(1);
+    
+    if (pendingRequests?.length > 0) {
+      return res.status(400).json({ 
+        error: "You already have a pending payout request. Please wait for it to be processed."
+      });
+    }
     
     // Get settings
     const { data: settings } = await supabaseAdmin
@@ -6154,26 +6415,100 @@ app.post("/referral/request-payout", requireAuth, async (req, res) => {
       });
     }
     
-    // Mark commissions as "requested" (admin will process manually for now)
-    // In future, could integrate with Stripe Connect for automatic payouts
     const commissionIds = (commissions || []).map(c => c.id);
     
-    // Create an alert for admin
-    await supabaseAdmin.from("alerts").insert({
-      alert_type: "payout_request",
-      severity: "info",
-      user_id: userId,
-      message: `Payout requested: $${(availableCents / 100).toFixed(2)}`,
-      details: { commission_ids: commissionIds, amount_cents: availableCents },
-    });
+    // Get user's payout email from profile if not provided
+    let payoutEmail = payment_email;
+    if (!payoutEmail) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("payout_email")
+        .eq("user_id", userId)
+        .maybeSingle();
+      payoutEmail = profile?.payout_email;
+    }
+    
+    // Create payout request record
+    const { data: payoutRequest, error: payoutError } = await supabaseAdmin
+      .from("payout_requests")
+      .insert({
+        user_id: userId,
+        amount_cents: availableCents,
+        status: "pending",
+        payment_method: payment_method || "paypal",
+        payment_email: payoutEmail,
+        notes: JSON.stringify({ commission_ids: commissionIds }),
+      })
+      .select()
+      .single();
+    
+    if (payoutError) {
+      // If payout_requests table doesn't exist, fall back to alerts
+      console.warn("[referral/request-payout] payout_requests table not found, using alerts fallback");
+      await supabaseAdmin.from("alerts").insert({
+        alert_type: "payout_request",
+        severity: "info",
+        user_id: userId,
+        message: `Payout requested: $${(availableCents / 100).toFixed(2)}`,
+        details: { commission_ids: commissionIds, amount_cents: availableCents },
+      });
+    } else {
+      // Also create an alert for admin notification
+      await supabaseAdmin.from("alerts").insert({
+        alert_type: "payout_request",
+        severity: "info",
+        user_id: userId,
+        message: `Payout requested: $${(availableCents / 100).toFixed(2)}`,
+        details: { 
+          payout_request_id: payoutRequest.id,
+          commission_ids: commissionIds, 
+          amount_cents: availableCents,
+          payment_email: payoutEmail,
+        },
+      });
+    }
+    
+    // Update user's payout email in profile if provided
+    if (payment_email) {
+      await supabaseAdmin
+        .from("profiles")
+        .update({ payout_email: payment_email, payout_method: payment_method || "paypal" })
+        .eq("user_id", userId);
+    }
     
     return res.json({ 
       ok: true, 
       message: `Payout request submitted for $${(availableCents / 100).toFixed(2)}. Admin will process within 3-5 business days.`,
       amount_cents: availableCents,
+      request_id: payoutRequest?.id,
     });
   } catch (err) {
     console.error("[referral/request-payout] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /referral/payout-history - Get user's payout request history
+app.get("/referral/payout-history", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const { data: requests, error } = await supabaseAdmin
+      .from("payout_requests")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    
+    if (error) {
+      // If table doesn't exist, return empty array
+      console.warn("[referral/payout-history] error (table may not exist):", error.message);
+      return res.json({ payout_requests: [] });
+    }
+    
+    return res.json({ payout_requests: requests || [] });
+  } catch (err) {
+    console.error("[referral/payout-history] error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -7363,6 +7698,60 @@ app.get("/admin/leads", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// GET /admin/messages - List all SMS messages across all tenants
+app.get("/admin/messages", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 200;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    // Get messages with user profile info for business name
+    const { data: messages, error } = await supabaseAdmin
+      .from("messages")
+      .select(`
+        id,
+        user_id,
+        lead_id,
+        direction,
+        from_number,
+        to_number,
+        body,
+        keyword_detected,
+        auto_handled,
+        routing_method,
+        created_at,
+        profiles:user_id(business_name)
+      `)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      console.error("[admin/messages] DB error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    // Flatten the profile data
+    const formattedMessages = (messages || []).map(msg => ({
+      id: msg.id,
+      user_id: msg.user_id,
+      lead_id: msg.lead_id,
+      direction: msg.direction,
+      from_number: msg.from_number,
+      to_number: msg.to_number,
+      body: msg.body,
+      keyword_detected: msg.keyword_detected,
+      auto_handled: msg.auto_handled,
+      routing_method: msg.routing_method,
+      created_at: msg.created_at,
+      business_name: msg.profiles?.business_name || null
+    }));
+
+    return res.json({ messages: formattedMessages });
+  } catch (err) {
+    console.error("[admin/messages] Error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/call-recordings", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
     const uid = req.effectiveUserId ?? req.user.id;
@@ -7539,12 +7928,21 @@ app.post(
   requireAuth,
   resolveEffectiveUser,
   rateLimit({ keyPrefix: "sms", limit: 20, windowMs: 60_000 }),
+  validateBody({
+    body: { required: true, type: "string", minLength: 1, maxLength: 1600 },
+    to: { type: "string", maxLength: 20 },
+    leadId: { type: "string", maxLength: 50 },
+    source: { type: "string", maxLength: 50 },
+    appointmentId: { type: "string", maxLength: 50 },
+  }),
   async (req, res) => {
     try {
       const uid = req.effectiveUserId ?? req.user.id;
       const { leadId, to, body, source } = req.body || {};
-      if (!body) {
-        return res.status(400).json({ error: "body is required" });
+      // Sanitize inputs
+      const sanitizedBody = sanitizeString(body, 1600);
+      if (!sanitizedBody) {
+        return res.status(400).json({ error: "Message body is required" });
       }
 
       let destination = to;
@@ -8384,6 +8782,16 @@ app.post(
   requireAuth,
   resolveEffectiveUser,
   rateLimit({ keyPrefix: "appointments", limit: 30, windowMs: 60_000 }),
+  validateBody({
+    customer_name: { required: true, type: "string", minLength: 1, maxLength: 200 },
+    customer_phone: { type: "string", maxLength: 20 },
+    start_date: { required: true, type: "string", maxLength: 20 },
+    start_time: { required: true, type: "string", maxLength: 10 },
+    duration_minutes: { type: "string", maxLength: 10 },
+    location: { type: "string", maxLength: 500 },
+    notes: { type: "string", maxLength: 2000 },
+    reminder_minutes: { type: "string", maxLength: 10 },
+  }),
   async (req, res) => {
     try {
       const uid = req.effectiveUserId ?? req.user.id;
@@ -8402,7 +8810,13 @@ app.post(
         tracking_enabled,
       } = req.body || {};
 
-      if (!customer_name || !start_date || !start_time) {
+      // Sanitize inputs
+      const sanitizedName = sanitizeString(customer_name, 200);
+      const sanitizedPhone = customer_phone ? sanitizePhone(customer_phone) : null;
+      const sanitizedLocation = location ? sanitizeString(location, 500) : null;
+      const sanitizedNotes = notes ? sanitizeString(notes, 2000) : null;
+
+      if (!sanitizedName || !start_date || !start_time) {
         return res
           .status(400)
           .json({ error: "customer_name, start_date, start_time are required" });
