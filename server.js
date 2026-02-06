@@ -5676,6 +5676,16 @@ Business Variables:
       const phoneNumber =
         phoneResponse.data.phone_number || phoneResponse.data.number;
 
+      // CRITICAL: Validate required fields before insert to prevent attribution issues
+      if (!agentId) {
+        console.error("[deploy-agent] CRITICAL: Missing agent_id, cannot insert agent record");
+        return res.status(500).json({ error: "Agent creation failed: missing agent_id" });
+      }
+      if (!phoneNumber) {
+        console.error("[deploy-agent] CRITICAL: Missing phone_number, cannot insert agent record");
+        return res.status(500).json({ error: "Agent creation failed: missing phone_number" });
+      }
+
       const { error: insertError } = await supabaseAdmin.from("agents").insert({
         user_id: req.user.id,
         agent_id: agentId,
@@ -11029,6 +11039,16 @@ Business Variables:
   }
   const phoneNumber = phoneResponse.data.phone_number || phoneResponse.data.number;
 
+  // CRITICAL: Validate required fields before insert to prevent attribution issues
+  if (!agentId) {
+    console.error("[createAdminAgent] CRITICAL: Missing agent_id, cannot insert agent record", { userId, deployRequestId: reqId });
+    throw new Error("Agent creation failed: missing agent_id");
+  }
+  if (!phoneNumber) {
+    console.error("[createAdminAgent] CRITICAL: Missing phone_number, cannot insert agent record", { userId, deployRequestId: reqId });
+    throw new Error("Agent creation failed: missing phone_number");
+  }
+
   const { error: insertError } = await supabaseAdmin.from("agents").insert({
     user_id: userId,
     agent_id: agentId,
@@ -11183,6 +11203,17 @@ const provisionPhoneNumberOnly = async ({
   
   // STEP 3: Store in database - phone_number is the KEY for tracking
   // We store masterAgentId for reference but tracking uses phone_number
+  
+  // CRITICAL: Validate required fields before insert to prevent attribution issues
+  if (!masterAgentId) {
+    console.error("[provisionAgent] CRITICAL: Missing masterAgentId, cannot insert agent record", { userId, deployRequestId: reqId });
+    throw new Error("Agent creation failed: missing agent_id");
+  }
+  if (!phoneNumber) {
+    console.error("[provisionAgent] CRITICAL: Missing phoneNumber, cannot insert agent record", { userId, deployRequestId: reqId });
+    throw new Error("Agent creation failed: missing phone_number");
+  }
+  
   const transferNumber =
     transferNumberRaw != null
       ? String(transferNumberRaw).replace(/[^\d+]/g, "").trim() || null
