@@ -17,6 +17,12 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Zap,
+  MessageSquare,
+  Code,
+  FileSpreadsheet,
+  Users,
+  Database,
 } from "lucide-react";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
@@ -31,6 +37,82 @@ const AVAILABLE_EVENTS = [
   { id: "lead_created", label: "Lead Created", description: "New lead from call" },
   { id: "sms_received", label: "SMS Received", description: "Inbound text message" },
 ];
+
+// Example payloads for documentation
+const EXAMPLE_PAYLOADS = {
+  call_ended: {
+    call_id: "call_abc123",
+    agent_id: "agent_xyz",
+    user_id: "user_456",
+    duration_seconds: 245,
+    recording_url: "https://storage.kryonex.com/recordings/abc123.mp3",
+    transcript: "Hello, thank you for calling Acme Plumbing...",
+    from_number: "+15551234567",
+    to_number: "+15559876543",
+    disposition: "completed",
+    lead_id: "lead_789",
+    customer_name: "John Smith",
+    customer_phone: "+15551234567",
+    summary: "Customer needs water heater repair. Scheduled for tomorrow.",
+    sentiment: "positive",
+    service_address: "123 Main St, Austin TX",
+    issue_type: "water_heater",
+    call_outcome: "appointment_booked",
+    appointment_booked: true,
+    ended_at: "2026-02-06T14:30:00Z",
+  },
+  call_started: {
+    call_id: "call_abc123",
+    agent_id: "agent_xyz",
+    user_id: "user_456",
+    from_number: "+15551234567",
+    to_number: "+15559876543",
+    direction: "inbound",
+    started_at: "2026-02-06T14:25:00Z",
+  },
+  appointment_booked: {
+    appointment_id: "appt_001",
+    cal_booking_uid: "cal_abc123",
+    user_id: "user_456",
+    customer_name: "John Smith",
+    customer_phone: "+15551234567",
+    start_time: "2026-02-07T10:00:00Z",
+    end_time: "2026-02-07T11:00:00Z",
+    location: "123 Main St, Austin TX 78701",
+    notes: "Water heater not producing hot water",
+    source: "api",
+    eta_link: "https://app.kryonex.com/track/abc123",
+    created_at: "2026-02-06T14:30:00Z",
+  },
+  lead_created: {
+    lead_id: "lead_789",
+    user_id: "user_456",
+    agent_id: "agent_xyz",
+    call_id: "call_abc123",
+    name: "John Smith",
+    phone: "+15551234567",
+    status: "new",
+    summary: "Customer needs water heater repair",
+    sentiment: "positive",
+    service_address: "123 Main St, Austin TX",
+    issue_type: "water_heater",
+    call_outcome: "appointment_booked",
+    appointment_booked: true,
+    recording_url: "https://storage.kryonex.com/recordings/abc123.mp3",
+    call_duration_seconds: 245,
+    created_at: "2026-02-06T14:30:00Z",
+  },
+  sms_received: {
+    user_id: "user_456",
+    agent_id: "agent_xyz",
+    from_number: "+15551234567",
+    body: "Yes, I confirm my appointment for tomorrow at 10am",
+    direction: "inbound",
+    keyword_detected: null,
+    is_opt_out: false,
+    received_at: "2026-02-06T15:00:00Z",
+  },
+};
 
 export default function IntegrationsPage() {
   const navigate = useNavigate();
@@ -53,6 +135,9 @@ export default function IntegrationsPage() {
   const [isSeller, setIsSeller] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [activeDocsTab, setActiveDocsTab] = useState("zapier");
+  const [expandedPayload, setExpandedPayload] = useState(null);
+  const [copiedPayload, setCopiedPayload] = useState(null);
 
   const loadWebhooks = useCallback(async () => {
     try {
@@ -212,6 +297,15 @@ export default function IntegrationsPage() {
     });
   };
 
+  const copyPayload = (eventId) => {
+    const payload = EXAMPLE_PAYLOADS[eventId];
+    if (payload) {
+      navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setCopiedPayload(eventId);
+      setTimeout(() => setCopiedPayload(null), 2000);
+    }
+  };
+
   return (
     <div className="war-room bg-black text-cyan-400 font-mono">
       <TopMenu />
@@ -229,14 +323,44 @@ export default function IntegrationsPage() {
         />
 
         <div className="war-room-shell w-full max-w-full px-4 sm:px-6 lg:px-8">
-          <div className="war-room-header">
-            <div>
-              <div className="war-room-kicker">EXTERNAL CONNECTIONS</div>
-              <div className="war-room-title">Integrations Hub</div>
+          {/* Hero Section */}
+          <div className="integrations-hero">
+            <div className="hero-content">
+              <h1 className="hero-title">Connect Kryonex to 5,000+ Apps</h1>
+              <p className="hero-subtitle">
+                Send real-time call data, leads, and appointments to your favorite tools automatically.
+                No code required.
+              </p>
+              <div className="hero-logos">
+                <div className="logo-badge" title="Zapier">
+                  <Zap size={24} />
+                  <span>Zapier</span>
+                </div>
+                <div className="logo-badge" title="Slack">
+                  <MessageSquare size={24} />
+                  <span>Slack</span>
+                </div>
+                <div className="logo-badge" title="Google Sheets">
+                  <FileSpreadsheet size={24} />
+                  <span>Sheets</span>
+                </div>
+                <div className="logo-badge" title="HubSpot">
+                  <Users size={24} />
+                  <span>HubSpot</span>
+                </div>
+                <div className="logo-badge" title="Salesforce">
+                  <Database size={24} />
+                  <span>Salesforce</span>
+                </div>
+                <div className="logo-badge" title="Custom API">
+                  <Code size={24} />
+                  <span>Custom</span>
+                </div>
+              </div>
             </div>
-            <div className="war-room-actions">
-              <button className="button-primary" onClick={handleAddNew}>
-                <Plus size={18} />
+            <div className="hero-actions">
+              <button className="button-primary button-lg" onClick={handleAddNew}>
+                <Plus size={20} />
                 Add Webhook
               </button>
             </div>
@@ -455,21 +579,144 @@ export default function IntegrationsPage() {
             )}
           </div>
 
-          {/* Help Section */}
-          <div className="integration-help glass-panel">
-            <h4>How to Connect with Zapier</h4>
-            <ol>
-              <li>Create a new Zap in Zapier</li>
-              <li>Choose "Webhooks by Zapier" as the trigger</li>
-              <li>Select "Catch Hook" as the trigger event</li>
-              <li>Copy the webhook URL provided by Zapier</li>
-              <li>Add it as a webhook here and select your events</li>
-              <li>Click "Test" to verify the connection</li>
-            </ol>
-            <a href="https://zapier.com/apps/webhook/integrations" target="_blank" rel="noopener noreferrer">
-              <ExternalLink size={14} />
-              Learn more about Zapier Webhooks
-            </a>
+          {/* Tabbed Documentation */}
+          <div className="integration-docs glass-panel">
+            <h4>Setup Guides</h4>
+            <div className="docs-tabs">
+              <button 
+                className={`docs-tab ${activeDocsTab === "zapier" ? "active" : ""}`}
+                onClick={() => setActiveDocsTab("zapier")}
+              >
+                <Zap size={16} />
+                Zapier
+              </button>
+              <button 
+                className={`docs-tab ${activeDocsTab === "slack" ? "active" : ""}`}
+                onClick={() => setActiveDocsTab("slack")}
+              >
+                <MessageSquare size={16} />
+                Slack
+              </button>
+              <button 
+                className={`docs-tab ${activeDocsTab === "custom" ? "active" : ""}`}
+                onClick={() => setActiveDocsTab("custom")}
+              >
+                <Code size={16} />
+                Custom
+              </button>
+            </div>
+
+            <div className="docs-content">
+              {activeDocsTab === "zapier" && (
+                <div className="docs-section">
+                  <h5>Connect with Zapier</h5>
+                  <p>Automate your workflow by connecting Kryonex to 5,000+ apps like Google Sheets, HubSpot, Salesforce, and more.</p>
+                  <ol>
+                    <li>Create a new Zap in Zapier</li>
+                    <li>Choose <strong>"Webhooks by Zapier"</strong> as the trigger</li>
+                    <li>Select <strong>"Catch Hook"</strong> as the trigger event</li>
+                    <li>Copy the webhook URL provided by Zapier</li>
+                    <li>Add it as a webhook here and select your events</li>
+                    <li>Click "Test" to send sample data and verify the connection</li>
+                  </ol>
+                  <div className="docs-tip">
+                    <strong>Pro Tip:</strong> Start with "Call Ended" and "Lead Created" events to automatically add new leads to your CRM or spreadsheet.
+                  </div>
+                  <a href="https://zapier.com/apps/webhook/integrations" target="_blank" rel="noopener noreferrer" className="docs-link">
+                    <ExternalLink size={14} />
+                    Learn more about Zapier Webhooks
+                  </a>
+                </div>
+              )}
+
+              {activeDocsTab === "slack" && (
+                <div className="docs-section">
+                  <h5>Connect with Slack</h5>
+                  <p>Get instant notifications in your Slack channel when calls complete, appointments are booked, or new leads come in.</p>
+                  <ol>
+                    <li>Open your Slack workspace settings</li>
+                    <li>Go to <strong>Apps → Manage → Build → Create New App</strong></li>
+                    <li>Select <strong>"From scratch"</strong> and name your app (e.g., "Kryonex Alerts")</li>
+                    <li>Navigate to <strong>Incoming Webhooks</strong> and turn it on</li>
+                    <li>Click <strong>"Add New Webhook to Workspace"</strong></li>
+                    <li>Select the channel for notifications and copy the webhook URL</li>
+                    <li>Add it as a webhook here and select your events</li>
+                  </ol>
+                  <div className="docs-tip">
+                    <strong>Pro Tip:</strong> Create a dedicated #calls or #leads channel for Kryonex notifications to keep things organized.
+                  </div>
+                  <a href="https://api.slack.com/messaging/webhooks" target="_blank" rel="noopener noreferrer" className="docs-link">
+                    <ExternalLink size={14} />
+                    Slack Incoming Webhooks Guide
+                  </a>
+                </div>
+              )}
+
+              {activeDocsTab === "custom" && (
+                <div className="docs-section">
+                  <h5>Custom Webhook Integration</h5>
+                  <p>For developers: receive real-time POST requests to your own endpoint with structured JSON payloads.</p>
+                  <ul>
+                    <li>All webhooks use <strong>POST</strong> with <code>Content-Type: application/json</code></li>
+                    <li>Include <code>X-Kryonex-Event</code> header with the event type</li>
+                    <li>Include <code>X-Kryonex-Timestamp</code> header with ISO timestamp</li>
+                    <li>If you set a secret, we include <code>X-Kryonex-Signature</code> (HMAC-SHA256)</li>
+                    <li>Your endpoint should return <strong>2xx</strong> within 10 seconds</li>
+                    <li>Failed deliveries are retried 3 times with exponential backoff</li>
+                  </ul>
+                  <div className="docs-code">
+                    <code>
+                      {`// Verify signature (Node.js example)
+const crypto = require('crypto');
+const signature = req.headers['x-kryonex-signature'];
+const expected = crypto
+  .createHmac('sha256', YOUR_SECRET)
+  .update(JSON.stringify(req.body))
+  .digest('hex');
+const valid = signature === expected;`}
+                    </code>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Example Payloads */}
+          <div className="example-payloads glass-panel">
+            <h4>Example Payloads</h4>
+            <p className="payloads-intro">Click to expand and see the JSON structure for each event type.</p>
+            
+            <div className="payloads-grid">
+              {AVAILABLE_EVENTS.filter(e => EXAMPLE_PAYLOADS[e.id]).map(event => (
+                <div key={event.id} className="payload-item">
+                  <button 
+                    className="payload-header"
+                    onClick={() => setExpandedPayload(expandedPayload === event.id ? null : event.id)}
+                  >
+                    <div className="payload-info">
+                      <span className="payload-label">{event.label}</span>
+                      <span className="payload-desc">{event.description}</span>
+                    </div>
+                    {expandedPayload === event.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                  </button>
+                  
+                  {expandedPayload === event.id && (
+                    <div className="payload-content">
+                      <button 
+                        className="copy-payload-btn"
+                        onClick={() => copyPayload(event.id)}
+                      >
+                        {copiedPayload === event.id ? <Check size={14} /> : <Copy size={14} />}
+                        {copiedPayload === event.id ? "Copied!" : "Copy"}
+                      </button>
+                      <pre className="payload-json">
+                        {JSON.stringify(EXAMPLE_PAYLOADS[event.id], null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>

@@ -38,10 +38,16 @@ COMMENT ON COLUMN public.profiles.emergency_24_7 IS
 
 -- Add notification_preferences JSON column
 ALTER TABLE public.profiles
-  ADD COLUMN IF NOT EXISTS notification_preferences jsonb DEFAULT '{"email_on_booking": true, "sms_on_booking": true}'::jsonb;
+  ADD COLUMN IF NOT EXISTS notification_preferences jsonb DEFAULT '{"email_on_booking": true, "sms_on_booking": true, "email_on_low_usage": true, "sms_on_low_usage": true}'::jsonb;
 
 COMMENT ON COLUMN public.profiles.notification_preferences IS 
-  'JSON with email_on_booking and sms_on_booking toggles';
+  'JSON with email_on_booking, sms_on_booking, email_on_low_usage, and sms_on_low_usage toggles';
+
+-- Migration: Update existing profiles to include new low usage alert preferences
+UPDATE public.profiles
+SET notification_preferences = notification_preferences || '{"email_on_low_usage": true, "sms_on_low_usage": true}'::jsonb
+WHERE notification_preferences IS NOT NULL
+  AND NOT (notification_preferences ? 'sms_on_low_usage');
 
 -- =============================================================================
 -- AGENTS TABLE ADDITIONS

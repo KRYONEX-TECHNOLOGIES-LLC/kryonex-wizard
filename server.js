@@ -591,7 +591,7 @@ const storeSmsEvent = async ({
 };
 
 /**
- * Create operational alert and send email notifications for usage alerts
+ * Create operational alert and send email/SMS notifications for usage alerts
  */
 const createAlert = async ({ alertType, severity, userId, phoneNumber, message, details }) => {
   try {
@@ -604,10 +604,25 @@ const createAlert = async ({ alertType, severity, userId, phoneNumber, message, 
       details,
     });
     
-    // Send email for usage alerts
+    // Send email + SMS for usage alerts
     if (alertType === "usage_warning" || alertType === "usage_blocked") {
       const usagePercent = details?.percent || 0;
+      const usedMinutes = Math.ceil((details?.usedSeconds || 0) / 60);
+      const capMinutes = Math.ceil((details?.capSeconds || 0) / 60);
+      const remainingMinutes = Math.max(0, capMinutes - usedMinutes);
+      
+      // Send email alert
       await sendUsageAlertEmail(userId, alertType, usagePercent, details);
+      
+      // Send SMS alert to owner's personal phone
+      await sendUsageAlertSms({
+        userId,
+        alertType: alertType === "usage_blocked" ? "100" : "80",
+        usagePercent,
+        usedMinutes,
+        capMinutes,
+        remainingMinutes,
+      });
     }
   } catch (err) {
     console.error("[createAlert] error", err.message);
@@ -684,6 +699,7 @@ const ALLOWED_SMS_SOURCES = [
   "system_disambiguation",
   "system_opt_out",
   "system_rate_limit",
+  "system_usage_alert",
 ];
 
 // SMS Keywords for auto-handling
@@ -1570,6 +1586,68 @@ const sendUsageAlertEmail = async (userId, alertType, usagePercent, details = {}
     console.log("[sendUsageAlertEmail] sent", { userId, alertType, usagePercent });
   } catch (err) {
     console.error("[sendUsageAlertEmail] error", err.message);
+  }
+};
+
+// Send SMS alert for low usage (to business owner's personal phone)
+const sendUsageAlertSms = async ({ userId, alertType, usagePercent, usedMinutes, capMinutes, remainingMinutes }) => {
+  try {
+    // Get user profile with personal phone and notification preferences
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("user_personal_phone, business_name, notification_preferences")
+      .eq("user_id", userId)
+      .maybeSingle();
+    
+    if (!profile?.user_personal_phone) {
+      console.log("[sendUsageAlertSms] skipped - no personal phone", { userId });
+      return;
+    }
+    
+    // Check notification preferences
+    const notifPrefs = profile.notification_preferences || {};
+    if (notifPrefs.sms_on_low_usage === false) {
+      console.log("[sendUsageAlertSms] skipped - user disabled SMS alerts", { userId });
+      return;
+    }
+    
+    const businessName = profile.business_name || "Your business";
+    const isBlocked = alertType === "100" || remainingMinutes <= 0;
+    
+    // Build alert message
+    let message;
+    if (isBlocked) {
+      message = `KRYONEX ALERT: ${businessName} has used 100% of call minutes. Your AI agent is paused. Top up now to resume: ${FRONTEND_URL}/usage`;
+    } else {
+      message = `KRYONEX ALERT: ${businessName} has used ${usagePercent}% of call minutes (${remainingMinutes} min remaining). Top up to avoid interruptions: ${FRONTEND_URL}/usage`;
+    }
+    
+    // Get user's first agent for sending SMS
+    const { data: agent } = await supabaseAdmin
+      .from("agents")
+      .select("id, phone_number")
+      .eq("user_id", userId)
+      .limit(1)
+      .maybeSingle();
+    
+    if (!agent?.id) {
+      console.log("[sendUsageAlertSms] skipped - no agent found", { userId });
+      return;
+    }
+    
+    // Send SMS via internal function (bypasses usage since it's a system alert)
+    await sendSmsInternal({
+      userId,
+      agentId: agent.id,
+      to: profile.user_personal_phone,
+      body: message,
+      source: "system_usage_alert",
+      bypassUsage: true, // Don't count against user's SMS usage
+    });
+    
+    console.log("[sendUsageAlertSms] sent", { userId, alertType, usagePercent, phone: profile.user_personal_phone.slice(-4) });
+  } catch (err) {
+    console.error("[sendUsageAlertSms] error", err.message);
   }
 };
 
@@ -4069,6 +4147,22 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
           source: "cal.com",
         },
       });
+      
+      // Send appointment_booked webhook (Cal.com)
+      sendOutboundWebhook(userId, "appointment_booked", {
+        appointment_id: appointmentData?.id || null,
+        cal_booking_uid: booking?.uid || booking?.id || null,
+        user_id: userId,
+        customer_name: args.customer_name || booking?.attendee?.name || "Customer",
+        customer_phone: args.customer_phone || booking?.attendee?.phoneNumber || null,
+        start_time: booking?.start || start.toISOString(),
+        end_time: booking?.end || end.toISOString(),
+        location: args.service_address || args.location || null,
+        notes: args.service_issue || args.notes || null,
+        source: "cal.com",
+        created_at: new Date().toISOString(),
+      }).catch(err => console.error("[webhook] appointment_booked (cal.com) error:", err.message));
+      
       return { ok: true, source: "cal.com", booking, appointment: appointmentData };
     }
     const { data, error } = await supabaseAdmin
@@ -4095,6 +4189,21 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         source: "internal",
       },
     });
+    
+    // Send appointment_booked webhook (internal booking)
+    sendOutboundWebhook(userId, "appointment_booked", {
+      appointment_id: data?.id || null,
+      user_id: userId,
+      customer_name: args.customer_name || "Customer",
+      customer_phone: args.customer_phone || null,
+      start_time: data?.start_time || start.toISOString(),
+      end_time: data?.end_time || end.toISOString(),
+      location: args.service_address || args.location || null,
+      notes: args.service_issue || args.notes || null,
+      source: "internal",
+      created_at: new Date().toISOString(),
+    }).catch(err => console.error("[webhook] appointment_booked (internal) error:", err.message));
+    
     return { ok: true, appointment: data };
   }
 
@@ -4901,6 +5010,17 @@ const retellWebhookHandler = async (req, res) => {
             to_number: call.to_number || payload.to_number || null,
           },
         });
+
+        // Send call_started webhook
+        sendOutboundWebhook(agentRow.user_id, "call_started", {
+          call_id: callId,
+          agent_id: agentId,
+          user_id: agentRow.user_id,
+          from_number: call.from_number || payload.from_number || null,
+          to_number: call.to_number || payload.to_number || null,
+          direction: call.direction || payload.direction || "inbound",
+          started_at: new Date().toISOString(),
+        }).catch(err => console.error("[webhook] call_started error:", err.message));
       }
     }
 
@@ -5138,6 +5258,28 @@ const retellWebhookHandler = async (req, res) => {
 
       if (leadError) {
         return res.status(500).json({ error: leadError.message });
+      }
+
+      // Send lead_created webhook
+      if (newLead?.id) {
+        sendOutboundWebhook(agentRow.user_id, "lead_created", {
+          lead_id: newLead.id,
+          user_id: agentRow.user_id,
+          agent_id: agentId,
+          call_id: callId,
+          name: bestName,
+          phone: bestPhone,
+          status: leadStatus,
+          summary: bestSummary,
+          sentiment: bestSentiment,
+          service_address: analysisData.service_address || null,
+          issue_type: analysisData.issue_type || null,
+          call_outcome: analysisData.call_outcome || null,
+          appointment_booked: analysisData.appointment_booked === true,
+          recording_url: recordingUrl,
+          call_duration_seconds: durationSeconds,
+          created_at: new Date().toISOString(),
+        }).catch(err => console.error("[webhook] lead_created error:", err.message));
       }
 
       // Also insert into call_recordings for Black Box page
@@ -5412,6 +5554,29 @@ const retellWebhookHandler = async (req, res) => {
           }
         }
       }
+
+      // Send call_ended webhook
+      sendOutboundWebhook(agentRow.user_id, "call_ended", {
+        call_id: callId,
+        agent_id: agentId,
+        user_id: agentRow.user_id,
+        duration_seconds: durationSeconds,
+        recording_url: recordingUrl,
+        transcript: transcript?.substring(0, 5000) || null,
+        from_number: fromNumber,
+        to_number: normalizedToNumber,
+        disposition,
+        lead_id: newLead?.id || null,
+        customer_name: bestName,
+        customer_phone: bestPhone,
+        summary: bestSummary,
+        sentiment: bestSentiment,
+        service_address: analysisData.service_address || null,
+        issue_type: analysisData.issue_type || null,
+        call_outcome: analysisData.call_outcome || null,
+        appointment_booked: analysisData.appointment_booked === true,
+        ended_at: new Date().toISOString(),
+      }).catch(err => console.error("[webhook] call_ended error:", err.message));
     }
 
     if (eventType === "sms_received") {
@@ -5459,7 +5624,23 @@ const retellWebhookHandler = async (req, res) => {
         },
       });
 
-      if (fromNumber && /^(stop|unsubscribe|cancel|end)\b/i.test(body.trim())) {
+      // Check for opt-out keywords
+      const optOutKeywords = /^(stop|unsubscribe|cancel|end)\b/i;
+      const isOptOut = fromNumber && optOutKeywords.test(body.trim());
+
+      // Send sms_received webhook
+      sendOutboundWebhook(agentRow.user_id, "sms_received", {
+        user_id: agentRow.user_id,
+        agent_id: agentId,
+        from_number: fromNumber,
+        body,
+        direction: "inbound",
+        keyword_detected: isOptOut ? body.trim().split(/\s+/)[0].toLowerCase() : null,
+        is_opt_out: isOptOut,
+        received_at: new Date().toISOString(),
+      }).catch(err => console.error("[webhook] sms_received error:", err.message));
+
+      if (isOptOut) {
         await supabaseAdmin.from("sms_opt_outs").insert({
           user_id: agentRow.user_id,
           phone: fromNumber,
@@ -9294,6 +9475,22 @@ app.post(
           console.error("sendBookingAlert error:", err.message);
         }
       }
+
+      // Send appointment_booked webhook (API endpoint)
+      sendOutboundWebhook(uid, "appointment_booked", {
+        appointment_id: data?.id || null,
+        cal_booking_uid: calBookingUid || null,
+        user_id: uid,
+        customer_name: data?.customer_name || customer_name,
+        customer_phone: data?.customer_phone || customer_phone || null,
+        start_time: data?.start_time || startTime.toISOString(),
+        end_time: data?.end_time || endTime.toISOString(),
+        location: data?.location || location || null,
+        notes: data?.notes || notes || null,
+        source: "api",
+        eta_link: etaLink || null,
+        created_at: new Date().toISOString(),
+      }).catch(err => console.error("[webhook] appointment_booked (api) error:", err.message));
 
       return res.json({ 
         appointment: data,
