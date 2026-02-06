@@ -29,7 +29,19 @@ api.interceptors.request.use(async (config) => {
 export const deployAgent = (data) => api.post("/deploy-agent", data);
 export const getStats = () => api.get("/api/dashboard/stats");
 export const getEnhancedStats = () => api.get("/api/dashboard/stats-enhanced");
+export const getDashboardROI = () => api.get("/api/dashboard/roi");
+export const getHealthScore = () => api.get("/api/health-score");
 export const getAnalytics = (period = "7d") => api.get("/api/analytics", { params: { period } });
+
+// Admin Health & Ops
+export const getAdminHealthScores = (params) => api.get("/admin/health-scores", { params });
+export const recalculateHealthScore = (userId) => api.post(`/admin/health-scores/${userId}/recalculate`);
+export const getAdminChurnAlerts = (params) => api.get("/admin/churn-alerts", { params });
+export const resolveChurnAlert = (alertId, notes) => api.post(`/admin/churn-alerts/${alertId}/resolve`, { notes });
+export const getAdminOpsAlerts = (params) => api.get("/admin/ops-alerts", { params });
+export const acknowledgeOpsAlert = (alertId) => api.post(`/admin/ops-alerts/${alertId}/acknowledge`);
+export const getAdminErrorLogs = (params) => api.get("/admin/error-logs", { params });
+export const resolveErrorLog = (errorId, notes) => api.post(`/admin/error-logs/${errorId}/resolve`, { notes });
 export const getSettings = () => api.get("/api/settings");
 export const updateSettings = (data) => api.put("/api/settings", data);
 export const getLeads = (filters = {}) => api.get("/leads", { params: filters });
@@ -188,5 +200,13 @@ export const createWebhook = (data) => api.post("/api/webhooks", data);
 export const updateWebhook = (id, data) => api.put(`/api/webhooks/${id}`, data);
 export const deleteWebhook = (id) => api.delete(`/api/webhooks/${id}`);
 export const testWebhook = (id) => api.post(`/api/webhooks/${id}/test`);
+export const getWebhookDeliveries = (id, params) => api.get(`/api/webhooks/${id}/deliveries`, { params });
+export const retryWebhookDelivery = (webhookId, deliveryId) => api.post(`/api/webhooks/${webhookId}/deliveries/${deliveryId}/retry`);
+
+// Session Management
+export const getSessions = () => api.get("/api/sessions");
+export const revokeSession = (sessionId) => api.delete(`/api/sessions/${sessionId}`);
+export const revokeAllSessions = () => api.delete("/api/sessions");
+export const changePassword = (newPassword) => api.post("/api/change-password", { new_password: newPassword });
 
 export default api;

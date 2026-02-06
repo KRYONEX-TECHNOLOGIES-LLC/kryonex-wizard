@@ -23,10 +23,15 @@ import {
   FileSpreadsheet,
   Users,
   Database,
+  History,
+  RotateCcw,
+  CheckCircle,
+  XCircle,
+  Timer,
 } from "lucide-react";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook } from "../lib/api";
+import { getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook, getWebhookDeliveries, retryWebhookDelivery } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
 const AVAILABLE_EVENTS = [
@@ -138,6 +143,12 @@ export default function IntegrationsPage() {
   const [activeDocsTab, setActiveDocsTab] = useState("zapier");
   const [expandedPayload, setExpandedPayload] = useState(null);
   const [copiedPayload, setCopiedPayload] = useState(null);
+  
+  // Delivery history state
+  const [expandedDeliveries, setExpandedDeliveries] = useState(null);
+  const [deliveries, setDeliveries] = useState({});
+  const [deliveriesLoading, setDeliveriesLoading] = useState({});
+  const [retrying, setRetrying] = useState({});
 
   const loadWebhooks = useCallback(async () => {
     try {
@@ -303,6 +314,67 @@ export default function IntegrationsPage() {
       navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
       setCopiedPayload(eventId);
       setTimeout(() => setCopiedPayload(null), 2000);
+    }
+  };
+
+  // Load deliveries for a webhook
+  const loadDeliveries = async (webhookId) => {
+    if (deliveries[webhookId]) return; // Already loaded
+    
+    try {
+      setDeliveriesLoading(prev => ({ ...prev, [webhookId]: true }));
+      const res = await getWebhookDeliveries(webhookId, { limit: 20 });
+      setDeliveries(prev => ({ ...prev, [webhookId]: res.data?.deliveries || [] }));
+    } catch (err) {
+      console.error("Load deliveries error:", err);
+    } finally {
+      setDeliveriesLoading(prev => ({ ...prev, [webhookId]: false }));
+    }
+  };
+
+  // Toggle delivery history view
+  const toggleDeliveries = (webhookId) => {
+    if (expandedDeliveries === webhookId) {
+      setExpandedDeliveries(null);
+    } else {
+      setExpandedDeliveries(webhookId);
+      loadDeliveries(webhookId);
+    }
+  };
+
+  // Retry a failed delivery
+  const handleRetryDelivery = async (webhookId, deliveryId) => {
+    try {
+      setRetrying(prev => ({ ...prev, [deliveryId]: true }));
+      const res = await retryWebhookDelivery(webhookId, deliveryId);
+      
+      // Refresh deliveries
+      const deliveriesRes = await getWebhookDeliveries(webhookId, { limit: 20 });
+      setDeliveries(prev => ({ ...prev, [webhookId]: deliveriesRes.data?.deliveries || [] }));
+      
+      if (res.data?.success) {
+        // Optionally show success message
+      }
+    } catch (err) {
+      console.error("Retry error:", err);
+    } finally {
+      setRetrying(prev => ({ ...prev, [deliveryId]: false }));
+    }
+  };
+
+  // Get delivery status badge
+  const getDeliveryStatusBadge = (status) => {
+    switch (status) {
+      case "delivered":
+        return { icon: CheckCircle, color: "#10b981", label: "Delivered" };
+      case "failed":
+        return { icon: XCircle, color: "#f59e0b", label: "Failed" };
+      case "exhausted":
+        return { icon: XCircle, color: "#ef4444", label: "Exhausted" };
+      case "pending":
+        return { icon: Timer, color: "#6366f1", label: "Pending" };
+      default:
+        return { icon: Clock, color: "#94a3b8", label: status || "Unknown" };
     }
   };
 
@@ -571,6 +643,80 @@ export default function IntegrationsPage() {
                           <AlertTriangle size={16} />
                           Test failed: {testResult.error || `Status ${testResult.status_code}`}
                         </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Delivery History Toggle */}
+                  <button 
+                    className={`delivery-history-toggle ${expandedDeliveries === webhook.id ? "expanded" : ""}`}
+                    onClick={() => toggleDeliveries(webhook.id)}
+                  >
+                    <History size={16} />
+                    <span>Delivery History</span>
+                    {expandedDeliveries === webhook.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </button>
+
+                  {/* Delivery History Panel */}
+                  {expandedDeliveries === webhook.id && (
+                    <div className="delivery-history-panel">
+                      {deliveriesLoading[webhook.id] ? (
+                        <div className="loading-state">
+                          <RefreshCw size={18} className="spinning" />
+                          <span>Loading deliveries...</span>
+                        </div>
+                      ) : (deliveries[webhook.id]?.length || 0) === 0 ? (
+                        <div className="empty-state">
+                          <span>No deliveries yet</span>
+                        </div>
+                      ) : (
+                        <div className="deliveries-list">
+                          {deliveries[webhook.id].map(delivery => {
+                            const statusBadge = getDeliveryStatusBadge(delivery.delivery_status);
+                            const StatusIcon = statusBadge.icon;
+                            const canRetry = delivery.delivery_status === "failed" || delivery.delivery_status === "exhausted";
+                            
+                            return (
+                              <div key={delivery.id} className={`delivery-item ${delivery.delivery_status}`}>
+                                <div className="delivery-info">
+                                  <div className="delivery-status" style={{ color: statusBadge.color }}>
+                                    <StatusIcon size={14} />
+                                    <span>{statusBadge.label}</span>
+                                  </div>
+                                  <div className="delivery-event">{delivery.event_type}</div>
+                                  <div className="delivery-time">{formatDate(delivery.created_at)}</div>
+                                </div>
+                                <div className="delivery-details">
+                                  {delivery.status_code && (
+                                    <span className="status-code">HTTP {delivery.status_code}</span>
+                                  )}
+                                  {delivery.retry_count > 0 && (
+                                    <span className="retry-count">{delivery.retry_count} retries</span>
+                                  )}
+                                  {delivery.last_error && (
+                                    <span className="error-preview" title={delivery.last_error}>
+                                      {delivery.last_error.substring(0, 50)}...
+                                    </span>
+                                  )}
+                                </div>
+                                {canRetry && (
+                                  <button
+                                    className="retry-btn"
+                                    onClick={() => handleRetryDelivery(webhook.id, delivery.id)}
+                                    disabled={retrying[delivery.id]}
+                                    title="Retry delivery"
+                                  >
+                                    {retrying[delivery.id] ? (
+                                      <RefreshCw size={14} className="spinning" />
+                                    ) : (
+                                      <RotateCcw size={14} />
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
                   )}

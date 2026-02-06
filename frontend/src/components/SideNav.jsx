@@ -250,6 +250,9 @@ export default function SideNav({
                 <Link to="/admin/referrals" className="side-nav-link" onClick={handleLinkClick}>
                   Referral Control
                 </Link>
+                <Link to="/admin/ops" className="side-nav-link" onClick={handleLinkClick}>
+                  Ops Dashboard
+                </Link>
               </div>
             ) : null}
           </div>

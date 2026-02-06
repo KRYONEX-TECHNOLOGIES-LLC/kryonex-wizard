@@ -15,6 +15,8 @@ import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
 import UpsellModal from "../components/UpsellModal.jsx";
+import ROIDashboard from "../components/ROIDashboard.jsx";
+import SmartUpgradePrompt from "../components/SmartUpgradePrompt.jsx";
 
 // Format seconds to MM:SS
 const formatDuration = (seconds) => {
@@ -397,6 +399,21 @@ export default function DashboardPage() {
               </button>
             </div>
           )}
+          
+          {/* Smart Upgrade Prompts */}
+          <SmartUpgradePrompt 
+            usage={{ percent: Math.max(callPercent, smsPercent) }}
+            stats={{
+              totalCalls: stats.total_calls || 0,
+              bookingRate: stats.booking_rate || 0,
+              appointments: stats.appointments_booked || 0,
+              calendarConnected: calConnected,
+              integrationsEnabled: false, // TODO: Check if webhooks configured
+            }}
+          />
+          
+          {/* ROI Dashboard - show after some activity */}
+          {(stats.total_calls || 0) >= 5 && <ROIDashboard />}
           
           <div className="top-bar glass-panel">
             <div className="status-indicator">

@@ -252,6 +252,45 @@ app.use((req, res, next) => {
   res.setHeader("X-Request-Id", req.requestId);
   next();
 });
+
+// Latency tracking middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", async () => {
+    const duration = Date.now() - start;
+    const isSlow = duration > 2000; // 2 seconds threshold
+    
+    // Log slow requests to console
+    if (isSlow) {
+      console.warn(`[SLOW] ${req.method} ${req.path} took ${duration}ms`);
+    }
+    
+    // Store latency for significant endpoints (skip static assets)
+    const shouldTrack = !req.path.startsWith("/assets") && 
+                        !req.path.startsWith("/static") && 
+                        !req.path.endsWith(".js") && 
+                        !req.path.endsWith(".css") &&
+                        !req.path.endsWith(".ico");
+    
+    if (shouldTrack && (isSlow || Math.random() < 0.01)) { // Log all slow + 1% sample
+      try {
+        await supabaseAdmin.from("latency_logs").insert({
+          endpoint: req.path,
+          method: req.method,
+          duration_ms: duration,
+          status_code: res.statusCode,
+          user_id: req.user?.id || null,
+          request_id: req.requestId,
+          is_slow: isSlow,
+        });
+      } catch (err) {
+        // Silent fail - don't break request for latency logging
+      }
+    }
+  });
+  next();
+});
+
 app.use(morgan("combined"));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
@@ -394,6 +433,490 @@ const lookupUserIdByCustomerId = async (customerId) => {
     .maybeSingle();
   return data?.user_id || null;
 };
+
+// =============================================================================
+// CENTRALIZED ERROR TRACKING
+// =============================================================================
+
+/**
+ * Track errors in the error_logs table for observability
+ */
+const trackError = async ({ error, context, userId, severity, requestId, endpoint, method, req }) => {
+  try {
+    await supabaseAdmin.from("error_logs").insert({
+      error_type: error?.name || "Error",
+      error_message: error?.message || String(error),
+      stack_trace: error?.stack?.substring(0, 5000) || null,
+      context: context || {},
+      user_id: userId || null,
+      severity: severity || "medium",
+      request_id: requestId || null,
+      endpoint: endpoint || null,
+      method: method || null,
+      ip_address: req?.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() || req?.socket?.remoteAddress || null,
+      user_agent: req?.headers?.["user-agent"] || null,
+    });
+  } catch (err) {
+    console.error("[trackError] Failed to log error:", err.message);
+  }
+};
+
+// Sensitive actions that require extra logging
+const SENSITIVE_ACTIONS = [
+  "password_change", "email_change", "phone_change",
+  "api_key_created", "webhook_created", "admin_impersonation",
+  "payout_approved", "subscription_cancelled", "data_export",
+  "user_deleted", "role_changed", "impersonation_started"
+];
+
+// =============================================================================
+// OPS ALERTING SYSTEM
+// =============================================================================
+
+/**
+ * Create operational alert for system issues
+ */
+const createOpsAlert = async ({ alertType, severity, title, message, metadata, source }) => {
+  try {
+    await supabaseAdmin.from("ops_alerts").insert({
+      alert_type: alertType,
+      severity: severity || "warning",
+      title,
+      message,
+      metadata: metadata || {},
+      source: source || "system",
+    });
+    
+    // Send email for critical alerts
+    if (severity === "critical" && resend && ADMIN_EMAIL) {
+      try {
+        await resend.emails.send({
+          from: "Kryonex Ops <ops@kryonex.com>",
+          to: ADMIN_EMAIL,
+          subject: `🚨 CRITICAL: ${title}`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #dc2626;">Critical Alert</h2>
+              <p><strong>Type:</strong> ${alertType}</p>
+              <p><strong>Message:</strong> ${message}</p>
+              <p><strong>Source:</strong> ${source || "system"}</p>
+              <p><strong>Time:</strong> ${new Date().toISOString()}</p>
+              ${metadata ? `<pre style="background: #f3f4f6; padding: 1rem; border-radius: 8px;">${JSON.stringify(metadata, null, 2)}</pre>` : ""}
+              <p style="color: #6b7280; font-size: 12px;">This is an automated alert from Kryonex Platform.</p>
+            </div>
+          `,
+        });
+        console.log("[ops-alert] Critical alert email sent:", title);
+      } catch (emailErr) {
+        console.error("[ops-alert] Failed to send alert email:", emailErr.message);
+      }
+    }
+    
+    console.log(`[ops-alert] ${severity.toUpperCase()}: ${title}`);
+  } catch (err) {
+    console.error("[createOpsAlert] error:", err.message);
+  }
+};
+
+/**
+ * Check webhook health and create alert if failure rate is high
+ */
+const checkWebhookHealth = async () => {
+  try {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    
+    const { data: deliveries } = await supabaseAdmin
+      .from("webhook_deliveries")
+      .select("delivery_status")
+      .gte("created_at", oneHourAgo);
+    
+    if (!deliveries || deliveries.length < 10) return; // Not enough data
+    
+    const failed = deliveries.filter(d => d.delivery_status === "failed" || d.delivery_status === "exhausted").length;
+    const failureRate = (failed / deliveries.length) * 100;
+    
+    if (failureRate > 50) {
+      await createOpsAlert({
+        alertType: "webhook_failure_rate",
+        severity: "critical",
+        title: "High Webhook Failure Rate",
+        message: `${failureRate.toFixed(1)}% of webhooks failed in the last hour (${failed}/${deliveries.length})`,
+        metadata: { failure_rate: failureRate, failed_count: failed, total_count: deliveries.length },
+        source: "webhook",
+      });
+    }
+  } catch (err) {
+    console.error("[checkWebhookHealth] error:", err.message);
+  }
+};
+
+// Run webhook health check every 15 minutes
+setInterval(checkWebhookHealth, 15 * 60 * 1000);
+
+// =============================================================================
+// CUSTOMER HEALTH SCORING SYSTEM
+// =============================================================================
+
+/**
+ * Calculate customer health score based on multiple factors
+ * Score: 0-100, Grade: A-F, Churn Risk: low/medium/high/critical
+ */
+const calculateHealthScore = async (userId) => {
+  try {
+    // Get user data
+    const [
+      { data: profile },
+      { data: subscription },
+      { data: usage },
+      { data: agents },
+      { data: recentLeads },
+      { data: lastAudit },
+      { data: webhooks },
+    ] = await Promise.all([
+      supabaseAdmin.from("profiles").select("*").eq("user_id", userId).maybeSingle(),
+      supabaseAdmin.from("subscriptions").select("*").eq("user_id", userId).maybeSingle(),
+      supabaseAdmin.from("usage_limits").select("*").eq("user_id", userId).maybeSingle(),
+      supabaseAdmin.from("agents").select("id, created_at").eq("user_id", userId),
+      supabaseAdmin.from("leads").select("id, created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(50),
+      supabaseAdmin.from("audit_logs").select("created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(1),
+      supabaseAdmin.from("webhook_configs").select("id").eq("user_id", userId).eq("is_active", true),
+    ]);
+    
+    const factors = {};
+    
+    // 1. USAGE SCORE (0-25 points)
+    let usageScore = 0;
+    if (usage) {
+      const usedMinutes = Math.ceil((usage.call_used_seconds || 0) / 60);
+      const capMinutes = Math.ceil((usage.call_cap_seconds || 0) / 60);
+      const usagePercent = capMinutes > 0 ? (usedMinutes / capMinutes) * 100 : 0;
+      
+      // Ideal usage is 50-80%
+      if (usagePercent >= 50 && usagePercent <= 80) {
+        usageScore = 25;
+      } else if (usagePercent >= 30 && usagePercent < 50) {
+        usageScore = 20;
+      } else if (usagePercent >= 10 && usagePercent < 30) {
+        usageScore = 15;
+      } else if (usagePercent > 80) {
+        usageScore = 22; // High usage is good but might churn if capped
+      } else {
+        usageScore = 5; // Very low usage is a churn risk
+      }
+      factors.usage_percent = usagePercent;
+    }
+    factors.usage_score = usageScore;
+    
+    // 2. ENGAGEMENT SCORE (0-25 points)
+    let engagementScore = 0;
+    const now = new Date();
+    
+    // Last login/activity
+    const lastActivityDate = lastAudit?.[0]?.created_at ? new Date(lastAudit[0].created_at) : null;
+    if (lastActivityDate) {
+      const daysSinceActivity = (now - lastActivityDate) / (1000 * 60 * 60 * 24);
+      if (daysSinceActivity <= 1) engagementScore += 15;
+      else if (daysSinceActivity <= 3) engagementScore += 12;
+      else if (daysSinceActivity <= 7) engagementScore += 8;
+      else if (daysSinceActivity <= 14) engagementScore += 4;
+      else engagementScore += 0;
+      factors.days_since_activity = Math.floor(daysSinceActivity);
+    }
+    
+    // Recent leads (activity indicator)
+    const leadsLast7Days = (recentLeads || []).filter(l => {
+      const leadDate = new Date(l.created_at);
+      return (now - leadDate) / (1000 * 60 * 60 * 24) <= 7;
+    }).length;
+    if (leadsLast7Days >= 10) engagementScore += 10;
+    else if (leadsLast7Days >= 5) engagementScore += 7;
+    else if (leadsLast7Days >= 1) engagementScore += 4;
+    factors.leads_last_7_days = leadsLast7Days;
+    factors.engagement_score = engagementScore;
+    
+    // 3. FEATURE ADOPTION SCORE (0-25 points)
+    let featureAdoptionScore = 0;
+    
+    // Has active agent
+    if (agents && agents.length > 0) featureAdoptionScore += 10;
+    
+    // Has webhooks/integrations
+    if (webhooks && webhooks.length > 0) featureAdoptionScore += 5;
+    
+    // Has calendar connected (check profile)
+    if (profile?.cal_api_key || profile?.cal_event_type_id) featureAdoptionScore += 5;
+    
+    // Has SMS enabled (check usage)
+    if (usage?.sms_cap > 0) featureAdoptionScore += 3;
+    
+    // Has personal phone for notifications
+    if (profile?.user_personal_phone) featureAdoptionScore += 2;
+    
+    factors.has_agent = !!(agents && agents.length > 0);
+    factors.has_webhooks = !!(webhooks && webhooks.length > 0);
+    factors.has_calendar = !!(profile?.cal_api_key);
+    factors.feature_adoption_score = featureAdoptionScore;
+    
+    // 4. PAYMENT SCORE (0-25 points)
+    let paymentScore = 0;
+    if (subscription) {
+      const status = subscription.status;
+      if (status === "active") paymentScore = 25;
+      else if (status === "trialing") paymentScore = 20;
+      else if (status === "past_due") paymentScore = 5;
+      else if (status === "canceled" || status === "cancelled") paymentScore = 0;
+      else paymentScore = 15;
+      factors.subscription_status = status;
+    } else {
+      paymentScore = 10; // No subscription data
+    }
+    factors.payment_score = paymentScore;
+    
+    // TOTAL SCORE
+    const totalScore = usageScore + engagementScore + featureAdoptionScore + paymentScore;
+    
+    // Calculate grade
+    let grade;
+    if (totalScore >= 90) grade = "A";
+    else if (totalScore >= 80) grade = "B";
+    else if (totalScore >= 70) grade = "C";
+    else if (totalScore >= 60) grade = "D";
+    else grade = "F";
+    
+    // Calculate churn risk
+    let churnRisk;
+    if (totalScore >= 80) churnRisk = "low";
+    else if (totalScore >= 60) churnRisk = "medium";
+    else if (totalScore >= 40) churnRisk = "high";
+    else churnRisk = "critical";
+    
+    // Upsert health score
+    const healthData = {
+      user_id: userId,
+      score: totalScore,
+      grade,
+      usage_score: usageScore,
+      engagement_score: engagementScore,
+      feature_adoption_score: featureAdoptionScore,
+      payment_score: paymentScore,
+      churn_risk: churnRisk,
+      factors,
+      last_activity_at: lastActivityDate?.toISOString() || null,
+      calculated_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    
+    await supabaseAdmin
+      .from("customer_health_scores")
+      .upsert(healthData, { onConflict: "user_id" });
+    
+    // Store history
+    await supabaseAdmin.from("customer_health_history").insert({
+      user_id: userId,
+      score: totalScore,
+      grade,
+      churn_risk: churnRisk,
+      factors,
+    });
+    
+    // Get previous score for churn evaluation
+    const { data: previousHistory } = await supabaseAdmin
+      .from("customer_health_history")
+      .select("score")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .range(1, 1); // Second most recent (skip current)
+    
+    const previousScore = previousHistory?.[0]?.score || null;
+    
+    // Evaluate churn risk and trigger alerts if needed
+    await evaluateChurnRisk(userId, totalScore, previousScore);
+    
+    return healthData;
+  } catch (err) {
+    console.error("[calculateHealthScore] error:", err.message);
+    return null;
+  }
+};
+
+/**
+ * Recalculate health scores for all active users
+ */
+const recalculateAllHealthScores = async () => {
+  try {
+    console.log("[health-scores] Starting recalculation for all users...");
+    
+    // Get all users with active subscriptions or recent activity
+    const { data: users } = await supabaseAdmin
+      .from("profiles")
+      .select("user_id")
+      .limit(1000);
+    
+    if (!users || users.length === 0) return;
+    
+    let processed = 0;
+    for (const user of users) {
+      await calculateHealthScore(user.user_id);
+      processed++;
+      
+      // Rate limit: 10 per second
+      if (processed % 10 === 0) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    
+    console.log(`[health-scores] Recalculated ${processed} health scores`);
+  } catch (err) {
+    console.error("[recalculateAllHealthScores] error:", err.message);
+  }
+};
+
+// Schedule health score recalculation (every 6 hours)
+setInterval(recalculateAllHealthScores, 6 * 60 * 60 * 1000);
+
+// =============================================================================
+// CHURN PREVENTION SYSTEM
+// =============================================================================
+
+/**
+ * Evaluate churn risk and trigger alerts/emails when needed
+ */
+const evaluateChurnRisk = async (userId, currentScore, previousScore) => {
+  try {
+    // Check if score dropped significantly
+    const scoreDrop = (previousScore || 100) - currentScore;
+    
+    // Alert if score dropped by 15+ points
+    if (scoreDrop >= 15 && previousScore) {
+      await supabaseAdmin.from("churn_alerts").insert({
+        user_id: userId,
+        alert_type: "score_drop",
+        severity: scoreDrop >= 30 ? "critical" : scoreDrop >= 20 ? "high" : "medium",
+        title: `Health score dropped ${scoreDrop} points`,
+        message: `Customer health score dropped from ${previousScore} to ${currentScore}`,
+        score_before: previousScore,
+        score_after: currentScore,
+        metadata: { drop_amount: scoreDrop },
+      });
+    }
+    
+    // Send proactive email if score drops below 40 (critical churn risk)
+    if (currentScore < 40 && (!previousScore || previousScore >= 40)) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("email, business_name")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      if (profile?.email && resend) {
+        try {
+          await resend.emails.send({
+            from: "Kryonex Team <support@kryonex.com>",
+            to: profile.email,
+            subject: "We miss you! Here's how to get back on track",
+            html: `
+              <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #0f172a;">Hey${profile.business_name ? ` ${profile.business_name}` : ""}!</h2>
+                
+                <p style="color: #475569; line-height: 1.6;">
+                  We noticed your AI agent hasn't been as busy lately, and we want to make sure everything's working great for you.
+                </p>
+                
+                <p style="color: #475569; line-height: 1.6;">
+                  Here are a few quick wins to get the most out of Kryonex:
+                </p>
+                
+                <ul style="color: #475569; line-height: 2;">
+                  <li>Make sure your phone number is forwarding to your agent</li>
+                  <li>Update your business hours if they've changed</li>
+                  <li>Connect your calendar for automatic appointment syncing</li>
+                </ul>
+                
+                <a href="${FRONTEND_URL}/dashboard" style="display: inline-block; padding: 12px 24px; background: #0f172a; color: white; text-decoration: none; border-radius: 8px; margin-top: 16px;">
+                  Check Your Dashboard
+                </a>
+                
+                <p style="color: #475569; margin-top: 24px;">
+                  Need help? Just reply to this email and our team will jump in.
+                </p>
+                
+                <p style="color: #94a3b8; font-size: 12px; margin-top: 32px;">
+                  - The Kryonex Team
+                </p>
+              </div>
+            `,
+          });
+          
+          // Mark email as sent
+          await supabaseAdmin
+            .from("churn_alerts")
+            .update({ email_sent: true, email_sent_at: new Date().toISOString() })
+            .eq("user_id", userId)
+            .eq("alert_type", "score_drop")
+            .is("email_sent", false)
+            .order("created_at", { ascending: false })
+            .limit(1);
+            
+          console.log("[churn-prevention] Sent proactive email to:", profile.email);
+        } catch (emailErr) {
+          console.error("[churn-prevention] Email error:", emailErr.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[evaluateChurnRisk] error:", err.message);
+  }
+};
+
+/**
+ * Check for inactive users and create alerts
+ */
+const checkInactiveUsers = async () => {
+  try {
+    console.log("[churn-prevention] Checking for inactive users...");
+    
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    
+    // Get users with health scores who haven't been active
+    const { data: inactiveUsers } = await supabaseAdmin
+      .from("customer_health_scores")
+      .select("user_id, last_activity_at, score")
+      .lt("last_activity_at", sevenDaysAgo)
+      .gt("score", 0); // Exclude already churned
+    
+    if (!inactiveUsers || inactiveUsers.length === 0) return;
+    
+    for (const user of inactiveUsers) {
+      // Check if we already alerted recently
+      const { data: existingAlert } = await supabaseAdmin
+        .from("churn_alerts")
+        .select("id")
+        .eq("user_id", user.user_id)
+        .eq("alert_type", "inactivity")
+        .gte("created_at", sevenDaysAgo)
+        .maybeSingle();
+      
+      if (existingAlert) continue; // Already alerted
+      
+      await supabaseAdmin.from("churn_alerts").insert({
+        user_id: user.user_id,
+        alert_type: "inactivity",
+        severity: "medium",
+        title: "No activity for 7+ days",
+        message: "User has not logged in or made calls for over a week",
+        score_after: user.score,
+        metadata: { last_activity_at: user.last_activity_at },
+      });
+    }
+    
+    console.log(`[churn-prevention] Created ${inactiveUsers.length} inactivity alerts`);
+  } catch (err) {
+    console.error("[checkInactiveUsers] error:", err.message);
+  }
+};
+
+// Run inactivity check daily
+setInterval(checkInactiveUsers, 24 * 60 * 60 * 1000);
 
 // =============================================================================
 // OPS INFRASTRUCTURE HELPERS
@@ -679,6 +1202,129 @@ const evaluateUsageThresholds = async (userId, usage) => {
 
 // =============================================================================
 // END OPS INFRASTRUCTURE HELPERS
+// =============================================================================
+
+// =============================================================================
+// SESSION SECURITY SYSTEM
+// =============================================================================
+
+const MAX_SESSIONS_PER_USER = 5;
+
+/**
+ * Create or update session tracking for a user
+ */
+const trackSession = async (userId, tokenHash, req) => {
+  try {
+    // Determine device type from user agent
+    const userAgent = req?.headers?.["user-agent"] || "";
+    let deviceType = "desktop";
+    if (/mobile|android|iphone|ipad/i.test(userAgent)) {
+      deviceType = /ipad|tablet/i.test(userAgent) ? "tablet" : "mobile";
+    }
+    
+    const ipAddress = req?.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() || 
+                      req?.socket?.remoteAddress || null;
+    
+    // Check for existing session with this token
+    const { data: existing } = await supabaseAdmin
+      .from("active_sessions")
+      .select("id")
+      .eq("token_hash", tokenHash)
+      .is("revoked_at", null)
+      .maybeSingle();
+    
+    if (existing) {
+      // Update last active time
+      await supabaseAdmin
+        .from("active_sessions")
+        .update({ last_active_at: new Date().toISOString() })
+        .eq("id", existing.id);
+      return;
+    }
+    
+    // Count active sessions for this user
+    const { data: activeSessions } = await supabaseAdmin
+      .from("active_sessions")
+      .select("id, created_at")
+      .eq("user_id", userId)
+      .is("revoked_at", null)
+      .order("created_at", { ascending: true });
+    
+    // If at limit, revoke oldest session
+    if ((activeSessions?.length || 0) >= MAX_SESSIONS_PER_USER) {
+      const oldestSession = activeSessions[0];
+      await supabaseAdmin
+        .from("active_sessions")
+        .update({ 
+          revoked_at: new Date().toISOString(), 
+          revoked_reason: "session_limit_reached" 
+        })
+        .eq("id", oldestSession.id);
+    }
+    
+    // Create new session record
+    await supabaseAdmin.from("active_sessions").insert({
+      user_id: userId,
+      token_hash: tokenHash,
+      ip_address: ipAddress,
+      user_agent: userAgent.substring(0, 500),
+      device_type: deviceType,
+    });
+  } catch (err) {
+    console.error("[trackSession] error:", err.message);
+  }
+};
+
+/**
+ * Check if a session is revoked
+ */
+const isSessionRevoked = async (tokenHash) => {
+  try {
+    const { data: session } = await supabaseAdmin
+      .from("active_sessions")
+      .select("revoked_at")
+      .eq("token_hash", tokenHash)
+      .maybeSingle();
+    
+    return session?.revoked_at != null;
+  } catch (err) {
+    return false; // Allow on error (fail open for availability)
+  }
+};
+
+/**
+ * Revoke all sessions for a user (e.g., on password change)
+ */
+const revokeAllUserSessions = async (userId, reason = "password_changed") => {
+  try {
+    const { data: updated } = await supabaseAdmin
+      .from("active_sessions")
+      .update({ 
+        revoked_at: new Date().toISOString(), 
+        revoked_reason: reason 
+      })
+      .eq("user_id", userId)
+      .is("revoked_at", null)
+      .select("id");
+    
+    console.log(`[session-security] Revoked ${updated?.length || 0} sessions for user ${userId}`);
+    return updated?.length || 0;
+  } catch (err) {
+    console.error("[revokeAllUserSessions] error:", err.message);
+    return 0;
+  }
+};
+
+/**
+ * Generate hash of token for storage (we don't store raw tokens)
+ */
+const hashToken = (token) => {
+  if (!token) return null;
+  return crypto.createHash("sha256").update(token).digest("hex").substring(0, 64);
+};
+
+// =============================================================================
+// END SESSION SECURITY SYSTEM
 // =============================================================================
 
 // =============================================================================
@@ -3111,7 +3757,20 @@ const requireAuth = async (req, res, next) => {
       return res.status(401).json({ error: "Invalid auth token" });
     }
 
+    // Session security: check if token is revoked
+    const tokenHash = hashToken(token);
+    if (tokenHash) {
+      const revoked = await isSessionRevoked(tokenHash);
+      if (revoked) {
+        return res.status(401).json({ error: "Session has been revoked. Please log in again." });
+      }
+      
+      // Track session activity (async, don't block request)
+      trackSession(data.user.id, tokenHash, req).catch(() => {});
+    }
+
     req.user = data.user;
+    req.tokenHash = tokenHash; // Store for potential revocation
     return next();
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -6216,6 +6875,468 @@ app.get("/api/dashboard/stats-enhanced", requireAuth, resolveEffectiveUser, asyn
   }
 });
 
+// ROI Dashboard - calculate value generated for customer
+app.get(
+  "/api/dashboard/roi",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "dashboard-roi", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      
+      // Get profile and subscription
+      const [
+        { data: profile },
+        { data: subscription },
+        { data: usage },
+        { data: leads },
+        { data: appointments },
+      ] = await Promise.all([
+        supabaseAdmin.from("profiles").select("plan_type, business_name, created_at").eq("user_id", uid).maybeSingle(),
+        supabaseAdmin.from("subscriptions").select("plan_type, status").eq("user_id", uid).maybeSingle(),
+        supabaseAdmin.from("usage_limits").select("call_used_seconds, sms_used").eq("user_id", uid).maybeSingle(),
+        supabaseAdmin.from("leads").select("id, created_at, status, call_duration_seconds").eq("user_id", uid),
+        supabaseAdmin.from("appointments").select("id, status").eq("user_id", uid),
+      ]);
+      
+      const allLeads = leads || [];
+      const allAppointments = appointments || [];
+      
+      // Calculate metrics
+      const totalCalls = allLeads.length;
+      const totalDurationSeconds = allLeads.reduce((sum, l) => sum + (l.call_duration_seconds || 0), 0);
+      const avgCallDuration = totalCalls > 0 ? totalDurationSeconds / totalCalls : 0;
+      
+      const bookedAppointments = allAppointments.filter(a => 
+        a.status === "booked" || a.status === "confirmed"
+      ).length;
+      
+      // ROI Calculations
+      const avgTicketValue = 450; // Average service ticket
+      const receptionistMonthlyCost = 3500; // Full-time receptionist salary
+      const hoursSaved = totalDurationSeconds / 3600;
+      const revenueGenerated = bookedAppointments * avgTicketValue;
+      
+      // Get plan cost (rough estimates)
+      const planCosts = { starter: 99, core: 199, pro: 349 };
+      const planType = subscription?.plan_type || profile?.plan_type || "core";
+      const monthlyCost = planCosts[planType] || 199;
+      
+      // Calculate ROI
+      const laborSavings = (hoursSaved / 160) * receptionistMonthlyCost; // Pro-rated receptionist salary
+      const totalValue = revenueGenerated + laborSavings;
+      const roi = monthlyCost > 0 ? ((totalValue - monthlyCost) / monthlyCost) * 100 : 0;
+      
+      // Time-based metrics
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const leadsLast30Days = allLeads.filter(l => new Date(l.created_at) >= thirtyDaysAgo).length;
+      const appointmentsLast30Days = allAppointments.filter(a => 
+        new Date(a.created_at || 0) >= thirtyDaysAgo
+      ).length;
+      
+      return res.json({
+        roi: {
+          total_calls: totalCalls,
+          calls_last_30_days: leadsLast30Days,
+          booked_appointments: bookedAppointments,
+          appointments_last_30_days: appointmentsLast30Days,
+          hours_saved: Math.round(hoursSaved * 10) / 10,
+          avg_call_duration_seconds: Math.round(avgCallDuration),
+          revenue_generated: revenueGenerated,
+          labor_savings: Math.round(laborSavings),
+          total_value: Math.round(totalValue),
+          monthly_cost: monthlyCost,
+          roi_percent: Math.round(roi),
+          avg_ticket_value: avgTicketValue,
+          receptionist_monthly_cost: receptionistMonthlyCost,
+        },
+        plan_type: planType,
+        subscription_status: subscription?.status || "none",
+      });
+    } catch (err) {
+      console.error("[dashboard-roi] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Health Score - get user's customer health score
+app.get(
+  "/api/health-score",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "health-score", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      
+      // Get existing health score
+      let { data: healthScore } = await supabaseAdmin
+        .from("customer_health_scores")
+        .select("*")
+        .eq("user_id", uid)
+        .maybeSingle();
+      
+      // Calculate if doesn't exist or is stale (> 1 hour old)
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      if (!healthScore || new Date(healthScore.calculated_at) < oneHourAgo) {
+        healthScore = await calculateHealthScore(uid);
+      }
+      
+      if (!healthScore) {
+        return res.status(404).json({ error: "Health score not available" });
+      }
+      
+      return res.json({ health_score: healthScore });
+    } catch (err) {
+      console.error("[health-score] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Get all health scores
+app.get(
+  "/admin/health-scores",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-health-scores", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { churn_risk, grade, limit = 100, offset = 0 } = req.query;
+      
+      let query = supabaseAdmin
+        .from("customer_health_scores")
+        .select("*, profiles!inner(email, business_name)")
+        .order("score", { ascending: true });
+      
+      if (churn_risk) {
+        query = query.eq("churn_risk", churn_risk);
+      }
+      if (grade) {
+        query = query.eq("grade", grade);
+      }
+      
+      query = query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+      
+      const { data: scores, error } = await query;
+      
+      if (error) throw error;
+      
+      // Get summary stats
+      const { data: summary } = await supabaseAdmin
+        .from("customer_health_scores")
+        .select("churn_risk, grade");
+      
+      const stats = {
+        total: summary?.length || 0,
+        by_risk: {
+          critical: summary?.filter(s => s.churn_risk === "critical").length || 0,
+          high: summary?.filter(s => s.churn_risk === "high").length || 0,
+          medium: summary?.filter(s => s.churn_risk === "medium").length || 0,
+          low: summary?.filter(s => s.churn_risk === "low").length || 0,
+        },
+        by_grade: {
+          A: summary?.filter(s => s.grade === "A").length || 0,
+          B: summary?.filter(s => s.grade === "B").length || 0,
+          C: summary?.filter(s => s.grade === "C").length || 0,
+          D: summary?.filter(s => s.grade === "D").length || 0,
+          F: summary?.filter(s => s.grade === "F").length || 0,
+        },
+      };
+      
+      return res.json({ health_scores: scores || [], stats });
+    } catch (err) {
+      console.error("[admin/health-scores] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Recalculate health score for a user
+app.post(
+  "/admin/health-scores/:userId/recalculate",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-recalc-health", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const healthScore = await calculateHealthScore(userId);
+      
+      if (!healthScore) {
+        return res.status(500).json({ error: "Failed to calculate health score" });
+      }
+      
+      await auditLog({
+        userId,
+        actorId: req.user.id,
+        action: "health_score_recalculated",
+        entity: "health_score",
+        entityId: userId,
+        req,
+      });
+      
+      return res.json({ health_score: healthScore });
+    } catch (err) {
+      console.error("[admin/health-recalc] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Get churn alerts
+app.get(
+  "/admin/churn-alerts",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-churn-alerts", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { resolved, severity, limit = 100, offset = 0 } = req.query;
+      
+      let query = supabaseAdmin
+        .from("churn_alerts")
+        .select("*, profiles!inner(email, business_name)")
+        .order("created_at", { ascending: false });
+      
+      if (resolved === "true") {
+        query = query.eq("resolved", true);
+      } else if (resolved === "false") {
+        query = query.eq("resolved", false);
+      }
+      
+      if (severity) {
+        query = query.eq("severity", severity);
+      }
+      
+      query = query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+      
+      const { data: alerts, error } = await query;
+      
+      if (error) throw error;
+      
+      // Get unresolved count by severity
+      const { data: unresolvedCounts } = await supabaseAdmin
+        .from("churn_alerts")
+        .select("severity")
+        .eq("resolved", false);
+      
+      const stats = {
+        unresolved_total: unresolvedCounts?.length || 0,
+        by_severity: {
+          critical: unresolvedCounts?.filter(a => a.severity === "critical").length || 0,
+          high: unresolvedCounts?.filter(a => a.severity === "high").length || 0,
+          medium: unresolvedCounts?.filter(a => a.severity === "medium").length || 0,
+          low: unresolvedCounts?.filter(a => a.severity === "low").length || 0,
+        },
+      };
+      
+      return res.json({ alerts: alerts || [], stats });
+    } catch (err) {
+      console.error("[admin/churn-alerts] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Acknowledge/resolve churn alert
+app.post(
+  "/admin/churn-alerts/:alertId/resolve",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-resolve-alert", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { alertId } = req.params;
+      const { notes } = req.body;
+      
+      const { data: updated, error } = await supabaseAdmin
+        .from("churn_alerts")
+        .update({
+          resolved: true,
+          resolved_at: new Date().toISOString(),
+          acknowledged: true,
+          acknowledged_by: req.user.id,
+          acknowledged_at: new Date().toISOString(),
+        })
+        .eq("id", alertId)
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      await auditLog({
+        userId: updated.user_id,
+        actorId: req.user.id,
+        action: "churn_alert_resolved",
+        entity: "churn_alert",
+        entityId: alertId,
+        req,
+        metadata: { notes },
+      });
+      
+      return res.json({ alert: updated });
+    } catch (err) {
+      console.error("[admin/resolve-alert] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Get ops alerts
+app.get(
+  "/admin/ops-alerts",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-ops-alerts", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { acknowledged, severity, limit = 100, offset = 0 } = req.query;
+      
+      let query = supabaseAdmin
+        .from("ops_alerts")
+        .select("*")
+        .order("created_at", { ascending: false });
+      
+      if (acknowledged === "true") {
+        query = query.eq("acknowledged", true);
+      } else if (acknowledged === "false") {
+        query = query.eq("acknowledged", false);
+      }
+      
+      if (severity) {
+        query = query.eq("severity", severity);
+      }
+      
+      query = query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+      
+      const { data: alerts, error } = await query;
+      
+      if (error) throw error;
+      
+      return res.json({ alerts: alerts || [] });
+    } catch (err) {
+      console.error("[admin/ops-alerts] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Acknowledge ops alert
+app.post(
+  "/admin/ops-alerts/:alertId/acknowledge",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-ack-ops", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { alertId } = req.params;
+      
+      const { data: updated, error } = await supabaseAdmin
+        .from("ops_alerts")
+        .update({
+          acknowledged: true,
+          acknowledged_by: req.user.id,
+          acknowledged_at: new Date().toISOString(),
+        })
+        .eq("id", alertId)
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      return res.json({ alert: updated });
+    } catch (err) {
+      console.error("[admin/ack-ops] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Get error logs
+app.get(
+  "/admin/error-logs",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-error-logs", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { resolved, severity, limit = 100, offset = 0 } = req.query;
+      
+      let query = supabaseAdmin
+        .from("error_logs")
+        .select("*")
+        .order("created_at", { ascending: false });
+      
+      if (resolved === "true") {
+        query = query.eq("resolved", true);
+      } else if (resolved === "false") {
+        query = query.eq("resolved", false);
+      }
+      
+      if (severity) {
+        query = query.eq("severity", severity);
+      }
+      
+      query = query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+      
+      const { data: errors, error } = await query;
+      
+      if (error) throw error;
+      
+      // Get unresolved count
+      const { data: unresolvedCount } = await supabaseAdmin
+        .from("error_logs")
+        .select("id", { count: "exact" })
+        .eq("resolved", false);
+      
+      return res.json({ 
+        errors: errors || [], 
+        unresolved_count: unresolvedCount?.length || 0 
+      });
+    } catch (err) {
+      console.error("[admin/error-logs] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Resolve error
+app.post(
+  "/admin/error-logs/:errorId/resolve",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-resolve-error", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { errorId } = req.params;
+      const { notes } = req.body;
+      
+      const { data: updated, error } = await supabaseAdmin
+        .from("error_logs")
+        .update({
+          resolved: true,
+          resolved_by: req.user.id,
+          resolved_at: new Date().toISOString(),
+          resolution_notes: notes || null,
+        })
+        .eq("id", errorId)
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      return res.json({ error_log: updated });
+    } catch (err) {
+      console.error("[admin/resolve-error] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 // Analytics endpoint with charts data
 app.get("/api/analytics", requireAuth, resolveEffectiveUser, async (req, res) => {
   try {
@@ -6504,6 +7625,166 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     return res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================
+// SESSION MANAGEMENT ENDPOINTS
+// ============================================
+
+// GET /api/sessions - Get user's active sessions
+app.get("/api/sessions", requireAuth, async (req, res) => {
+  try {
+    const { data: sessions, error } = await supabaseAdmin
+      .from("active_sessions")
+      .select("id, device_type, ip_address, last_active_at, created_at")
+      .eq("user_id", req.user.id)
+      .is("revoked_at", null)
+      .order("last_active_at", { ascending: false });
+    
+    if (error) throw error;
+    
+    // Mark current session
+    const currentTokenHash = req.tokenHash;
+    const sessionsWithCurrent = (sessions || []).map(s => ({
+      ...s,
+      is_current: false, // We can't easily determine this without token hash in response
+    }));
+    
+    return res.json({ sessions: sessionsWithCurrent });
+  } catch (err) {
+    console.error("[sessions] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/sessions/:sessionId - Revoke a specific session
+app.delete("/api/sessions/:sessionId", requireAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Verify ownership
+    const { data: session } = await supabaseAdmin
+      .from("active_sessions")
+      .select("id")
+      .eq("id", sessionId)
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    
+    await supabaseAdmin
+      .from("active_sessions")
+      .update({ 
+        revoked_at: new Date().toISOString(), 
+        revoked_reason: "user_revoked" 
+      })
+      .eq("id", sessionId);
+    
+    await auditLog({
+      userId: req.user.id,
+      action: "session_revoked",
+      entity: "session",
+      entityId: sessionId,
+      req,
+    });
+    
+    return res.json({ ok: true, message: "Session revoked" });
+  } catch (err) {
+    console.error("[session delete] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/sessions - Revoke all sessions (except current)
+app.delete("/api/sessions", requireAuth, async (req, res) => {
+  try {
+    const currentTokenHash = req.tokenHash;
+    
+    // Revoke all except current
+    let query = supabaseAdmin
+      .from("active_sessions")
+      .update({ 
+        revoked_at: new Date().toISOString(), 
+        revoked_reason: "user_revoked_all" 
+      })
+      .eq("user_id", req.user.id)
+      .is("revoked_at", null);
+    
+    // Exclude current session if we have the hash
+    if (currentTokenHash) {
+      query = query.neq("token_hash", currentTokenHash);
+    }
+    
+    const { data: revoked } = await query.select("id");
+    
+    await auditLog({
+      userId: req.user.id,
+      action: "all_sessions_revoked",
+      entity: "session",
+      req,
+      metadata: { revoked_count: revoked?.length || 0 },
+    });
+    
+    return res.json({ ok: true, revoked: revoked?.length || 0 });
+  } catch (err) {
+    console.error("[session delete all] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/change-password - Change password and revoke other sessions
+app.post(
+  "/api/change-password",
+  requireAuth,
+  rateLimit({ keyPrefix: "change-password", limit: 3, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { new_password } = req.body;
+      
+      if (!new_password || new_password.length < 8) {
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      }
+      
+      // Update password in Supabase Auth
+      const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(
+        req.user.id,
+        { password: new_password }
+      );
+      
+      if (authError) {
+        return res.status(400).json({ error: authError.message });
+      }
+      
+      // Revoke all other sessions (security best practice)
+      const currentTokenHash = req.tokenHash;
+      if (currentTokenHash) {
+        await supabaseAdmin
+          .from("active_sessions")
+          .update({ 
+            revoked_at: new Date().toISOString(), 
+            revoked_reason: "password_changed" 
+          })
+          .eq("user_id", req.user.id)
+          .is("revoked_at", null)
+          .neq("token_hash", currentTokenHash);
+      }
+      
+      await auditLog({
+        userId: req.user.id,
+        action: "password_change",
+        entity: "user",
+        entityId: req.user.id,
+        req,
+      });
+      
+      return res.json({ ok: true, message: "Password changed successfully. Other sessions have been logged out." });
+    } catch (err) {
+      console.error("[change-password] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
 
 // ============================================
 // REFERRAL SYSTEM ENDPOINTS
@@ -7785,7 +9066,10 @@ app.get("/api/customers/:phone/history", requireAuth, resolveEffectiveUser, asyn
 // WEBHOOK (ZAPIER) INTEGRATION ENDPOINTS
 // ============================================
 
-// Helper: Send outbound webhook
+// Webhook retry delays (exponential backoff): 30s, 2min, 10min
+const WEBHOOK_RETRY_DELAYS = [30_000, 120_000, 600_000];
+
+// Helper: Send outbound webhook with retry support
 const sendOutboundWebhook = async (userId, eventType, payload) => {
   try {
     // Get active webhooks for this user that listen to this event
@@ -7809,6 +9093,7 @@ const sendOutboundWebhook = async (userId, eventType, payload) => {
           "Content-Type": "application/json",
           "X-Kryonex-Event": eventType,
           "X-Kryonex-Webhook-Id": webhook.id,
+          "X-Kryonex-Timestamp": new Date().toISOString(),
           ...(webhook.headers || {}),
         };
         
@@ -7834,27 +9119,39 @@ const sendOutboundWebhook = async (userId, eventType, payload) => {
           timeout: 10000,
         });
         
-        // Log the delivery
+        const responseBody = await response.text().catch(() => null);
+        
+        // Log the successful delivery
         await supabaseAdmin.from("webhook_deliveries").insert({
           webhook_id: webhook.id,
           user_id: userId,
           event_type: eventType,
           payload,
           status_code: response.status,
-          response_body: await response.text().catch(() => null),
-          delivered_at: new Date().toISOString(),
+          response_body: responseBody,
+          delivered_at: response.ok ? new Date().toISOString() : null,
+          delivery_status: response.ok ? "delivered" : "failed",
+          retry_count: 0,
+          max_retries: 3,
+          next_retry_at: response.ok ? null : new Date(Date.now() + WEBHOOK_RETRY_DELAYS[0]).toISOString(),
+          last_error: response.ok ? null : `HTTP ${response.status}: ${responseBody?.substring(0, 200) || "No response body"}`,
         });
         
         results.push({ webhook_id: webhook.id, success: response.ok, status: response.status });
         console.log(`🔗 [webhook] Delivered ${eventType} to ${webhook.name}:`, response.status);
       } catch (webhookErr) {
-        // Log the failed delivery
+        // Log the failed delivery with retry scheduling
         await supabaseAdmin.from("webhook_deliveries").insert({
           webhook_id: webhook.id,
           user_id: userId,
           event_type: eventType,
           payload,
           error_message: webhookErr.message,
+          delivery_status: "failed",
+          retry_count: 0,
+          max_retries: 3,
+          next_retry_at: new Date(Date.now() + WEBHOOK_RETRY_DELAYS[0]).toISOString(),
+          last_error: webhookErr.message,
         });
         results.push({ webhook_id: webhook.id, success: false, error: webhookErr.message });
         console.error(`🔗 [webhook] Failed to deliver ${eventType} to ${webhook.name}:`, webhookErr.message);
@@ -7867,6 +9164,128 @@ const sendOutboundWebhook = async (userId, eventType, payload) => {
     return { sent: 0, error: err.message };
   }
 };
+
+// Retry failed webhooks (runs every 30 seconds)
+const retryFailedWebhooks = async () => {
+  try {
+    // Get failed deliveries that are due for retry
+    const { data: pending, error } = await supabaseAdmin
+      .from("webhook_deliveries")
+      .select("*, webhook_configs!inner(url, secret, headers, name, is_active)")
+      .eq("delivery_status", "failed")
+      .lt("retry_count", 3)
+      .lt("next_retry_at", new Date().toISOString())
+      .limit(50);
+    
+    if (error || !pending || pending.length === 0) return;
+    
+    console.log(`🔗 [webhook-retry] Processing ${pending.length} failed deliveries...`);
+    
+    for (const delivery of pending) {
+      const webhook = delivery.webhook_configs;
+      
+      // Skip if webhook is now inactive
+      if (!webhook?.is_active) {
+        await supabaseAdmin
+          .from("webhook_deliveries")
+          .update({ delivery_status: "cancelled", last_error: "Webhook disabled" })
+          .eq("id", delivery.id);
+        continue;
+      }
+      
+      try {
+        // Build headers
+        const headers = {
+          "Content-Type": "application/json",
+          "X-Kryonex-Event": delivery.event_type,
+          "X-Kryonex-Webhook-Id": delivery.webhook_id,
+          "X-Kryonex-Timestamp": new Date().toISOString(),
+          "X-Kryonex-Retry": String(delivery.retry_count + 1),
+          ...(webhook.headers || {}),
+        };
+        
+        // Add HMAC signature if secret is set
+        if (webhook.secret) {
+          const crypto = require("crypto");
+          const signature = crypto
+            .createHmac("sha256", webhook.secret)
+            .update(JSON.stringify(delivery.payload))
+            .digest("hex");
+          headers["X-Kryonex-Signature"] = signature;
+        }
+        
+        // Retry the webhook
+        const response = await fetch(webhook.url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            event: delivery.event_type,
+            timestamp: new Date().toISOString(),
+            data: delivery.payload,
+            retry: delivery.retry_count + 1,
+          }),
+          timeout: 10000,
+        });
+        
+        const responseBody = await response.text().catch(() => null);
+        const newRetryCount = delivery.retry_count + 1;
+        
+        if (response.ok) {
+          // Success! Update delivery
+          await supabaseAdmin
+            .from("webhook_deliveries")
+            .update({
+              delivery_status: "delivered",
+              status_code: response.status,
+              response_body: responseBody,
+              delivered_at: new Date().toISOString(),
+              retry_count: newRetryCount,
+              next_retry_at: null,
+              last_error: null,
+            })
+            .eq("id", delivery.id);
+          console.log(`🔗 [webhook-retry] Success on retry ${newRetryCount} for ${webhook.name}`);
+        } else {
+          // Failed again
+          const nextRetryDelay = WEBHOOK_RETRY_DELAYS[newRetryCount] || null;
+          await supabaseAdmin
+            .from("webhook_deliveries")
+            .update({
+              delivery_status: newRetryCount >= 3 ? "exhausted" : "failed",
+              status_code: response.status,
+              response_body: responseBody,
+              retry_count: newRetryCount,
+              next_retry_at: nextRetryDelay ? new Date(Date.now() + nextRetryDelay).toISOString() : null,
+              last_error: `HTTP ${response.status}: ${responseBody?.substring(0, 200) || "No response"}`,
+            })
+            .eq("id", delivery.id);
+          console.warn(`🔗 [webhook-retry] Retry ${newRetryCount} failed for ${webhook.name}: ${response.status}`);
+        }
+      } catch (retryErr) {
+        // Network/timeout error on retry
+        const newRetryCount = delivery.retry_count + 1;
+        const nextRetryDelay = WEBHOOK_RETRY_DELAYS[newRetryCount] || null;
+        
+        await supabaseAdmin
+          .from("webhook_deliveries")
+          .update({
+            delivery_status: newRetryCount >= 3 ? "exhausted" : "failed",
+            retry_count: newRetryCount,
+            next_retry_at: nextRetryDelay ? new Date(Date.now() + nextRetryDelay).toISOString() : null,
+            last_error: retryErr.message,
+          })
+          .eq("id", delivery.id);
+        console.error(`🔗 [webhook-retry] Retry ${newRetryCount} error for ${webhook.name}:`, retryErr.message);
+      }
+    }
+  } catch (err) {
+    console.error("[retryFailedWebhooks] error:", err.message);
+  }
+};
+
+// Start webhook retry interval (every 30 seconds)
+setInterval(retryFailedWebhooks, 30_000);
+console.log("🔗 [webhook-retry] Webhook retry system started (30s interval)");
 
 // GET /api/webhooks - List user's webhooks
 app.get("/api/webhooks", requireAuth, resolveEffectiveUser, async (req, res) => {
@@ -8153,6 +9572,120 @@ app.get("/api/webhooks/:id/deliveries", requireAuth, resolveEffectiveUser, async
     return res.status(500).json({ error: err.message });
   }
 });
+
+// POST /api/webhooks/:webhookId/deliveries/:deliveryId/retry - Manual retry
+app.post(
+  "/api/webhooks/:webhookId/deliveries/:deliveryId/retry",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "webhook-retry-manual", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+      const { webhookId, deliveryId } = req.params;
+      
+      // Verify ownership
+      const { data: webhook } = await supabaseAdmin
+        .from("webhook_configs")
+        .select("id, url, secret, headers, name, is_active")
+        .eq("id", webhookId)
+        .eq("user_id", uid)
+        .maybeSingle();
+      
+      if (!webhook) {
+        return res.status(404).json({ error: "Webhook not found" });
+      }
+      
+      if (!webhook.is_active) {
+        return res.status(400).json({ error: "Webhook is disabled" });
+      }
+      
+      // Get the delivery
+      const { data: delivery } = await supabaseAdmin
+        .from("webhook_deliveries")
+        .select("*")
+        .eq("id", deliveryId)
+        .eq("webhook_id", webhookId)
+        .maybeSingle();
+      
+      if (!delivery) {
+        return res.status(404).json({ error: "Delivery not found" });
+      }
+      
+      if (delivery.delivery_status === "delivered") {
+        return res.status(400).json({ error: "Delivery already succeeded" });
+      }
+      
+      // Retry the webhook
+      try {
+        const headers = {
+          "Content-Type": "application/json",
+          "X-Kryonex-Event": delivery.event_type,
+          "X-Kryonex-Webhook-Id": webhookId,
+          "X-Kryonex-Timestamp": new Date().toISOString(),
+          "X-Kryonex-Retry": "manual",
+          ...(webhook.headers || {}),
+        };
+        
+        if (webhook.secret) {
+          const crypto = require("crypto");
+          const signature = crypto
+            .createHmac("sha256", webhook.secret)
+            .update(JSON.stringify(delivery.payload))
+            .digest("hex");
+          headers["X-Kryonex-Signature"] = signature;
+        }
+        
+        const response = await fetch(webhook.url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            event: delivery.event_type,
+            timestamp: new Date().toISOString(),
+            data: delivery.payload,
+            retry: "manual",
+          }),
+          timeout: 10000,
+        });
+        
+        const responseBody = await response.text().catch(() => null);
+        
+        // Update delivery record
+        await supabaseAdmin
+          .from("webhook_deliveries")
+          .update({
+            delivery_status: response.ok ? "delivered" : "failed",
+            status_code: response.status,
+            response_body: responseBody,
+            delivered_at: response.ok ? new Date().toISOString() : null,
+            retry_count: (delivery.retry_count || 0) + 1,
+            last_error: response.ok ? null : `HTTP ${response.status}: ${responseBody?.substring(0, 200) || "No response"}`,
+          })
+          .eq("id", deliveryId);
+        
+        if (response.ok) {
+          return res.json({ success: true, message: "Delivery retried successfully" });
+        } else {
+          return res.status(200).json({ success: false, message: `Retry failed: HTTP ${response.status}` });
+        }
+      } catch (retryErr) {
+        // Update delivery with error
+        await supabaseAdmin
+          .from("webhook_deliveries")
+          .update({
+            retry_count: (delivery.retry_count || 0) + 1,
+            last_error: retryErr.message,
+          })
+          .eq("id", deliveryId);
+        
+        return res.status(200).json({ success: false, message: `Retry failed: ${retryErr.message}` });
+      }
+    } catch (err) {
+      console.error("[webhook manual retry] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
 
 // ============================================
 // END WEBHOOK INTEGRATION ENDPOINTS
@@ -13742,6 +15275,54 @@ app.post(
     }
   }
 );
+
+// =============================================================================
+// GLOBAL ERROR HANDLER (must be last middleware)
+// =============================================================================
+app.use(async (err, req, res, next) => {
+  const statusCode = err.status || err.statusCode || 500;
+  const severity = statusCode >= 500 ? "high" : "medium";
+  
+  // Track error in database
+  await trackError({
+    error: err,
+    context: {
+      path: req.path,
+      method: req.method,
+      query: req.query,
+      body: req.body ? JSON.stringify(req.body).substring(0, 1000) : null,
+    },
+    userId: req.user?.id || null,
+    severity,
+    requestId: req.requestId,
+    endpoint: req.path,
+    method: req.method,
+    req,
+  });
+  
+  // Create ops alert for 500 errors
+  if (statusCode >= 500) {
+    await createOpsAlert({
+      alertType: "server_error",
+      severity: "warning",
+      title: `Server Error: ${err.message?.substring(0, 100) || "Unknown error"}`,
+      message: `${req.method} ${req.path} returned ${statusCode}`,
+      metadata: {
+        error_type: err.name,
+        request_id: req.requestId,
+        user_id: req.user?.id,
+        path: req.path,
+      },
+      source: "error_handler",
+    });
+  }
+  
+  // Send response
+  res.status(statusCode).json({
+    error: err.message || "Internal server error",
+    request_id: req.requestId,
+  });
+});
 
 app.listen(PORT, () => {
   console.log(`Kryonex backend running on port ${PORT}`);

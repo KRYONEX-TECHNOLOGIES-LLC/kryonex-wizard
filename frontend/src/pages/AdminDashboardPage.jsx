@@ -22,7 +22,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { syncRetellTemplates, getAdminMetricsEnhanced, getAdminMetrics } from "../lib/api";
+import { syncRetellTemplates, getAdminMetricsEnhanced, getAdminMetrics, getAdminHealthScores, getAdminChurnAlerts, getAdminErrorLogs } from "../lib/api";
 
 // Format relative time
 const formatRelativeTime = (dateStr) => {
@@ -122,6 +122,9 @@ export default function AdminDashboardPage() {
   const [syncNote, setSyncNote] = React.useState("");
   const [currentTime, setCurrentTime] = React.useState(new Date());
   const [lastRefresh, setLastRefresh] = React.useState(null);
+  const [healthStats, setHealthStats] = React.useState(null);
+  const [churnAlertCount, setChurnAlertCount] = React.useState(0);
+  const [errorCount, setErrorCount] = React.useState(0);
 
   // Live clock
   React.useEffect(() => {
@@ -134,13 +137,19 @@ export default function AdminDashboardPage() {
     let mounted = true;
     const loadMetrics = async () => {
       try {
-        const [enhancedRes, basicRes] = await Promise.all([
+        const [enhancedRes, basicRes, healthRes, churnRes, errorRes] = await Promise.all([
           getAdminMetricsEnhanced().catch(() => ({ data: null })),
           getAdminMetrics().catch(() => ({ data: null })),
+          getAdminHealthScores({ limit: 1 }).catch(() => ({ data: null })),
+          getAdminChurnAlerts({ resolved: "false", limit: 1 }).catch(() => ({ data: null })),
+          getAdminErrorLogs({ resolved: "false", limit: 1 }).catch(() => ({ data: null })),
         ]);
         if (mounted) {
           if (enhancedRes.data) setMetrics(enhancedRes.data);
           if (basicRes.data) setBasicMetrics(basicRes.data);
+          if (healthRes.data?.stats) setHealthStats(healthRes.data.stats);
+          if (churnRes.data?.stats) setChurnAlertCount(churnRes.data.stats.unresolved_total || 0);
+          if (errorRes.data) setErrorCount(errorRes.data.unresolved_count || 0);
           setLastRefresh(new Date());
         }
       } catch (err) {
@@ -590,6 +599,69 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
+          {/* Operations & Health Overview */}
+          <div className="glass-panel rounded-3xl border border-white/10 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-xs uppercase tracking-[0.4em] text-white/50">
+                Operations & Health
+              </div>
+              <button 
+                className="text-xs text-neon-cyan hover:underline"
+                onClick={() => navigate("/admin/ops")}
+              >
+                View Details →
+              </button>
+            </div>
+            <div className="admin-ops-summary-grid">
+              {/* Error Count */}
+              <div className={`ops-summary-card ${errorCount > 0 ? "alert" : ""}`}>
+                <div className="ops-icon error">
+                  <AlertTriangle size={18} />
+                </div>
+                <div className="ops-info">
+                  <span className="ops-value">{errorCount}</span>
+                  <span className="ops-label">Unresolved Errors</span>
+                </div>
+              </div>
+              
+              {/* Churn Alerts */}
+              <div className={`ops-summary-card ${churnAlertCount > 0 ? "warning" : ""}`}>
+                <div className="ops-icon churn">
+                  <Flag size={18} />
+                </div>
+                <div className="ops-info">
+                  <span className="ops-value">{churnAlertCount}</span>
+                  <span className="ops-label">Churn Alerts</span>
+                </div>
+              </div>
+              
+              {/* Health Score Distribution */}
+              {healthStats && (
+                <>
+                  <div className="ops-summary-card healthy">
+                    <div className="ops-icon healthy">
+                      <TrendingUp size={18} />
+                    </div>
+                    <div className="ops-info">
+                      <span className="ops-value">{(healthStats.by_grade?.A || 0) + (healthStats.by_grade?.B || 0)}</span>
+                      <span className="ops-label">Healthy (A/B)</span>
+                    </div>
+                  </div>
+                  
+                  <div className={`ops-summary-card ${(healthStats.by_risk?.critical || 0) > 0 ? "critical" : ""}`}>
+                    <div className="ops-icon risk">
+                      <Shield size={18} />
+                    </div>
+                    <div className="ops-info">
+                      <span className="ops-value">{healthStats.by_risk?.critical || 0}</span>
+                      <span className="ops-label">Critical Risk</span>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
           {/* Quick Actions */}
           <div className="glass-panel rounded-3xl border border-white/10 p-6">
             <div className="text-xs uppercase tracking-[0.4em] text-white/50 mb-4">
@@ -613,6 +685,9 @@ export default function AdminDashboardPage() {
               </button>
               <button className="admin-action-btn" onClick={() => navigate("/admin/wizard/create")}>
                 <Zap size={16} /> Deploy Client
+              </button>
+              <button className="admin-action-btn" onClick={() => navigate("/admin/ops")}>
+                <Activity size={16} /> Ops Dashboard
               </button>
             </div>
           </div>

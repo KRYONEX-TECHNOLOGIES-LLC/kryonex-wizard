@@ -34,6 +34,7 @@ import IntegrationsPage from "./pages/IntegrationsPage.jsx";
 import ThankYouPage from "./pages/ThankYouPage.jsx";
 import AdminStripeSuccessPage from "./pages/AdminStripeSuccessPage.jsx";
 import AdminReferralsPage from "./pages/AdminReferralsPage.jsx";
+import AdminOpsPage from "./pages/AdminOpsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import RequireOnboarding from "./components/RequireOnboarding.jsx";
@@ -293,6 +294,16 @@ export default function App() {
           <ProtectedRoute>
             <RequireAdmin>
               <AdminReferralsPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/ops"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminOpsPage />
             </RequireAdmin>
           </ProtectedRoute>
         }
