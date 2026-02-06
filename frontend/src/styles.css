@@ -180,11 +180,13 @@
 /* Hamburger menu button */
 .mobile-menu-toggle {
   display: none;
-  width: var(--touch-target);
-  height: var(--touch-target);
+  width: var(--touch-target, 44px);
+  height: var(--touch-target, 44px);
+  min-width: 44px;
+  min-height: 44px;
   padding: 0.5rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(11, 17, 26, 0.95);
+  border: 1px solid rgba(6, 182, 212, 0.3);
   border-radius: 12px;
   cursor: pointer;
   flex-direction: column;
@@ -192,6 +194,8 @@
   align-items: center;
   gap: 5px;
   z-index: 1001;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .mobile-menu-toggle span {
@@ -217,40 +221,50 @@
 
 /* Mobile drawer overlay - HIDDEN by default, only shown on mobile/tablet */
 .mobile-drawer-overlay {
-  display: none !important;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.8);
   backdrop-filter: blur(4px);
-  z-index: 999;
+  z-index: 998;
   opacity: 0;
-  transition: opacity 0.3s ease;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+  pointer-events: none;
 }
 
 .mobile-drawer-overlay.active {
   opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 /* Side nav drawer mode - HIDDEN by default, only shown on mobile/tablet */
 .side-nav-drawer {
-  display: none !important;
-  position: fixed;
-  top: 0;
-  left: 0;
-  height: 100vh;
-  width: 280px;
-  max-width: 85vw;
-  background: var(--panel-black);
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  width: 280px !important;
+  max-width: 85vw !important;
+  background: #0b111a !important;
+  background: var(--panel-black, #0b111a) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.15) !important;
   transform: translateX(-100%);
-  transition: transform 0.3s ease;
-  z-index: 1000;
-  overflow-y: auto;
-  padding-top: 70px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 999 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding-top: 70px !important;
+  padding-bottom: 2rem !important;
+  display: flex !important;
+  flex-direction: column !important;
+  visibility: hidden;
 }
 
 .side-nav-drawer.open {
   transform: translateX(0);
+  visibility: visible;
 }
 
 /* Mobile nav trigger container */
@@ -265,25 +279,11 @@
 /* Show hamburger and drawer ONLY on mobile/tablet (under 1024px) */
 @media (max-width: 1023px) {
   .mobile-nav-trigger {
-    display: block;
+    display: block !important;
   }
   
   .mobile-menu-toggle {
-    display: flex;
-  }
-  
-  /* Enable drawer and overlay on mobile/tablet */
-  .mobile-drawer-overlay {
-    display: block !important;
-    pointer-events: none;
-  }
-  
-  .mobile-drawer-overlay.active {
-    pointer-events: auto;
-  }
-  
-  .side-nav-drawer {
-    display: block !important;
+    display: flex !important;
   }
   
   /* Hide menu text on mobile, show icon */
@@ -293,6 +293,13 @@
   
   .show-mobile-icon {
     display: inline;
+  }
+  
+  /* Ensure main content stays visible when drawer opens */
+  .war-room,
+  .dashboard-grid,
+  .main-content {
+    min-height: 100vh;
   }
 }
 
@@ -309,10 +316,12 @@
   
   .mobile-drawer-overlay {
     display: none !important;
+    visibility: hidden !important;
   }
   
   .side-nav-drawer {
     display: none !important;
+    visibility: hidden !important;
   }
   
   /* Show normal sidebar on desktop */
@@ -1944,6 +1953,21 @@ select option {
   box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
   display: grid;
   gap: 1.2rem;
+}
+
+/* Override drawer-specific styles */
+.side-nav.side-nav-drawer {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  border-radius: 0 !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  padding: 1.4rem !important;
+  padding-top: 70px !important;
+  background: #0b111a !important;
+  border: none !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.15) !important;
 }
 
 .side-nav-header {

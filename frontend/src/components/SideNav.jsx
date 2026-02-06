@@ -42,11 +42,15 @@ export function MobileNavProvider({ children }) {
   // Prevent body scroll when drawer is open (only on mobile)
   React.useEffect(() => {
     if (isOpen && window.innerWidth < 1024) {
+      // Simple overflow hidden - don't use position:fixed as it causes content to disappear
+      document.documentElement.style.overflow = "hidden";
       document.body.style.overflow = "hidden";
     } else {
+      document.documentElement.style.overflow = "";
       document.body.style.overflow = "";
     }
     return () => {
+      document.documentElement.style.overflow = "";
       document.body.style.overflow = "";
     };
   }, [isOpen]);
@@ -274,9 +278,15 @@ export default function SideNav({
         <div 
           className={`mobile-drawer-overlay ${isOpen ? 'active' : ''}`}
           onClick={() => setIsOpen(false)}
+          aria-hidden={!isOpen}
+          data-drawer-state={isOpen ? 'open' : 'closed'}
         />
         {/* Drawer */}
-        <aside className={`side-nav side-nav-drawer ${isOpen ? 'open' : ''}`}>
+        <aside 
+          className={`side-nav side-nav-drawer ${isOpen ? 'open' : ''}`}
+          aria-hidden={!isOpen}
+          data-drawer-state={isOpen ? 'open' : 'closed'}
+        >
           {navContent}
         </aside>
       </>
