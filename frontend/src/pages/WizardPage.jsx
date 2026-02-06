@@ -35,6 +35,7 @@ import {
   getDeployStatus,
   verifyAdminCode,
   saveOnboardingIdentity,
+  getCalcomAuthorizeUrl,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
@@ -350,19 +351,19 @@ export default function WizardPage({ embeddedMode }) {
   }, []);
 
   const handleCalcomConnect = async () => {
-    const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
     try {
-      const { data } = await supabase.auth.getSession();
-      const accessToken = data?.session?.access_token;
-      if (!accessToken) {
-        setCalStatusError("Please sign in again before connecting Cal.com.");
+      const response = await getCalcomAuthorizeUrl();
+      const url = response?.data?.url;
+      if (!url) {
+        setCalStatusError("Unable to start calendar connection. Please try again.");
         return;
       }
-      window.location.href = `${baseUrl}/api/calcom/authorize?access_token=${encodeURIComponent(
-        accessToken
-      )}`;
+      window.location.href = url;
     } catch (err) {
-      setCalStatusError("Unable to start calendar connection. Please try again.");
+      setCalStatusError(
+        err.response?.data?.error ||
+          "Unable to start calendar connection. Please try again."
+      );
     }
   };
 

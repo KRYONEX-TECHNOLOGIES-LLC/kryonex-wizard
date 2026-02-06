@@ -4520,12 +4520,12 @@ app.get("/", (req, res) => {
   res.json({ status: "Online" });
 });
 
-app.get("/api/calcom/authorize", requireAuth, (req, res) => {
+const getCalcomAuthorizeUrl = (userId) => {
   if (!CALCOM_CLIENT_ID) {
-    return res.status(500).json({ error: "Missing CALCOM_CLIENT_ID" });
+    throw new Error("Missing CALCOM_CLIENT_ID");
   }
   const state = signCalcomState({
-    userId: req.user.id,
+    userId,
     ts: Date.now(),
   });
   const params = new URLSearchParams({
@@ -4534,9 +4534,25 @@ app.get("/api/calcom/authorize", requireAuth, (req, res) => {
     response_type: "code",
     state,
   });
-  return res.redirect(
-    `https://app.cal.com/auth/oauth2/authorize?${params.toString()}`
-  );
+  return `https://app.cal.com/auth/oauth2/authorize?${params.toString()}`;
+};
+
+app.get("/api/calcom/authorize", requireAuth, (req, res) => {
+  try {
+    const url = getCalcomAuthorizeUrl(req.user.id);
+    return res.redirect(url);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/calcom/authorize-url", requireAuth, (req, res) => {
+  try {
+    const url = getCalcomAuthorizeUrl(req.user.id);
+    return res.json({ url });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/calcom/callback", async (req, res) => {
