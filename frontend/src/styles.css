@@ -215,9 +215,9 @@
   transform: rotate(-45deg) translate(5px, -5px);
 }
 
-/* Mobile drawer overlay */
+/* Mobile drawer overlay - HIDDEN by default, only shown on mobile/tablet */
 .mobile-drawer-overlay {
-  display: none;
+  display: none !important;
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
@@ -231,8 +231,9 @@
   opacity: 1;
 }
 
-/* Side nav drawer mode */
+/* Side nav drawer mode - HIDDEN by default, only shown on mobile/tablet */
 .side-nav-drawer {
+  display: none !important;
   position: fixed;
   top: 0;
   left: 0;
@@ -261,7 +262,7 @@
   display: none;
 }
 
-/* Show hamburger on mobile/tablet */
+/* Show hamburger and drawer ONLY on mobile/tablet (under 1024px) */
 @media (max-width: 1023px) {
   .mobile-nav-trigger {
     display: block;
@@ -271,13 +272,18 @@
     display: flex;
   }
   
+  /* Enable drawer and overlay on mobile/tablet */
   .mobile-drawer-overlay {
-    display: block;
+    display: block !important;
     pointer-events: none;
   }
   
   .mobile-drawer-overlay.active {
     pointer-events: auto;
+  }
+  
+  .side-nav-drawer {
+    display: block !important;
   }
   
   /* Hide menu text on mobile, show icon */
@@ -290,10 +296,28 @@
   }
 }
 
-/* Desktop: show text, hide icon */
+/* Desktop (1024px+): show text, hide mobile elements */
 @media (min-width: 1024px) {
   .show-mobile-icon {
     display: none;
+  }
+  
+  /* Force hide all mobile navigation elements on desktop */
+  .mobile-nav-trigger {
+    display: none !important;
+  }
+  
+  .mobile-drawer-overlay {
+    display: none !important;
+  }
+  
+  .side-nav-drawer {
+    display: none !important;
+  }
+  
+  /* Show normal sidebar on desktop */
+  .side-nav:not(.side-nav-drawer) {
+    display: grid;
   }
 }
 

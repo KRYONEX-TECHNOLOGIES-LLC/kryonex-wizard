@@ -26,9 +26,22 @@ export function MobileNavProvider({ children }) {
     return () => window.removeEventListener("keydown", handleEscape);
   }, []);
   
-  // Prevent body scroll when drawer is open
+  // Close drawer when resizing to desktop (safety net)
   React.useEffect(() => {
-    if (isOpen) {
+    const handleResize = () => {
+      if (window.innerWidth >= 1024) {
+        setIsOpen(false);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    // Check immediately
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+  
+  // Prevent body scroll when drawer is open (only on mobile)
+  React.useEffect(() => {
+    if (isOpen && window.innerWidth < 1024) {
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = "";
@@ -80,6 +93,8 @@ export default function SideNav({
     const handleResize = () => {
       setIsMobile(window.innerWidth < 1024);
     };
+    // Check immediately on mount to ensure correct initial state
+    handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
