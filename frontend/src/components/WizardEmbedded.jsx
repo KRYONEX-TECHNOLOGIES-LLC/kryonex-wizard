@@ -67,6 +67,8 @@ export default function WizardEmbedded({ onClientCreated }) {
             targetUserId: client.userId,
             targetEmail: client.email,
           }}
+          embeddedLayout
+          embeddedSteps="modern"
         />
       </div>
     </div>

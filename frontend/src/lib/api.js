@@ -162,6 +162,18 @@ export const getReferralSettings = () => api.get("/admin/referral-settings");
 export const updateReferralSettings = (settings) => 
   api.put("/admin/referral-settings", settings);
 
+// Admin Payout Request Management
+export const getAdminPayoutRequests = () => api.get("/admin/referral-payout-requests");
+export const approvePayoutRequest = (payoutId, data) => 
+  api.post(`/admin/referral-payout-requests/${payoutId}/approve`, data || {});
+export const rejectPayoutRequest = (payoutId, reason, notes) => 
+  api.post(`/admin/referral-payout-requests/${payoutId}/reject`, { reason, admin_notes: notes });
+export const markPayoutPaid = (payoutId, paymentReference, notes) => 
+  api.post(`/admin/referral-payout-requests/${payoutId}/mark-paid`, { 
+    payment_reference: paymentReference, 
+    admin_notes: notes 
+  });
+
 // Review Requests
 export const requestAppointmentReview = (appointmentId) =>
   api.post(`/appointments/${appointmentId}/request-review`);

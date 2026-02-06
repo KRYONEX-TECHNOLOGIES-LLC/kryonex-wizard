@@ -109,6 +109,8 @@ const MODERN_STEP_META = [
 
 const EMBEDDED_STEP_META = [
   { title: "Identity", description: "Define the business signature.", icon: Building2 },
+  { title: "Logistics", description: "Configure schedule, pricing, and call routing.", icon: Clock },
+  { title: "Communications", description: "Set up SMS automation and notifications.", icon: MessageSquare },
   { title: "Plan Selection", description: "Choose the tier; client pays via Stripe link.", icon: CreditCard },
   { title: "Deploy", description: "Provision agent and get the number.", icon: Terminal },
 ];
@@ -244,12 +246,21 @@ const terminalLines = [
 ];
 
 
-export default function WizardPage({ embeddedMode }) {
-  const stepMeta = embeddedMode
-    ? EMBEDDED_STEP_META
-    : LEGACY_STEPS_ENABLED
-    ? FULL_STEP_META
-    : MODERN_STEP_META;
+export default function WizardPage({
+  embeddedMode,
+  embeddedLayout = false,
+  embeddedSteps = "embedded",
+}) {
+  const isEmbeddedLayout = Boolean(embeddedLayout || embeddedMode);
+  const resolveStepMeta = () => {
+    if (embeddedMode) {
+      if (embeddedSteps === "modern") return MODERN_STEP_META;
+      if (embeddedSteps === "full") return FULL_STEP_META;
+      return EMBEDDED_STEP_META;
+    }
+    return LEGACY_STEPS_ENABLED ? FULL_STEP_META : MODERN_STEP_META;
+  };
+  const stepMeta = resolveStepMeta();
   const maxStep = stepMeta.length;
   const [wizardUserId, setWizardUserId] = useState(null);
   const formKey = embeddedMode
@@ -1201,8 +1212,8 @@ export default function WizardPage({ embeddedMode }) {
   }
 
   return (
-    <div className={`${embeddedMode ? "min-h-0" : "min-h-screen"} bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30`}>
-      {!embeddedMode && <TopMenu />}
+    <div className={`${isEmbeddedLayout ? "min-h-0" : "min-h-screen"} bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30`}>
+      {!isEmbeddedLayout && <TopMenu />}
       <div
         className="absolute inset-0 bg-grid-lines opacity-40"
         style={{ backgroundSize: "48px 48px" }}
@@ -1210,7 +1221,7 @@ export default function WizardPage({ embeddedMode }) {
       <div className="absolute -top-28 -right-28 h-72 w-72 rounded-full bg-neon-purple/20 blur-[120px]" />
       <div className="absolute bottom-0 left-0 h-96 w-96 rounded-full bg-neon-cyan/10 blur-[140px]" />
 
-      <div className={`relative z-10 mx-auto flex w-full ${embeddedMode ? "min-h-0 flex-1 max-w-6xl flex-col px-6 py-6" : "min-h-screen max-w-6xl flex-col px-6 py-10"}`}>
+      <div className={`relative z-10 mx-auto flex w-full ${isEmbeddedLayout ? "min-h-0 flex-1 max-w-6xl flex-col px-6 py-6" : "min-h-screen max-w-6xl flex-col px-6 py-10"}`}>
         <header className="mb-10 flex flex-wrap items-center justify-between gap-6">
           <div>
             <p className="text-sm uppercase tracking-[0.4em] text-neon-cyan/70">
@@ -2226,9 +2237,9 @@ export default function WizardPage({ embeddedMode }) {
               </motion.div>
             )}
 
-            {embeddedMode && step === 3 && (
+            {embeddedMode && step === 5 && (
               <motion.div
-                key="step-3-deploy"
+                key="step-5-deploy-embedded"
                 variants={stepVariants}
                 initial="initial"
                 animate="animate"

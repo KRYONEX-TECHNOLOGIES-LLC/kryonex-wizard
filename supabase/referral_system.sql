@@ -220,17 +220,37 @@ CREATE TABLE IF NOT EXISTS public.payout_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
   amount_cents integer NOT NULL,
-  status text DEFAULT 'pending',  -- pending, processing, completed, rejected
+  status text DEFAULT 'pending',  -- pending, approved, processing, paid, rejected
   payment_method text DEFAULT 'manual',  -- manual, paypal, stripe, bank_transfer
   payment_email text,  -- PayPal email or bank info reference
+  payment_reference text,  -- Transaction ID, check number, etc.
   notes text,
   admin_notes text,  -- Internal notes from admin
   processed_by uuid REFERENCES auth.users(id),  -- Admin who processed
   processed_at timestamptz,
+  paid_at timestamptz,
   rejection_reason text,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
+
+-- Add missing columns if they don't exist (migration)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'payout_requests' AND column_name = 'payment_reference'
+  ) THEN
+    ALTER TABLE public.payout_requests ADD COLUMN payment_reference text;
+  END IF;
+  
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'payout_requests' AND column_name = 'paid_at'
+  ) THEN
+    ALTER TABLE public.payout_requests ADD COLUMN paid_at timestamptz;
+  END IF;
+END $$;
 
 -- Indexes for payout requests
 CREATE INDEX IF NOT EXISTS idx_payout_requests_user ON public.payout_requests(user_id);
@@ -241,7 +261,40 @@ CREATE INDEX IF NOT EXISTS idx_payout_requests_created ON public.payout_requests
 ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
 
 -- ============================================
--- 13. RLS POLICIES - Payout Requests
+-- 13. ADMIN LOGS TABLE - Track admin actions on referrals/payouts
+-- ============================================
+CREATE TABLE IF NOT EXISTS public.admin_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  action text NOT NULL,
+  target_type text,
+  target_id uuid,
+  metadata jsonb,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Indexes for admin logs
+CREATE INDEX IF NOT EXISTS idx_admin_logs_admin ON public.admin_logs(admin_id);
+CREATE INDEX IF NOT EXISTS idx_admin_logs_action ON public.admin_logs(action);
+CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON public.admin_logs(created_at DESC);
+
+-- Enable RLS
+ALTER TABLE public.admin_logs ENABLE ROW LEVEL SECURITY;
+
+-- Only admins can view admin logs
+DROP POLICY IF EXISTS "Admins can view admin logs" ON public.admin_logs;
+CREATE POLICY "Admins can view admin logs"
+ON public.admin_logs FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles 
+    WHERE profiles.user_id = auth.uid() 
+    AND profiles.role = 'admin'
+  )
+);
+
+-- ============================================
+-- 14. RLS POLICIES - Payout Requests
 -- ============================================
 -- Users can view their own payout requests
 DROP POLICY IF EXISTS "Users can view own payout requests" ON public.payout_requests;

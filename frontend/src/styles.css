@@ -2865,7 +2865,7 @@ select option {
   top: 0;
   right: 0;
   height: 100vh;
-  width: min(560px, 40vw);
+  width: min(680px, 55vw);
   background: rgba(10, 16, 28, 0.98);
   border-left: 1px solid rgba(34, 211, 238, 0.25);
   transition: transform 220ms ease;
@@ -6405,6 +6405,102 @@ input:checked + .toggle-slider.small:before {
 .admin-referral-stats .stat-label {
   font-size: 0.75rem;
   color: rgba(255, 255, 255, 0.5);
+}
+
+/* Payout Requests Section */
+.payout-requests-section {
+  margin-bottom: 2rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.payout-requests-section .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.section-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.section-toggle-btn:hover {
+  color: #06b6d4;
+}
+
+.section-toggle-btn .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.5rem;
+  background: #f59e0b;
+  color: #000;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 999px;
+}
+
+.refresh-btn.small {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+}
+
+.payout-requests-table-wrapper {
+  padding: 0;
+}
+
+.payout-requests-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.payout-requests-table th {
+  padding: 0.875rem 1rem;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.payout-requests-table td {
+  padding: 0.875rem 1rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.8);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.payout-requests-table tbody tr {
+  transition: background 0.15s;
+}
+
+.payout-requests-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.text-success {
+  color: #10b981;
 }
 
 /* Filters */

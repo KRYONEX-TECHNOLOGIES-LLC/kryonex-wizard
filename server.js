@@ -253,7 +253,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(morgan("combined"));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 const allowlist = ADMIN_IP_ALLOWLIST
   ? ADMIN_IP_ALLOWLIST.split(",").map((ip) => ip.trim()).filter(Boolean)
@@ -7153,6 +7153,37 @@ app.put("/admin/referral-settings", requireAuth, requireAdmin, async (req, res) 
 // GET /admin/referral-payout-requests - Get pending payout requests
 app.get("/admin/referral-payout-requests", requireAuth, requireAdmin, async (req, res) => {
   try {
+    // Try payout_requests table first (new system)
+    const { data: payoutRequests, error: payoutError } = await supabaseAdmin
+      .from("payout_requests")
+      .select("*")
+      .order("created_at", { ascending: false });
+    
+    if (!payoutError && payoutRequests) {
+      // Get user emails
+      const userIds = [...new Set(payoutRequests.map(p => p.user_id).filter(Boolean))];
+      let emailMap = {};
+      
+      if (userIds.length > 0) {
+        const { data: users } = await supabaseAdmin.auth.admin.listUsers();
+        if (users?.users) {
+          users.users.forEach(u => {
+            if (userIds.includes(u.id)) {
+              emailMap[u.id] = u.email || "Unknown";
+            }
+          });
+        }
+      }
+      
+      const formatted = payoutRequests.map(p => ({
+        ...p,
+        user_email: emailMap[p.user_id] || "Unknown",
+      }));
+      
+      return res.json({ payout_requests: formatted });
+    }
+    
+    // Fallback to alerts table (legacy system)
     const { data: alerts, error } = await supabaseAdmin
       .from("alerts")
       .select("*")
@@ -7184,6 +7215,168 @@ app.get("/admin/referral-payout-requests", requireAuth, requireAdmin, async (req
     return res.json({ payout_requests: formatted });
   } catch (err) {
     console.error("[admin/referral-payout-requests] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/referral-payout-requests/:id/approve - Approve payout request
+app.post("/admin/referral-payout-requests/:id/approve", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { admin_notes } = req.body;
+    
+    // Update payout request status
+    const { data: updated, error } = await supabaseAdmin
+      .from("payout_requests")
+      .update({
+        status: "approved",
+        processed_at: new Date().toISOString(),
+        admin_notes: admin_notes || null,
+      })
+      .eq("id", id)
+      .select()
+      .single();
+    
+    if (error) {
+      console.error("[admin/payout-approve] error:", error.message);
+      return res.status(400).json({ error: error.message });
+    }
+    
+    // Log admin action
+    await auditLog({
+      userId: updated.user_id,
+      actorId: req.user.id,
+      action: "payout_request_approved",
+      entity: "payout_request",
+      entityId: id,
+      req,
+      metadata: { 
+        amount_cents: updated.amount_cents,
+        notes: admin_notes,
+      },
+    });
+    
+    return res.json({ 
+      message: "Payout request approved successfully", 
+      payout_request: updated 
+    });
+  } catch (err) {
+    console.error("[admin/payout-approve] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/referral-payout-requests/:id/reject - Reject payout request
+app.post("/admin/referral-payout-requests/:id/reject", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason, admin_notes } = req.body;
+    
+    // Update payout request status
+    const { data: updated, error } = await supabaseAdmin
+      .from("payout_requests")
+      .update({
+        status: "rejected",
+        processed_at: new Date().toISOString(),
+        rejection_reason: reason || "Rejected by admin",
+        admin_notes: admin_notes || null,
+      })
+      .eq("id", id)
+      .select()
+      .single();
+    
+    if (error) {
+      console.error("[admin/payout-reject] error:", error.message);
+      return res.status(400).json({ error: error.message });
+    }
+    
+    // Log admin action
+    await auditLog({
+      userId: updated.user_id,
+      actorId: req.user.id,
+      action: "payout_request_rejected",
+      entity: "payout_request",
+      entityId: id,
+      req,
+      metadata: { 
+        amount_cents: updated.amount_cents,
+        reason: reason || "Rejected by admin",
+        notes: admin_notes,
+      },
+    });
+    
+    return res.json({ 
+      message: "Payout request rejected successfully", 
+      payout_request: updated 
+    });
+  } catch (err) {
+    console.error("[admin/payout-reject] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/referral-payout-requests/:id/mark-paid - Mark payout as paid
+app.post("/admin/referral-payout-requests/:id/mark-paid", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { payment_reference, admin_notes } = req.body;
+    
+    // Update payout request status
+    const { data: updated, error } = await supabaseAdmin
+      .from("payout_requests")
+      .update({
+        status: "paid",
+        paid_at: new Date().toISOString(),
+        payment_reference: payment_reference || null,
+        admin_notes: admin_notes || null,
+      })
+      .eq("id", id)
+      .select()
+      .single();
+    
+    if (error) {
+      console.error("[admin/payout-mark-paid] error:", error.message);
+      return res.status(400).json({ error: error.message });
+    }
+    
+    // Mark corresponding commissions as paid
+    const { data: commissions } = await supabaseAdmin
+      .from("referral_commissions")
+      .select("*")
+      .eq("referrer_id", updated.user_id)
+      .eq("status", "approved");
+    
+    if (commissions && commissions.length > 0) {
+      await supabaseAdmin
+        .from("referral_commissions")
+        .update({ status: "paid", paid_at: new Date().toISOString() })
+        .eq("referrer_id", updated.user_id)
+        .eq("status", "approved");
+    }
+    
+    // Log admin action
+    await auditLog({
+      userId: updated.user_id,
+      actorId: req.user.id,
+      action: "payout_request_paid",
+      entity: "payout_request",
+      entityId: id,
+      req,
+      metadata: { 
+        amount_cents: updated.amount_cents,
+        payment_reference: payment_reference,
+        notes: admin_notes,
+        commissions_paid: commissions?.length || 0,
+      },
+    });
+    
+    return res.json({ 
+      message: "Payout marked as paid successfully", 
+      payout_request: updated,
+      commissions_updated: commissions?.length || 0,
+    });
+  } catch (err) {
+    console.error("[admin/payout-mark-paid] error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });

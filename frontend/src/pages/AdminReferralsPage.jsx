@@ -24,6 +24,10 @@ import {
   rejectReferralPayout,
   getReferralSettings,
   updateReferralSettings,
+  getAdminPayoutRequests,
+  approvePayoutRequest,
+  rejectPayoutRequest,
+  markPayoutPaid,
 } from "../lib/api";
 
 export default function AdminReferralsPage() {
@@ -38,6 +42,11 @@ export default function AdminReferralsPage() {
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(null);
   const [message, setMessage] = useState(null);
+  
+  // Payout requests state
+  const [payoutRequests, setPayoutRequests] = useState([]);
+  const [payoutsLoading, setPayoutsLoading] = useState(false);
+  const [showPayouts, setShowPayouts] = useState(false);
 
   const loadReferrals = useCallback(async () => {
     try {
@@ -66,6 +75,19 @@ export default function AdminReferralsPage() {
     }
   }, []);
 
+  const loadPayoutRequests = useCallback(async () => {
+    try {
+      setPayoutsLoading(true);
+      const res = await getAdminPayoutRequests();
+      setPayoutRequests(res.data.payout_requests || []);
+    } catch (err) {
+      console.error("Error loading payout requests:", err);
+      setMessage({ type: "error", text: "Failed to load payout requests" });
+    } finally {
+      setPayoutsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadReferrals();
   }, [loadReferrals]);
@@ -75,6 +97,12 @@ export default function AdminReferralsPage() {
       loadSettings();
     }
   }, [showSettings, settings, loadSettings]);
+
+  useEffect(() => {
+    if (showPayouts && payoutRequests.length === 0) {
+      loadPayoutRequests();
+    }
+  }, [showPayouts, payoutRequests.length, loadPayoutRequests]);
 
   const handleApprove = async (referralId) => {
     try {
@@ -114,6 +142,60 @@ export default function AdminReferralsPage() {
       setMessage({ type: "error", text: err.response?.data?.error || "Failed to save settings" });
     } finally {
       setSettingsLoading(false);
+    }
+  };
+
+  const handleApprovePayout = async (payoutId) => {
+    const notes = window.prompt("Add admin notes (optional):");
+    if (notes === null) return; // Cancelled
+    
+    try {
+      setActionLoading(payoutId);
+      await approvePayoutRequest(payoutId, { admin_notes: notes });
+      setMessage({ type: "success", text: "Payout request approved successfully" });
+      loadPayoutRequests();
+    } catch (err) {
+      setMessage({ type: "error", text: err.response?.data?.error || "Failed to approve payout" });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRejectPayout = async (payoutId) => {
+    const reason = window.prompt("Enter rejection reason:");
+    if (!reason) return; // Cancelled or empty
+    
+    const notes = window.prompt("Add admin notes (optional):");
+    if (notes === null) return; // Cancelled
+    
+    try {
+      setActionLoading(payoutId);
+      await rejectPayoutRequest(payoutId, reason, notes);
+      setMessage({ type: "success", text: "Payout request rejected successfully" });
+      loadPayoutRequests();
+    } catch (err) {
+      setMessage({ type: "error", text: err.response?.data?.error || "Failed to reject payout" });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleMarkPaid = async (payoutId) => {
+    const reference = window.prompt("Enter payment reference (transaction ID, check number, etc.):");
+    if (!reference) return; // Cancelled or empty
+    
+    const notes = window.prompt("Add admin notes (optional):");
+    if (notes === null) return; // Cancelled
+    
+    try {
+      setActionLoading(payoutId);
+      await markPayoutPaid(payoutId, reference, notes);
+      setMessage({ type: "success", text: "Payout marked as paid successfully" });
+      loadPayoutRequests();
+    } catch (err) {
+      setMessage({ type: "error", text: err.response?.data?.error || "Failed to mark payout as paid" });
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -344,6 +426,116 @@ export default function AdminReferralsPage() {
             <span className="stat-label">Rejected/Clawed</span>
           </div>
         </div>
+      </div>
+
+      {/* Payout Requests Section */}
+      <div className="payout-requests-section">
+        <div className="section-header">
+          <button 
+            className="section-toggle-btn"
+            onClick={() => setShowPayouts(!showPayouts)}
+          >
+            <Banknote size={20} />
+            <span>Payout Requests</span>
+            <span className="badge">{payoutRequests.filter(p => p.status === "pending").length}</span>
+            {showPayouts ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
+          {showPayouts && (
+            <button 
+              className="refresh-btn small"
+              onClick={loadPayoutRequests}
+              disabled={payoutsLoading}
+            >
+              <RefreshCw size={14} className={payoutsLoading ? "spinning" : ""} />
+            </button>
+          )}
+        </div>
+        
+        {showPayouts && (
+          <div className="payout-requests-table-wrapper">
+            {payoutsLoading ? (
+              <div className="table-loading">
+                <div className="loading-spinner" />
+                <p>Loading payout requests...</p>
+              </div>
+            ) : payoutRequests.length === 0 ? (
+              <div className="table-empty">
+                <Banknote size={48} />
+                <p>No payout requests</p>
+              </div>
+            ) : (
+              <table className="payout-requests-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Amount</th>
+                    <th>Payment Email</th>
+                    <th>Status</th>
+                    <th>Requested</th>
+                    <th>Processed</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payoutRequests.map((payout) => (
+                    <tr key={payout.id}>
+                      <td className="email-cell">{payout.user_email}</td>
+                      <td className="money-cell">{formatCurrency(payout.amount_cents)}</td>
+                      <td className="email-cell">{payout.payment_email || "—"}</td>
+                      <td>
+                        <span className={`status-badge ${payout.status === "paid" ? "status-active" : payout.status === "pending" || payout.status === "approved" ? "status-pending" : "status-rejected"}`}>
+                          {payout.status === "paid" && <Check size={14} />}
+                          {(payout.status === "pending" || payout.status === "approved") && <Clock size={14} />}
+                          {payout.status === "rejected" && <X size={14} />}
+                          {payout.status}
+                        </span>
+                      </td>
+                      <td>{formatDate(payout.created_at)}</td>
+                      <td>{formatDate(payout.processed_at)}</td>
+                      <td className="actions-cell">
+                        {payout.status === "pending" && (
+                          <>
+                            <button
+                              className="action-btn approve"
+                              onClick={() => handleApprovePayout(payout.id)}
+                              disabled={actionLoading === payout.id}
+                              title="Approve"
+                            >
+                              <Check size={16} />
+                            </button>
+                            <button
+                              className="action-btn reject"
+                              onClick={() => handleRejectPayout(payout.id)}
+                              disabled={actionLoading === payout.id}
+                              title="Reject"
+                            >
+                              <X size={16} />
+                            </button>
+                          </>
+                        )}
+                        {payout.status === "approved" && (
+                          <button
+                            className="action-btn success"
+                            onClick={() => handleMarkPaid(payout.id)}
+                            disabled={actionLoading === payout.id}
+                            title="Mark as Paid"
+                          >
+                            <DollarSign size={16} />
+                          </button>
+                        )}
+                        {payout.status === "paid" && (
+                          <span className="text-success" title={`Paid at ${formatDate(payout.paid_at)}`}>
+                            <Check size={16} />
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Filters */}
