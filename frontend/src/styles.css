@@ -4634,8 +4634,8 @@ select option {
 .settings-container {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
-  max-width: 1400px;
+  gap: 1.25rem;
+  max-width: 1200px;
   width: 100%;
 }
 
@@ -4651,25 +4651,28 @@ select option {
 }
 
 .settings-section {
-  padding: 1.5rem;
+  padding: 1.25rem;
   height: fit-content;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(8, 12, 20, 0.85);
 }
 
 .settings-section-title {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: var(--neon-cyan);
-  margin-bottom: 1.5rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.95rem;
+  text-transform: none;
+  letter-spacing: 0.05em;
+  color: var(--text-primary);
+  margin-bottom: 1.1rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 /* Horizontal form layout for desktop */
 .settings-form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
+  gap: 1.25rem;
+  align-items: start;
 }
 
 @media (max-width: 768px) {
@@ -4727,22 +4730,22 @@ select option {
 
 .settings-label {
   display: block;
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.75);
   margin-bottom: 0.5rem;
 }
 
 .settings-hint {
   display: block;
   font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.45);
   margin-top: 0.4rem;
 }
 
 /* Business Hours Grid */
 .business-hours-grid {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 0.75rem;
   margin-top: 1rem;
 }
@@ -4750,9 +4753,11 @@ select option {
 .hours-day-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 0.6rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .hours-day-row:last-child {
@@ -4760,9 +4765,9 @@ select option {
 }
 
 .hours-day-label {
-  width: 100px;
-  font-size: 0.85rem;
-  color: rgba(255, 255, 255, 0.8);
+  width: 90px;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .hours-closed-toggle {
@@ -4857,6 +4862,10 @@ input:checked + .toggle-slider.small:before {
   align-items: center;
   gap: 0.75rem;
   cursor: pointer;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .settings-toggle input {
@@ -4866,7 +4875,7 @@ input:checked + .toggle-slider.small:before {
 .toggle-slider {
   width: 44px;
   height: 24px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   position: relative;
   transition: all 0.3s;
@@ -10143,5 +10152,456 @@ input:checked + .toggle-slider.small:before {
   .admin-modal {
     width: 90vw;
     max-width: 600px;
+  }
+}
+
+/* =============================================================================
+   WIZARD STEP STYLING - Futuristic Glass Panels
+============================================================================= */
+
+/* Main wizard sections with glass effect and glow */
+.wizard-section {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  border: 1px solid rgba(0, 255, 255, 0.15);
+  border-radius: 16px;
+  padding: 1.5rem;
+  backdrop-blur: 12px;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.wizard-section:hover {
+  border-color: rgba(0, 255, 255, 0.3);
+  box-shadow: 0 0 30px rgba(0, 255, 255, 0.08);
+}
+
+/* Subtle corner glow effect */
+.wizard-section::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 80px;
+  height: 80px;
+  background: radial-gradient(circle, rgba(0, 255, 255, 0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* Section header styling */
+.wizard-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.wizard-section-icon {
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, rgba(0, 255, 255, 0.2) 0%, rgba(157, 78, 221, 0.15) 100%);
+  border-radius: 10px;
+  border: 1px solid rgba(0, 255, 255, 0.2);
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.wizard-section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #fff;
+  text-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
+}
+
+.wizard-section-subtitle {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* Logic Preview Panel - Terminal Style */
+.logic-preview-panel {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, rgba(10, 10, 10, 0.8) 100%);
+  border: 1px solid rgba(0, 255, 255, 0.2);
+  border-radius: 12px;
+  font-family: "JetBrains Mono", "SF Mono", "Monaco", monospace;
+  overflow: hidden;
+  position: relative;
+}
+
+.logic-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(0, 255, 255, 0.15);
+}
+
+.logic-preview-header span {
+  color: #0ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.logic-preview-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logic-preview-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0f0;
+  box-shadow: 0 0 8px #0f0;
+  animation: pulse-glow 2s infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px #0f0; }
+  50% { opacity: 0.5; box-shadow: 0 0 4px #0f0; }
+}
+
+.logic-preview-body {
+  padding: 1rem;
+  font-size: 0.75rem;
+  line-height: 1.8;
+  color: rgba(0, 255, 255, 0.8);
+}
+
+.logic-preview-body > div {
+  opacity: 0;
+  animation: terminalLine 0.3s ease-out forwards;
+}
+
+.logic-preview-body > div:nth-child(1) { animation-delay: 0.1s; }
+.logic-preview-body > div:nth-child(2) { animation-delay: 0.2s; }
+.logic-preview-body > div:nth-child(3) { animation-delay: 0.3s; }
+.logic-preview-body > div:nth-child(4) { animation-delay: 0.4s; }
+.logic-preview-body > div:nth-child(5) { animation-delay: 0.5s; }
+.logic-preview-body > div:nth-child(6) { animation-delay: 0.6s; }
+.logic-preview-body > div:nth-child(7) { animation-delay: 0.7s; }
+.logic-preview-body > div:nth-child(8) { animation-delay: 0.8s; }
+
+@keyframes terminalLine {
+  0% { opacity: 0; transform: translateX(-10px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
+.logic-preview-footer {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(0, 255, 255, 0.1);
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.4);
+  font-style: italic;
+}
+
+/* Glow Toggle Switch */
+.glow-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.glow-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.glow-toggle-track {
+  width: 48px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 13px;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.glow-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.glow-toggle input:checked + .glow-toggle-track {
+  background: linear-gradient(135deg, #0ff 0%, #9D4EDD 100%);
+  border-color: #0ff;
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.3), inset 0 0 10px rgba(0, 255, 255, 0.2);
+}
+
+.glow-toggle input:checked + .glow-toggle-track::after {
+  transform: translateX(22px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.glow-toggle-label {
+  margin-left: 0.75rem;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
+/* Time Select Dropdowns - Futuristic Style */
+.time-select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.time-select-wrapper select {
+  appearance: none;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 0.625rem 2rem 0.625rem 0.875rem;
+  color: #fff;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 100px;
+}
+
+.time-select-wrapper select:hover {
+  border-color: rgba(0, 255, 255, 0.4);
+  background: rgba(0, 255, 255, 0.05);
+}
+
+.time-select-wrapper select:focus {
+  outline: none;
+  border-color: #0ff;
+  box-shadow: 0 0 0 2px rgba(0, 255, 255, 0.15);
+}
+
+.time-select-wrapper::after {
+  content: "▼";
+  position: absolute;
+  right: 10px;
+  font-size: 0.6rem;
+  color: rgba(0, 255, 255, 0.6);
+  pointer-events: none;
+}
+
+/* Fee Input with Dollar Sign */
+.fee-input-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.fee-input-wrapper::before {
+  content: "$";
+  position: absolute;
+  left: 12px;
+  color: #0ff;
+  font-weight: 600;
+  z-index: 1;
+}
+
+.fee-input-wrapper input {
+  padding-left: 28px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 255, 255, 0.2);
+  border-radius: 8px;
+  color: #fff;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1rem;
+  width: 100px;
+  transition: all 0.2s ease;
+}
+
+.fee-input-wrapper input:focus {
+  outline: none;
+  border-color: #0ff;
+  box-shadow: 0 0 0 2px rgba(0, 255, 255, 0.15);
+}
+
+/* SMS Template Preview Box */
+.sms-template-preview {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.875rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.5;
+  position: relative;
+  font-style: italic;
+}
+
+.sms-template-preview::before {
+  content: "📱";
+  position: absolute;
+  top: -8px;
+  left: 12px;
+  background: #0a0a0a;
+  padding: 0 4px;
+  font-size: 0.9rem;
+}
+
+/* SMS Pending Banner */
+.sms-pending-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.1) 0%, rgba(255, 152, 0, 0.08) 100%);
+  border: 1px solid rgba(255, 193, 7, 0.25);
+  border-radius: 12px;
+  margin-bottom: 1rem;
+}
+
+.sms-pending-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.sms-pending-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+
+.sms-pending-text strong {
+  display: block;
+  color: #ffc107;
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+
+.sms-pending-text p {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.sms-pending-dismiss {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  transition: color 0.2s;
+}
+
+.sms-pending-dismiss:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Communications Step Info Box */
+.comms-info-box {
+  background: rgba(0, 255, 255, 0.05);
+  border: 1px solid rgba(0, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 1rem;
+  margin-top: 1rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.comms-info-box span:first-child {
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.comms-info-box p {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Wizard Mobile Responsive */
+@media (max-width: 767px) {
+  .wizard-section {
+    padding: 1rem;
+  }
+  
+  .wizard-section-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+  }
+  
+  .wizard-section-title {
+    font-size: 0.9rem;
+  }
+  
+  .logic-preview-panel {
+    margin-top: 1.5rem;
+  }
+  
+  .logic-preview-body {
+    font-size: 0.65rem;
+    padding: 0.75rem;
+  }
+  
+  .glow-toggle-track {
+    width: 42px;
+    height: 24px;
+  }
+  
+  .glow-toggle-track::after {
+    width: 16px;
+    height: 16px;
+  }
+  
+  .glow-toggle input:checked + .glow-toggle-track::after {
+    transform: translateX(18px);
+  }
+  
+  .fee-input-wrapper input {
+    width: 80px;
+    font-size: 0.9rem;
+  }
+  
+  .sms-pending-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  
+  .sms-pending-dismiss {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .wizard-section {
+    padding: 1.25rem;
+  }
+  
+  .logic-preview-body {
+    font-size: 0.7rem;
   }
 }

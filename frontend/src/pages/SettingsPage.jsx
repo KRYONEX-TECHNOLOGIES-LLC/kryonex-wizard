@@ -89,6 +89,9 @@ export default function SettingsPage() {
     post_call_sms_enabled: false,
     post_call_sms_template: "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.",
     post_call_sms_delay_seconds: 60,
+    confirmation_sms_enabled: true,
+    // User personal phone for receiving notifications
+    user_personal_phone: "",
   });
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -114,6 +117,8 @@ export default function SettingsPage() {
             business_hours: res.data.business_hours || prev.business_hours,
             business_timezone: res.data.business_timezone || prev.business_timezone,
             emergency_24_7: res.data.emergency_24_7 ?? prev.emergency_24_7,
+            confirmation_sms_enabled: res.data.confirmation_sms_enabled ?? prev.confirmation_sms_enabled,
+            user_personal_phone: res.data.user_personal_phone || prev.user_personal_phone,
           }));
           setLastUpdated(new Date());
         }
@@ -188,6 +193,9 @@ export default function SettingsPage() {
         post_call_sms_enabled: settings.post_call_sms_enabled,
         post_call_sms_template: settings.post_call_sms_template,
         post_call_sms_delay_seconds: settings.post_call_sms_delay_seconds,
+        confirmation_sms_enabled: settings.confirmation_sms_enabled,
+        // User personal phone for receiving notifications
+        user_personal_phone: settings.user_personal_phone,
       });
       setSaveStatus("Settings saved successfully!");
       setLastUpdated(new Date());
@@ -540,6 +548,85 @@ export default function SettingsPage() {
                       </span>
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* Appointment Confirmation SMS - Full Width */}
+              <div className="settings-section glass-panel full-width">
+                <h2 className="settings-section-title">Appointment Confirmation SMS</h2>
+                <p className="settings-description">
+                  Automatically send confirmation texts to customers when they book appointments through the AI.
+                </p>
+                <div className="settings-row">
+                  <div className="settings-form-group">
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.confirmation_sms_enabled}
+                        onChange={(e) => handleChange("confirmation_sms_enabled", e.target.checked)}
+                      />
+                      <span className="toggle-slider"></span>
+                      <span className="toggle-label">Enable Confirmation SMS</span>
+                    </label>
+                    <span className="settings-hint" style={{ marginTop: "0.5rem", display: "block" }}>
+                      Auto-sends: "Your appointment with {"{business}"} is confirmed for {"{date}"} at {"{time}"}. Reply STOP to opt out."
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Your Notifications - Full Width */}
+              <div className="settings-section glass-panel full-width">
+                <h2 className="settings-section-title">Your Notifications</h2>
+                <p className="settings-description">
+                  How do YOU want to be notified when the AI books appointments or handles calls?
+                </p>
+                <div className="settings-row">
+                  <div className="settings-form-group">
+                    <label className="settings-label">Your Personal Phone Number</label>
+                    <input
+                      type="tel"
+                      className="glass-input"
+                      value={settings.user_personal_phone}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        handleChange("user_personal_phone", v);
+                      }}
+                      onBlur={(e) => {
+                        const normalized = normalizePhone(e.target.value);
+                        if (normalized) {
+                          handleChange("user_personal_phone", normalized);
+                        }
+                      }}
+                      placeholder="+1 (555) 123-4567"
+                      style={{ maxWidth: "250px" }}
+                    />
+                    <span className="settings-hint">This is where YOU receive booking alerts (not customer texts)</span>
+                  </div>
+                </div>
+                <div className="settings-row" style={{ marginTop: "1rem" }}>
+                  <div className="settings-form-group">
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.notification_preferences?.email_on_booking ?? true}
+                        onChange={(e) => handleNotificationChange("email_on_booking", e.target.checked)}
+                      />
+                      <span className="toggle-slider"></span>
+                      <span className="toggle-label">Email me when AI books an appointment</span>
+                    </label>
+                  </div>
+                  <div className="settings-form-group">
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.notification_preferences?.sms_on_booking ?? true}
+                        onChange={(e) => handleNotificationChange("sms_on_booking", e.target.checked)}
+                      />
+                      <span className="toggle-slider"></span>
+                      <span className="toggle-label">Text me when AI books an appointment</span>
+                    </label>
+                  </div>
                 </div>
               </div>
 

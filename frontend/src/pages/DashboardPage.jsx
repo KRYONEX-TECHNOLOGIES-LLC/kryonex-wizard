@@ -88,6 +88,12 @@ export default function DashboardPage() {
       : window.localStorage.getItem("kryonex_low_usage_dismissed") === "true"
   );
   const [showUpsellModal, setShowUpsellModal] = React.useState(false);
+  const [smsApprovalPending, setSmsApprovalPending] = React.useState(false);
+  const [smsBannerDismissed, setSmsBannerDismissed] = React.useState(() =>
+    typeof window === "undefined"
+      ? false
+      : window.localStorage.getItem("kryonex_sms_banner_dismissed") === "true"
+  );
 
   // Live clock effect
   React.useEffect(() => {
@@ -138,7 +144,7 @@ export default function DashboardPage() {
           }
           const { data: agent } = await supabase
             .from("agents")
-            .select("phone_number, is_active")
+            .select("phone_number, is_active, created_at, sms_approved")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })
             .maybeSingle();
@@ -147,6 +153,14 @@ export default function DashboardPage() {
               phone_number: agent.phone_number || "",
               is_active: agent.is_active !== false,
             });
+            // Show SMS pending banner if agent is new (within 2 weeks) and not yet approved
+            if (agent.phone_number && !agent.sms_approved) {
+              const createdAt = agent.created_at ? new Date(agent.created_at) : null;
+              const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+              if (!createdAt || createdAt > twoWeeksAgo) {
+                setSmsApprovalPending(true);
+              }
+            }
           }
         }
       } finally {
@@ -356,6 +370,33 @@ export default function DashboardPage() {
               </button>
             </div>
           ) : null}
+          
+          {smsApprovalPending && !smsBannerDismissed && (
+            <div className="glass-panel sms-pending-banner">
+              <div className="sms-pending-content">
+                <span className="sms-pending-icon">📱</span>
+                <div className="sms-pending-text">
+                  <strong>SMS Activation Pending</strong>
+                  <p>
+                    Text messaging will automatically activate once carrier approval completes (~1-2 weeks).
+                    Your settings are saved and will work immediately when approved.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="sms-pending-dismiss"
+                onClick={() => {
+                  setSmsBannerDismissed(true);
+                  window.localStorage.setItem("kryonex_sms_banner_dismissed", "true");
+                }}
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          
           <div className="top-bar glass-panel">
             <div className="status-indicator">
               <span>🟢 SYSTEM ONLINE</span>

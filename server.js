@@ -273,6 +273,57 @@ const formatPrimaryService = (industry) => {
   return value;
 };
 
+/**
+ * Builds a human-readable schedule summary from wizard inputs.
+ * Used in AI prompts so the agent knows business hours.
+ * @param {Object} params - Schedule parameters
+ * @returns {string} - e.g., "Monday-Friday 8am-5pm, Saturday 9am-2pm, Sunday Closed (24/7 emergency dispatch available)"
+ */
+const buildScheduleSummary = ({
+  weekdayOpen = "08:00 AM",
+  weekdayClose = "05:00 PM",
+  weekendEnabled = false,
+  saturdayOpen = "09:00 AM",
+  saturdayClose = "02:00 PM",
+  emergency247 = false,
+}) => {
+  // Helper to convert "08:00 AM" or "08:00" to "8am"
+  const formatTimeShort = (timeStr) => {
+    const clean = String(timeStr || "").trim();
+    // Try to parse "08:00 AM" format
+    const match12 = clean.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (match12) {
+      let hour = parseInt(match12[1], 10);
+      const mins = match12[2];
+      const period = (match12[3] || "").toUpperCase();
+      
+      // If period is specified, use it
+      if (period === "PM" && hour < 12) hour += 12;
+      if (period === "AM" && hour === 12) hour = 0;
+      
+      const ampm = hour >= 12 ? "pm" : "am";
+      const h12 = hour % 12 || 12;
+      return mins === "00" ? `${h12}${ampm}` : `${h12}:${mins}${ampm}`;
+    }
+    // Fallback - return as-is
+    return clean || "9am";
+  };
+
+  let summary = `Monday-Friday ${formatTimeShort(weekdayOpen)}-${formatTimeShort(weekdayClose)}`;
+
+  if (weekendEnabled) {
+    summary += `, Saturday ${formatTimeShort(saturdayOpen)}-${formatTimeShort(saturdayClose)}`;
+  }
+
+  summary += ", Sunday Closed";
+
+  if (emergency247) {
+    summary += " (24/7 emergency dispatch available)";
+  }
+
+  return summary;
+};
+
 const enforceIpAllowlist = (req, res, next) => {
   if (!allowlist.length) return next();
   const ip =
@@ -985,6 +1036,46 @@ const getBusinessPhone = async (tenantId) => {
 // =============================================================================
 // END BULLETPROOF SMS SYSTEM
 // =============================================================================
+
+// =============================================================================
+// SMS OPT-OUT CHECK - CRITICAL FOR LEGAL COMPLIANCE
+// Call this before ANY outbound SMS to a customer
+// =============================================================================
+const canSendSmsToCustomer = async (customerPhone, userId) => {
+  if (!customerPhone) return false;
+  
+  const normalizedPhone = normalizePhoneForLookup(customerPhone);
+  
+  // Check user-specific opt-out
+  const { data: userOptOut } = await supabaseAdmin
+    .from("sms_opt_outs")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("phone", normalizedPhone)
+    .maybeSingle();
+  
+  if (userOptOut) {
+    console.log("[canSendSmsToCustomer] Blocked - user-specific opt-out", { phone: normalizedPhone, userId });
+    return false;
+  }
+  
+  // Check global opt-out (shared number mode)
+  if (MASTER_SMS_NUMBER) {
+    const { data: globalOptOut } = await supabaseAdmin
+      .from("sms_opt_outs")
+      .select("id")
+      .eq("phone", normalizedPhone)
+      .eq("global_opt_out", true)
+      .maybeSingle();
+    
+    if (globalOptOut) {
+      console.log("[canSendSmsToCustomer] Blocked - global opt-out", { phone: normalizedPhone });
+      return false;
+    }
+  }
+  
+  return true;
+};
 
 const sendSmsInternal = async ({
   userId,
@@ -6064,12 +6155,12 @@ app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     const [profileResult, agentResult] = await Promise.all([
       supabaseAdmin
         .from("profiles")
-        .select("business_name, email, phone, industry, google_review_url, review_request_enabled, review_request_template, business_hours, business_timezone, emergency_24_7")
+        .select("business_name, email, phone, industry, google_review_url, review_request_enabled, review_request_template, business_hours, business_timezone, emergency_24_7, user_personal_phone, notification_preferences")
         .eq("user_id", uid)
         .maybeSingle(),
       supabaseAdmin
         .from("agents")
-        .select("transfer_number, schedule_summary, standard_fee, emergency_fee, tone, phone_number, industry, post_call_sms_enabled, post_call_sms_template, post_call_sms_delay_seconds")
+        .select("transfer_number, schedule_summary, standard_fee, emergency_fee, tone, phone_number, industry, post_call_sms_enabled, post_call_sms_template, post_call_sms_delay_seconds, confirmation_sms_enabled")
         .eq("user_id", uid)
         .maybeSingle()
     ]);
@@ -6099,11 +6190,12 @@ app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
       schedule_summary: agent.schedule_summary || "",
       agent_tone: agent.tone || "Calm & Professional",
       phone_number: agent.phone_number || "",
-      notification_preferences: {
+      notification_preferences: profile.notification_preferences || {
         email_on_booking: true,
         sms_on_booking: true,
         daily_summary: false
       },
+      user_personal_phone: profile.user_personal_phone || "",
       // Business hours settings
       business_hours: profile.business_hours || defaultHours,
       business_timezone: profile.business_timezone || "America/Chicago",
@@ -6112,6 +6204,8 @@ app.get("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
       post_call_sms_enabled: agent.post_call_sms_enabled || false,
       post_call_sms_template: agent.post_call_sms_template || "Thanks for calling {business}! We appreciate your call and will follow up shortly if needed.",
       post_call_sms_delay_seconds: agent.post_call_sms_delay_seconds || 60,
+      // Confirmation SMS settings
+      confirmation_sms_enabled: agent.confirmation_sms_enabled ?? true,
       // Review request settings
       review_request_enabled: profile.review_request_enabled || false,
       google_review_url: profile.google_review_url || "",
@@ -6148,6 +6242,9 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
       business_hours,
       business_timezone,
       emergency_24_7,
+      // Confirmation SMS and user notifications
+      confirmation_sms_enabled,
+      user_personal_phone,
     } = req.body;
     
     // Update profile if business_name or review settings provided
@@ -6161,6 +6258,10 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     if (business_hours !== undefined) profileUpdates.business_hours = business_hours;
     if (business_timezone !== undefined) profileUpdates.business_timezone = business_timezone;
     if (emergency_24_7 !== undefined) profileUpdates.emergency_24_7 = emergency_24_7;
+    // User personal phone for notifications
+    if (user_personal_phone !== undefined) profileUpdates.user_personal_phone = user_personal_phone;
+    // Notification preferences (stored in profiles)
+    if (notification_preferences !== undefined) profileUpdates.notification_preferences = notification_preferences;
     
     if (Object.keys(profileUpdates).length > 0) {
       const { error: profileError } = await supabaseAdmin
@@ -6185,6 +6286,8 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     if (post_call_sms_enabled !== undefined) agentUpdates.post_call_sms_enabled = post_call_sms_enabled;
     if (post_call_sms_template !== undefined) agentUpdates.post_call_sms_template = post_call_sms_template;
     if (post_call_sms_delay_seconds !== undefined) agentUpdates.post_call_sms_delay_seconds = post_call_sms_delay_seconds;
+    // Confirmation SMS
+    if (confirmation_sms_enabled !== undefined) agentUpdates.confirmation_sms_enabled = confirmation_sms_enabled;
     
     if (Object.keys(agentUpdates).length > 0) {
       const { error: agentError } = await supabaseAdmin
@@ -9848,18 +9951,73 @@ app.post(
       },
     });
     try {
-      const transferNumber =
-        req.body && typeof req.body.transfer_number !== "undefined"
-          ? String(req.body.transfer_number || "").trim() || null
-          : null;
-      const businessNameRaw = req.body && req.body.business_name != null ? String(req.body.business_name || "").trim() : null;
-      const areaCodeRaw = req.body && req.body.area_code != null ? String(req.body.area_code || "").trim() : null;
+      const body = req.body || {};
+      
+      // Extract identity fields
+      const transferNumber = typeof body.transfer_number !== "undefined"
+        ? String(body.transfer_number || "").trim() || null
+        : null;
+      const businessNameRaw = body.business_name != null ? String(body.business_name || "").trim() : null;
+      const areaCodeRaw = body.area_code != null ? String(body.area_code || "").trim() : null;
+      
+      // Extract logistics fields
+      const agentTone = String(body.agent_tone || body.toneInput || "Calm & Professional").trim();
+      const weekdayOpen = String(body.weekday_open || body.weekdayOpen || "08:00 AM").trim();
+      const weekdayClose = String(body.weekday_close || body.weekdayClose || "05:00 PM").trim();
+      const weekendEnabled = body.weekend_enabled ?? body.weekendEnabled ?? false;
+      const saturdayOpen = String(body.saturday_open || body.saturdayOpen || "09:00 AM").trim();
+      const saturdayClose = String(body.saturday_close || body.saturdayClose || "02:00 PM").trim();
+      const emergency247 = body.emergency_24_7 ?? body.emergency247 ?? false;
+      const businessTimezone = String(body.business_timezone || body.businessTimezone || "America/Chicago").trim();
+      const standardFee = String(body.standard_fee || body.standardFee || "89").replace(/[^0-9]/g, "") || "89";
+      const emergencyFee = String(body.emergency_fee || body.emergencyFee || "189").replace(/[^0-9]/g, "") || "189";
+      
+      // Extract communications fields
+      const postCallSmsEnabled = body.post_call_sms_enabled ?? body.postCallSmsEnabled ?? true;
+      const confirmationSmsEnabled = body.confirmation_sms_enabled ?? body.confirmationSmsEnabled ?? true;
+      const userPersonalPhone = String(body.user_personal_phone || body.userPersonalPhone || "").trim() || null;
+      const emailOnBooking = body.email_on_booking ?? body.emailOnBooking ?? true;
+      const smsOnBooking = body.sms_on_booking ?? body.smsOnBooking ?? true;
+      
+      // Build schedule summary for AI prompt
+      const scheduleSummary = buildScheduleSummary({
+        weekdayOpen,
+        weekdayClose,
+        weekendEnabled,
+        saturdayOpen,
+        saturdayClose,
+        emergency247,
+      });
+      
       console.info("[deploy-agent-self] identity payload", { business_name: businessNameRaw || "(empty)", area_code: areaCodeRaw || "(empty)" });
+      console.info("[deploy-agent-self] logistics payload", { agentTone, scheduleSummary, standardFee, emergencyFee, transferNumber });
+      console.info("[deploy-agent-self] comms payload", { postCallSmsEnabled, confirmationSmsEnabled, userPersonalPhone, emailOnBooking, smsOnBooking });
+      
+      // Build business_hours JSON for profiles
+      const businessHours = {
+        weekday: { open: weekdayOpen, close: weekdayClose },
+        weekend_enabled: weekendEnabled,
+        saturday: weekendEnabled ? { open: saturdayOpen, close: saturdayClose } : null,
+        sunday: null,
+      };
+      
+      // Build notification preferences JSON
+      const notificationPreferences = {
+        email_on_booking: emailOnBooking,
+        sms_on_booking: smsOnBooking,
+      };
+      
+      // Update profiles with all new fields
       if (businessNameRaw && businessNameRaw.length >= 2 && businessNameRaw.length <= 80) {
         const { error: upsertErr } = await supabaseAdmin.from("profiles").upsert({
           user_id: uid,
           business_name: businessNameRaw,
           ...(areaCodeRaw && /^\d{3}$/.test(areaCodeRaw) ? { area_code: areaCodeRaw } : {}),
+          business_hours: businessHours,
+          business_timezone: businessTimezone,
+          emergency_24_7: emergency247,
+          user_personal_phone: userPersonalPhone,
+          notification_preferences: notificationPreferences,
         }, { onConflict: "user_id" });
         if (upsertErr) {
           console.error("🔥 DB SAVE FAILED (profiles):", { userId: uid, error: upsertErr.message });
@@ -9868,12 +10026,26 @@ app.post(
           console.info("[deploy-agent-self] profiles updated", { userId: uid, business_name: businessNameRaw, verified_in_db: verify?.business_name || "(empty)" });
         }
       } else if (areaCodeRaw && /^\d{3}$/.test(areaCodeRaw)) {
-        await supabaseAdmin.from("profiles").update({ area_code: areaCodeRaw }).eq("user_id", uid);
+        await supabaseAdmin.from("profiles").update({ 
+          area_code: areaCodeRaw,
+          business_hours: businessHours,
+          business_timezone: businessTimezone,
+          emergency_24_7: emergency247,
+          user_personal_phone: userPersonalPhone,
+          notification_preferences: notificationPreferences,
+        }).eq("user_id", uid);
       } else if (!businessNameRaw || businessNameRaw.length < 2) {
         console.warn("[deploy-agent-self] no valid business_name in request — profile not updated");
       }
+      
       const result = await deployAgentForUser(uid, deployRequestId, {
         transferNumber,
+        agentTone,
+        scheduleSummary,
+        standardFee,
+        emergencyFee,
+        postCallSmsEnabled,
+        confirmationSmsEnabled,
       });
       if (result.error) {
         const status =
@@ -11107,6 +11279,13 @@ const provisionPhoneNumberOnly = async ({
   transferNumber: transferNumberRaw,
   updateExisting = false,
   industry = "hvac",
+  // New wizard fields
+  agentTone = "Calm & Professional",
+  scheduleSummary = null,
+  standardFee = null,
+  emergencyFee = null,
+  postCallSmsEnabled = true,
+  confirmationSmsEnabled = true,
 }) => {
   const nickname = String(businessName || "").trim() || "Business";
   
@@ -11226,10 +11405,10 @@ const provisionPhoneNumberOnly = async ({
     llm_id: null,
     prompt: null,
     area_code: areaCode || null,
-    tone: null,
-    schedule_summary: null,
-    standard_fee: null,
-    emergency_fee: null,
+    tone: agentTone || "Calm & Professional",
+    schedule_summary: scheduleSummary || null,
+    standard_fee: standardFee || null,
+    emergency_fee: emergencyFee || null,
     payment_id: "user_deployed",
     transfer_number: transferNumber || null,
     dispatch_base_location: null,
@@ -11240,6 +11419,8 @@ const provisionPhoneNumberOnly = async ({
     nickname: nickname || null,
     provider_number_id: phoneNumber || null,
     industry: industry || "hvac",  // Store industry for reference
+    post_call_sms_enabled: postCallSmsEnabled ?? true,
+    confirmation_sms_enabled: confirmationSmsEnabled ?? true,
   };
   
   if (updateExisting) {
@@ -11375,6 +11556,15 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
       ? String(options.transferNumber || "").trim().replace(/[^\d+]/g, "") || null
       : null;
   const industry = String(profile.industry || "hvac").toLowerCase();
+  
+  // Extract new wizard options with defaults
+  const agentTone = options.agentTone || "Calm & Professional";
+  const scheduleSummary = options.scheduleSummary || "Monday-Friday 8am-5pm, Sunday Closed";
+  const standardFee = options.standardFee || "89";
+  const emergencyFee = options.emergencyFee || "189";
+  const postCallSmsEnabled = options.postCallSmsEnabled ?? true;
+  const confirmationSmsEnabled = options.confirmationSmsEnabled ?? true;
+  
   try {
     const result = await provisionPhoneNumberOnly({
       userId: targetUserId,
@@ -11384,6 +11574,13 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
       transferNumber: transferNumber || undefined,
       updateExisting,
       industry,  // Pass industry so correct master template is used
+      // New wizard fields
+      agentTone,
+      scheduleSummary,
+      standardFee,
+      emergencyFee,
+      postCallSmsEnabled,
+      confirmationSmsEnabled,
     });
     await supabaseAdmin
       .from("profiles")

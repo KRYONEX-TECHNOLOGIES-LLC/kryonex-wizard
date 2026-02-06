@@ -14,6 +14,9 @@ import {
   Mic,
   DollarSign,
   MapPin,
+  MessageSquare,
+  Phone,
+  Bell,
 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -80,6 +83,16 @@ const MODERN_STEP_META = [
     title: "Identity",
     description: "Define the business signature.",
     icon: Building2,
+  },
+  {
+    title: "Logistics",
+    description: "Configure schedule, pricing, and call routing.",
+    icon: Clock,
+  },
+  {
+    title: "Communications",
+    description: "Set up SMS automation and notifications.",
+    icon: MessageSquare,
   },
   {
     title: "Plan Selection",
@@ -169,20 +182,33 @@ const stepVariants = {
 };
 
 const defaultFormState = {
+  // Step 1: Identity
   nameInput: "",
   areaCodeInput: "",
   industryInput: "hvac",
+  
+  // Step 2: Logistics
   toneInput: "Calm & Professional",
+  transferNumber: "",
   weekdayOpen: "08:00 AM",
   weekdayClose: "05:00 PM",
   weekendEnabled: false,
   saturdayOpen: "09:00 AM",
   saturdayClose: "02:00 PM",
   emergency247: false,
+  businessTimezone: "America/Chicago",
   standardFee: "89",
   emergencyFee: "189",
-  transferNumber: "",
-    calComLink: "",
+  
+  // Step 3: Communications (SMS toggles - no template customization)
+  postCallSmsEnabled: true,
+  confirmationSmsEnabled: true,
+  userPersonalPhone: "",
+  emailOnBooking: true,
+  smsOnBooking: true,
+  
+  // Legacy/other
+  calComLink: "",
   paymentId: "",
   cardName: "",
   cardNumber: "",
@@ -241,10 +267,10 @@ export default function WizardPage({ embeddedMode }) {
       : LEGACY_STEPS_ENABLED
       ? FULL_STEP_META.length
       : MODERN_STEP_META.length;
-    // After Stripe checkout, land directly on Step 3 (Deploy) — never show Step 1 or 2 again
+    // After Stripe checkout, land directly on Deploy step (step 5) — never show earlier steps again
     if (!embeddedMode && !LEGACY_STEPS_ENABLED && typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      if (params.get("checkout") === "success" && maxStepVal >= 3) return 3;
+      if (params.get("checkout") === "success" && maxStepVal >= 5) return 5;
       return 1; // user-scoped step loaded in loadProfile
     }
     const stored = Number(getSavedState(stepKey));
@@ -437,6 +463,7 @@ export default function WizardPage({ embeddedMode }) {
   const canContinueIndustry = form.industryInput.length > 0;
   const canContinueLogistics =
     form.standardFee.length > 0 && form.emergencyFee.length > 0;
+  const canContinueComms = true; // Communications step has sensible defaults, always valid
   const canContinuePayment = paymentVerified;
 
   const updateField = (field, value) => {
@@ -1384,9 +1411,473 @@ export default function WizardPage({ embeddedMode }) {
               </motion.div>
             )}
 
+            {/* Step 2: Logistics - Schedule, Pricing, Call Routing */}
             {!LEGACY_STEPS_ENABLED && step === 2 && (
               <motion.div
-                key="step-2-plan"
+                key="step-2-logistics"
+                variants={stepVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="grid gap-8 lg:grid-cols-[1fr_340px]"
+              >
+                <div className="space-y-6">
+                  <div>
+                    <h2 className="text-3xl font-semibold">Temporal & Financial Configuration</h2>
+                    <p className="mt-2 text-white/60">
+                      Configure the AI's internal clock and availability logic.
+                    </p>
+                  </div>
+
+                  {/* Call Routing Section */}
+                  <div className="wizard-section glass-panel rounded-2xl p-6 border border-white/10">
+                    <div className="flex items-center gap-3 mb-4">
+                      <Phone size={20} className="text-neon-cyan" />
+                      <h3 className="text-lg font-semibold">Call Routing</h3>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-xs uppercase tracking-wider text-white/50">
+                          Transfer Number
+                        </label>
+                        <input
+                          className="glass-input w-full"
+                          placeholder="+1 (555) 123-4567"
+                          value={form.transferNumber}
+                          onChange={(e) => updateField("transferNumber", e.target.value)}
+                        />
+                        <p className="text-xs text-white/40">
+                          AI transfers here for emergencies or when callers request a human
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs uppercase tracking-wider text-white/50">
+                          Agent Tone
+                        </label>
+                        <select
+                          className="glass-input w-full"
+                          value={form.toneInput}
+                          onChange={(e) => updateField("toneInput", e.target.value)}
+                        >
+                          {AGENT_TONES.map((tone) => (
+                            <option key={tone} value={tone}>{tone}</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-white/40">
+                          How the AI sounds on calls
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Business Hours Section */}
+                  <div className="wizard-section glass-panel rounded-2xl p-6 border border-white/10">
+                    <div className="flex items-center gap-3 mb-4">
+                      <Calendar size={20} className="text-neon-purple" />
+                      <h3 className="text-lg font-semibold">Business Hours</h3>
+                    </div>
+                    
+                    {/* Weekday Hours */}
+                    <div className="mb-4">
+                      <label className="text-xs uppercase tracking-wider text-white/50 block mb-2">
+                        Standard Weekdays (Mon-Fri)
+                      </label>
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <TimeSelect
+                          value={form.weekdayOpen}
+                          onChange={(val) => updateField("weekdayOpen", val)}
+                        />
+                        <span className="text-white/40 text-sm">TO</span>
+                        <TimeSelect
+                          value={form.weekdayClose}
+                          onChange={(val) => updateField("weekdayClose", val)}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Weekend Toggle */}
+                    <div className="mb-4 p-4 rounded-xl border border-white/10 bg-white/5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Clock size={18} className="text-white/60" />
+                          <div>
+                            <div className="font-medium">Weekend Operations</div>
+                            <div className="text-xs text-white/40">Enable Saturday availability</div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => updateField("weekendEnabled", !form.weekendEnabled)}
+                          className={`relative w-12 h-6 rounded-full transition-colors ${
+                            form.weekendEnabled ? "bg-neon-cyan" : "bg-white/20"
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                              form.weekendEnabled ? "left-7" : "left-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                      {form.weekendEnabled && (
+                        <div className="mt-4 flex items-center gap-3 flex-wrap">
+                          <TimeSelect
+                            value={form.saturdayOpen}
+                            onChange={(val) => updateField("saturdayOpen", val)}
+                          />
+                          <span className="text-white/40 text-sm">TO</span>
+                          <TimeSelect
+                            value={form.saturdayClose}
+                            onChange={(val) => updateField("saturdayClose", val)}
+                          />
+                          <span className="text-xs text-white/40">(Saturday only)</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Emergency 24/7 Toggle */}
+                    <div className="p-4 rounded-xl border border-white/10 bg-white/5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Zap size={18} className="text-neon-pink" />
+                          <div>
+                            <div className="font-medium">Emergency Override Protocol</div>
+                            <div className="text-xs text-white/40">Enable 24/7 emergency dispatching</div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => updateField("emergency247", !form.emergency247)}
+                          className={`relative w-12 h-6 rounded-full transition-colors ${
+                            form.emergency247 ? "bg-neon-pink" : "bg-white/20"
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                              form.emergency247 ? "left-7" : "left-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Timezone */}
+                    <div className="mt-4 space-y-2">
+                      <label className="text-xs uppercase tracking-wider text-white/50">
+                        Business Timezone
+                      </label>
+                      <select
+                        className="glass-input w-full"
+                        value={form.businessTimezone}
+                        onChange={(e) => updateField("businessTimezone", e.target.value)}
+                      >
+                        <option value="America/New_York">Eastern (ET)</option>
+                        <option value="America/Chicago">Central (CT)</option>
+                        <option value="America/Denver">Mountain (MT)</option>
+                        <option value="America/Los_Angeles">Pacific (PT)</option>
+                        <option value="America/Phoenix">Arizona (AZ)</option>
+                        <option value="America/Anchorage">Alaska (AK)</option>
+                        <option value="Pacific/Honolulu">Hawaii (HI)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Service Economics Section */}
+                  <div className="wizard-section glass-panel rounded-2xl p-6 border border-white/10">
+                    <div className="flex items-center gap-3 mb-4">
+                      <DollarSign size={20} className="text-neon-green" />
+                      <h3 className="text-lg font-semibold">Service Economics</h3>
+                    </div>
+                    <p className="text-sm text-white/50 mb-4">
+                      Define the financial thresholds for the AI to quote
+                    </p>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-xs uppercase tracking-wider text-white/50">
+                          Standard Dispatch Fee
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50">$</span>
+                          <input
+                            className="glass-input w-full pl-8"
+                            placeholder="89"
+                            value={form.standardFee}
+                            onChange={(e) => updateField("standardFee", e.target.value.replace(/[^0-9]/g, ""))}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs uppercase tracking-wider text-white/50">
+                          Emergency / After-Hours
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50">$</span>
+                          <input
+                            className="glass-input w-full pl-8"
+                            placeholder="189"
+                            value={form.emergencyFee}
+                            onChange={(e) => updateField("emergencyFee", e.target.value.replace(/[^0-9]/g, ""))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Live Preview Panel */}
+                <div className="glass-panel rounded-2xl p-6 border border-white/10 bg-gradient-to-b from-white/5 to-transparent h-fit sticky top-24">
+                  <div className="text-xs uppercase tracking-[0.3em] text-white/40 mb-4">
+                    Logic Preview
+                  </div>
+                  <div className="font-mono text-sm space-y-2 text-neon-green">
+                    <div className="text-white/50">&gt; CHECKING_SCHEDULE...</div>
+                    <div>&gt; MON-FRI: {form.weekdayOpen} - {form.weekdayClose}</div>
+                    {form.weekendEnabled && (
+                      <div>&gt; SATURDAY: {form.saturdayOpen} - {form.saturdayClose}</div>
+                    )}
+                    <div>&gt; SUNDAY: CLOSED</div>
+                    <div className={form.emergency247 ? "text-neon-pink" : "text-white/40"}>
+                      &gt; EMERGENCY_MODE: {form.emergency247 ? "ENABLED" : "DISABLED"}
+                    </div>
+                    <div className="text-neon-cyan">&gt; STANDARD_FEE: ${form.standardFee || "0"}</div>
+                    <div className="text-neon-cyan">&gt; EMERGENCY_FEE: ${form.emergencyFee || "0"}</div>
+                    {form.transferNumber && (
+                      <div>&gt; TRANSFER: {form.transferNumber}</div>
+                    )}
+                    <div>&gt; TONE: {form.toneInput}</div>
+                  </div>
+                  <div className="mt-6 pt-4 border-t border-white/10 text-xs text-white/40">
+                    The AI will use this logic to route calls and quote pricing.
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Step 3: Communications - SMS Settings & Notifications */}
+            {!LEGACY_STEPS_ENABLED && step === 3 && (
+              <motion.div
+                key="step-3-comms"
+                variants={stepVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="grid gap-8 lg:grid-cols-[1fr_340px]"
+              >
+                <div className="space-y-6">
+                  <div>
+                    <h2 className="text-3xl font-semibold">Communication Protocols</h2>
+                    <p className="mt-2 text-white/60">
+                      Configure how the AI keeps you and customers informed.
+                    </p>
+                  </div>
+
+                  {/* Customer Text Messages Section */}
+                  <div className="wizard-section glass-panel rounded-2xl p-6 border border-white/10">
+                    <div className="flex items-center gap-3 mb-4">
+                      <MessageSquare size={20} className="text-neon-cyan" />
+                      <h3 className="text-lg font-semibold">Customer Text Messages</h3>
+                    </div>
+                    <p className="text-sm text-white/50 mb-4">
+                      Auto-texts sent to your customers (fixed professional messages)
+                    </p>
+
+                    {/* Post-Call Thank You Toggle */}
+                    <div className="mb-4 p-4 rounded-xl border border-white/10 bg-white/5">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className="font-medium">Post-Call Thank You</div>
+                          <div className="text-xs text-white/40">Sent after every call</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => updateField("postCallSmsEnabled", !form.postCallSmsEnabled)}
+                          className={`relative w-12 h-6 rounded-full transition-colors ${
+                            form.postCallSmsEnabled ? "bg-neon-cyan" : "bg-white/20"
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                              form.postCallSmsEnabled ? "left-7" : "left-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                      <div className="text-sm text-white/60 bg-black/30 rounded-lg p-3 font-mono">
+                        "Thanks for calling {form.nameInput || "[Your Business]"}! We appreciate your call."
+                      </div>
+                    </div>
+
+                    {/* Appointment Confirmation Toggle */}
+                    <div className="p-4 rounded-xl border border-white/10 bg-white/5">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className="font-medium">Appointment Confirmation</div>
+                          <div className="text-xs text-white/40">Sent when AI books an appointment</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => updateField("confirmationSmsEnabled", !form.confirmationSmsEnabled)}
+                          className={`relative w-12 h-6 rounded-full transition-colors ${
+                            form.confirmationSmsEnabled ? "bg-neon-cyan" : "bg-white/20"
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                              form.confirmationSmsEnabled ? "left-7" : "left-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                      <div className="text-sm text-white/60 bg-black/30 rounded-lg p-3 font-mono">
+                        "Your appointment with {form.nameInput || "[Your Business]"} is confirmed for [Date] at [Time]. Reply STOP to opt out."
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Your Notifications Section */}
+                  <div className="wizard-section glass-panel rounded-2xl p-6 border border-white/10">
+                    <div className="flex items-center gap-3 mb-4">
+                      <Bell size={20} className="text-neon-purple" />
+                      <h3 className="text-lg font-semibold">Your Notifications</h3>
+                    </div>
+                    <p className="text-sm text-white/50 mb-4">
+                      How do YOU want to be notified about AI activity?
+                    </p>
+
+                    {/* Personal Phone Number */}
+                    <div className="mb-4 space-y-2">
+                      <label className="text-xs uppercase tracking-wider text-white/50">
+                        Your Phone Number
+                      </label>
+                      <input
+                        className="glass-input w-full"
+                        placeholder="+1 (555) 987-6543"
+                        value={form.userPersonalPhone}
+                        onChange={(e) => updateField("userPersonalPhone", e.target.value)}
+                      />
+                      <p className="text-xs text-white/40">
+                        This is where YOU receive booking alerts
+                      </p>
+                    </div>
+
+                    {/* Notification Toggles */}
+                    <div className="space-y-3">
+                      <div className="text-xs uppercase tracking-wider text-white/50">
+                        When AI Books an Appointment:
+                      </div>
+
+                      {/* Email Toggle */}
+                      <div className="p-4 rounded-xl border border-white/10 bg-white/5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg">📧</span>
+                            <span className="font-medium">Email me</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => updateField("emailOnBooking", !form.emailOnBooking)}
+                            className={`relative w-12 h-6 rounded-full transition-colors ${
+                              form.emailOnBooking ? "bg-neon-cyan" : "bg-white/20"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                                form.emailOnBooking ? "left-7" : "left-1"
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* SMS Toggle */}
+                      <div className="p-4 rounded-xl border border-white/10 bg-white/5">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg">📱</span>
+                            <span className="font-medium">Text me</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => updateField("smsOnBooking", !form.smsOnBooking)}
+                            className={`relative w-12 h-6 rounded-full transition-colors ${
+                              form.smsOnBooking ? "bg-neon-cyan" : "bg-white/20"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                                form.smsOnBooking ? "left-7" : "left-1"
+                              }`}
+                            />
+                          </button>
+                        </div>
+                        {form.smsOnBooking && (
+                          <div className="text-sm text-white/60 bg-black/30 rounded-lg p-3 font-mono">
+                            "New booking! [Customer] scheduled for [Date/Time]"
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SMS Pending Banner */}
+                  <div className="rounded-2xl border border-neon-cyan/30 bg-neon-cyan/5 p-4">
+                    <div className="flex items-start gap-3">
+                      <span className="text-xl">ℹ️</span>
+                      <div>
+                        <div className="font-semibold text-neon-cyan">SMS Activation Pending</div>
+                        <p className="text-sm text-white/60 mt-1">
+                          Text messaging features will automatically activate once carrier approval completes (~1-2 weeks). 
+                          Your settings are saved and will work immediately when approved.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Preview Panel */}
+                <div className="glass-panel rounded-2xl p-6 border border-white/10 bg-gradient-to-b from-white/5 to-transparent h-fit sticky top-24">
+                  <div className="text-xs uppercase tracking-[0.3em] text-white/40 mb-4">
+                    Communication Preview
+                  </div>
+                  <div className="space-y-4">
+                    <div className="text-sm">
+                      <div className="text-white/50 text-xs uppercase mb-1">To Customers:</div>
+                      <div className="flex items-center gap-2">
+                        <span className={form.postCallSmsEnabled ? "text-neon-green" : "text-white/30"}>●</span>
+                        <span className={form.postCallSmsEnabled ? "text-white/80" : "text-white/30"}>Post-Call Thank You</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={form.confirmationSmsEnabled ? "text-neon-green" : "text-white/30"}>●</span>
+                        <span className={form.confirmationSmsEnabled ? "text-white/80" : "text-white/30"}>Appointment Confirmation</span>
+                      </div>
+                    </div>
+                    <div className="border-t border-white/10 pt-4 text-sm">
+                      <div className="text-white/50 text-xs uppercase mb-1">To You:</div>
+                      <div className="flex items-center gap-2">
+                        <span className={form.emailOnBooking ? "text-neon-green" : "text-white/30"}>●</span>
+                        <span className={form.emailOnBooking ? "text-white/80" : "text-white/30"}>Email on Booking</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={form.smsOnBooking ? "text-neon-green" : "text-white/30"}>●</span>
+                        <span className={form.smsOnBooking ? "text-white/80" : "text-white/30"}>SMS on Booking</span>
+                      </div>
+                      {form.userPersonalPhone && (
+                        <div className="mt-2 text-xs text-white/40">
+                          → {form.userPersonalPhone}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-6 pt-4 border-t border-white/10 text-xs text-white/40">
+                    All messages include automatic STOP opt-out compliance.
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {!LEGACY_STEPS_ENABLED && step === 4 && (
+              <motion.div
+                key="step-4-plan"
                 variants={stepVariants}
                 initial="initial"
                 animate="animate"
@@ -1420,7 +1911,7 @@ export default function WizardPage({ embeddedMode }) {
                         <p>Payment confirmed. Proceed to deploy.</p>
                         <button
                           type="button"
-                          onClick={() => persistStep(3)}
+                          onClick={() => persistStep(5)}
                           className="glow-button"
                         >
                           Proceed to Deploy
@@ -1582,9 +2073,9 @@ export default function WizardPage({ embeddedMode }) {
               </motion.div>
             )}
 
-            {!embeddedMode && step === 3 && (
+            {!embeddedMode && step === 5 && (
               <motion.div
-                key="step-3-deploy-user"
+                key="step-5-deploy-user"
                 variants={stepVariants}
                 initial="initial"
                 animate="animate"
@@ -2781,16 +3272,31 @@ export default function WizardPage({ embeddedMode }) {
                 disabled={!canContinueIdentity || saving || checkoutLoading}
                 className="glow-button"
               >
-                {saving ? "SAVING IDENTITY..." : "Continue to Plans"}
+                {saving ? "SAVING IDENTITY..." : "Continue to Logistics"}
               </button>
-            ) : step === 2 && paymentVerified ? (
+            ) : step === 2 ? (
               <button
                 onClick={() => persistStep(3)}
+                disabled={!canContinueLogistics}
+                className="glow-button"
+              >
+                Continue to Communications
+              </button>
+            ) : step === 3 ? (
+              <button
+                onClick={() => persistStep(4)}
+                className="glow-button"
+              >
+                Continue to Plans
+              </button>
+            ) : step === 4 && paymentVerified ? (
+              <button
+                onClick={() => persistStep(5)}
                 className="glow-button"
               >
                 Proceed to Deploy
               </button>
-            ) : embeddedMode && step === 3 ? (
+            ) : step === 5 || (embeddedMode && step === 5) ? (
               <span className="text-xs text-white/40 uppercase tracking-widest">
                 Deploy above
               </span>
