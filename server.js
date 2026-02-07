@@ -550,8 +550,16 @@ const checkWebhookHealth = async () => {
   }
 };
 
-// Run webhook health check every 15 minutes
-setInterval(checkWebhookHealth, 15 * 60 * 1000);
+// Run webhook health check every 15 minutes (with distributed locking)
+setInterval(async () => {
+  const gotLock = await acquireDistributedLock("webhook-health-check", 120);
+  if (!gotLock) return;
+  try {
+    await checkWebhookHealth();
+  } finally {
+    await releaseDistributedLock("webhook-health-check");
+  }
+}, 15 * 60 * 1000);
 
 // =============================================================================
 // CUSTOMER HEALTH SCORING SYSTEM
@@ -771,8 +779,19 @@ const recalculateAllHealthScores = async () => {
   }
 };
 
-// Schedule health score recalculation (every 6 hours)
-setInterval(recalculateAllHealthScores, 6 * 60 * 60 * 1000);
+// Schedule health score recalculation (every 6 hours, with distributed locking)
+setInterval(async () => {
+  const gotLock = await acquireDistributedLock("health-score-recalc", 300);
+  if (!gotLock) return;
+  try {
+    await recalculateAllHealthScores();
+    await recordJobRun("health-score-recalc", "success");
+  } catch (err) {
+    await recordJobRun("health-score-recalc", "failed", err.message);
+  } finally {
+    await releaseDistributedLock("health-score-recalc");
+  }
+}, 6 * 60 * 60 * 1000);
 
 // =============================================================================
 // CHURN PREVENTION SYSTEM
@@ -915,8 +934,19 @@ const checkInactiveUsers = async () => {
   }
 };
 
-// Run inactivity check daily
-setInterval(checkInactiveUsers, 24 * 60 * 60 * 1000);
+// Run inactivity check daily (with distributed locking)
+setInterval(async () => {
+  const gotLock = await acquireDistributedLock("inactive-users-check", 600);
+  if (!gotLock) return;
+  try {
+    await checkInactiveUsers();
+    await recordJobRun("inactive-users-check", "success");
+  } catch (err) {
+    await recordJobRun("inactive-users-check", "failed", err.message);
+  } finally {
+    await releaseDistributedLock("inactive-users-check");
+  }
+}, 24 * 60 * 60 * 1000);
 
 // =============================================================================
 // OPS INFRASTRUCTURE HELPERS
@@ -2359,6 +2389,13 @@ app.post(
 
     setImmediate(async () => {
       try {
+        // IDEMPOTENCY CHECK: Skip if already processed
+        const alreadyProcessed = await isStripeEventProcessed(event.id);
+        if (alreadyProcessed) {
+          console.log("[stripe-webhook] Event already processed, skipping", { eventId: event.id, eventType: event.type });
+          return;
+        }
+        
         if (event.type === "checkout.session.completed") {
           const session = event.data.object;
           if (session.metadata?.type === "topup") {
@@ -3077,6 +3114,9 @@ app.post(
             });
           }
         }
+        
+        // Mark event as successfully processed
+        await markStripeEventProcessed(event.id, event.type, { success: true });
       } catch (err) {
         console.error("Stripe webhook processing error:", err.message);
         trackError({
@@ -3086,6 +3126,9 @@ app.post(
           endpoint: "/stripe-webhook",
           method: "POST",
         });
+        // Mark as processed even on error to prevent infinite retries
+        // (Stripe will retry webhooks that return 5xx, so marking prevents duplicate processing)
+        await markStripeEventProcessed(event.id, event.type, { success: false, error: err.message });
       }
     });
   }
@@ -3108,6 +3151,212 @@ const retellClient = axios.create({
     "Content-Type": "application/json",
   },
 });
+
+// =============================================================================
+// INSTANCE ID - Unique identifier for this server instance
+// Used for distributed locking across multiple Railway replicas
+// =============================================================================
+const INSTANCE_ID = `${process.env.RAILWAY_REPLICA_ID || "local"}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+console.log(`[INSTANCE] Started with ID: ${INSTANCE_ID}`);
+
+// =============================================================================
+// DISTRIBUTED LOCKING - Prevents duplicate job execution across instances
+// =============================================================================
+
+/**
+ * Acquire a distributed lock using Supabase
+ * Returns true if lock acquired, false otherwise
+ */
+const acquireDistributedLock = async (lockName, ttlSeconds = 300) => {
+  try {
+    const { data, error } = await supabaseAdmin.rpc("acquire_distributed_lock", {
+      p_lock_name: lockName,
+      p_instance_id: INSTANCE_ID,
+      p_ttl_seconds: ttlSeconds,
+    });
+    
+    if (error) {
+      // Fallback: try direct insert if function doesn't exist
+      if (error.message.includes("does not exist")) {
+        const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+        const { error: insertError } = await supabaseAdmin
+          .from("distributed_locks")
+          .upsert({
+            lock_name: lockName,
+            instance_id: INSTANCE_ID,
+            acquired_at: new Date().toISOString(),
+            expires_at: expiresAt,
+          }, { 
+            onConflict: "lock_name",
+            ignoreDuplicates: false 
+          });
+        
+        if (insertError) {
+          // Check if another instance has the lock
+          const { data: existing } = await supabaseAdmin
+            .from("distributed_locks")
+            .select("instance_id, expires_at")
+            .eq("lock_name", lockName)
+            .maybeSingle();
+          
+          if (existing) {
+            const expired = new Date(existing.expires_at) < new Date();
+            return expired || existing.instance_id === INSTANCE_ID;
+          }
+          return false;
+        }
+        return true;
+      }
+      console.warn(`[distributed-lock] Error acquiring ${lockName}:`, error.message);
+      return false;
+    }
+    
+    return data === true;
+  } catch (err) {
+    // If table doesn't exist, just proceed (single instance mode)
+    if (err.message?.includes("does not exist")) {
+      console.warn("[distributed-lock] Tables not set up, running in single-instance mode");
+      return true;
+    }
+    console.warn(`[distributed-lock] Exception acquiring ${lockName}:`, err.message);
+    return true; // Fail open for backwards compatibility
+  }
+};
+
+/**
+ * Release a distributed lock
+ */
+const releaseDistributedLock = async (lockName) => {
+  try {
+    await supabaseAdmin.rpc("release_distributed_lock", {
+      p_lock_name: lockName,
+      p_instance_id: INSTANCE_ID,
+    });
+  } catch (err) {
+    // Try direct delete if function doesn't exist
+    try {
+      await supabaseAdmin
+        .from("distributed_locks")
+        .delete()
+        .eq("lock_name", lockName)
+        .eq("instance_id", INSTANCE_ID);
+    } catch {
+      // Ignore - lock will expire
+    }
+  }
+};
+
+/**
+ * Record that a scheduled job ran (for observability)
+ */
+const recordJobRun = async (jobName, result, errorMessage = null) => {
+  try {
+    await supabaseAdmin.from("scheduled_job_runs").upsert({
+      job_name: jobName,
+      last_run_at: new Date().toISOString(),
+      last_run_by: INSTANCE_ID,
+      last_result: result,
+      error_message: errorMessage,
+      run_count: 1, // Will be incremented by trigger if exists
+    }, { onConflict: "job_name" });
+  } catch (err) {
+    // Non-critical, just log
+    console.warn(`[job-run] Failed to record ${jobName}:`, err.message);
+  }
+};
+
+// =============================================================================
+// DEPLOYMENT LOCKING - Prevents duplicate phone number creation
+// =============================================================================
+
+/**
+ * Acquire deployment lock for a user
+ * Prevents duplicate deploys from Stripe webhook + wizard race conditions
+ */
+const acquireDeploymentLock = async (userId, requestId, source = "unknown") => {
+  try {
+    const { data, error } = await supabaseAdmin.rpc("acquire_deployment_lock", {
+      p_user_id: userId,
+      p_request_id: requestId,
+      p_source: source,
+      p_ttl_seconds: 120,
+    });
+    
+    if (error) {
+      // Fallback to direct check
+      if (error.message.includes("does not exist")) {
+        return true; // No lock table, proceed
+      }
+      console.warn(`[deploy-lock] Error for ${userId}:`, error.message);
+      return true; // Fail open
+    }
+    
+    return data === true;
+  } catch (err) {
+    console.warn(`[deploy-lock] Exception for ${userId}:`, err.message);
+    return true; // Fail open for backwards compatibility
+  }
+};
+
+/**
+ * Release deployment lock for a user
+ */
+const releaseDeploymentLock = async (userId, requestId) => {
+  try {
+    await supabaseAdmin.rpc("release_deployment_lock", {
+      p_user_id: userId,
+      p_request_id: requestId,
+    });
+  } catch {
+    // Try direct delete
+    try {
+      await supabaseAdmin
+        .from("deployment_locks")
+        .delete()
+        .eq("user_id", userId)
+        .eq("request_id", requestId);
+    } catch {
+      // Ignore - lock will expire
+    }
+  }
+};
+
+// =============================================================================
+// STRIPE EVENT IDEMPOTENCY
+// =============================================================================
+
+/**
+ * Check if Stripe event was already processed
+ */
+const isStripeEventProcessed = async (eventId) => {
+  try {
+    const { data } = await supabaseAdmin
+      .from("stripe_processed_events")
+      .select("event_id")
+      .eq("event_id", eventId)
+      .maybeSingle();
+    
+    return !!data;
+  } catch {
+    return false; // Fail open - proceed if check fails
+  }
+};
+
+/**
+ * Mark Stripe event as processed
+ */
+const markStripeEventProcessed = async (eventId, eventType, result = null) => {
+  try {
+    await supabaseAdmin.from("stripe_processed_events").upsert({
+      event_id: eventId,
+      event_type: eventType,
+      processed_at: new Date().toISOString(),
+      result: result,
+    }, { onConflict: "event_id" });
+  } catch (err) {
+    console.warn(`[stripe-idempotency] Failed to mark ${eventId}:`, err.message);
+  }
+};
 
 const retellSmsClient = axios.create({
   baseURL: "https://api.retellai.com",
@@ -5434,6 +5683,24 @@ app.get("/api/calcom/callback", async (req, res) => {
     if (!accessToken) {
       throw new Error("Missing access token");
     }
+    
+    // Fetch Cal.com user info for better webhook resolution
+    let calUserId = null;
+    let calUserEmail = null;
+    try {
+      const meResponse = await calClient.get("/me", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "cal-api-version": "2024-08-13",
+        },
+      });
+      calUserId = meResponse.data?.data?.id || meResponse.data?.id || null;
+      calUserEmail = meResponse.data?.data?.email || meResponse.data?.email || null;
+      console.log("[calcom-oauth] Fetched user info:", { calUserId, calUserEmail });
+    } catch (meErr) {
+      console.warn("[calcom-oauth] Could not fetch /me:", meErr.message);
+    }
+    
     let eventType = null;
     let bookingUrl = null;
     try {
@@ -5504,6 +5771,8 @@ app.get("/api/calcom/callback", async (req, res) => {
         cal_team_slug: eventType?.team?.slug || null,
         cal_organization_slug: eventType?.organization?.slug || null,
         cal_time_zone: eventType?.timeZone || null,
+        // Store Cal.com user ID for better webhook resolution
+        cal_user_id: calUserId ? String(calUserId) : null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id,provider" }
@@ -5601,44 +5870,116 @@ app.post("/webhooks/calcom", async (req, res) => {
     const eventType = bookingData.eventType || {};
     const organizer = bookingData.organizer || eventType.users?.[0] || {};
     
-    // Find user by Cal.com username or email
+    // Enhanced user resolution with multiple fallback methods
     let userId = null;
     const calUsername = organizer.username || eventType.slug || null;
+    const organizerEmail = organizer.email || null;
+    const calUserId = organizer.id || bookingData.userId || null;
     
-    if (calUsername) {
-      // Try to find user by cal_username in integrations or profiles
+    // Method 1: Try Cal.com user ID if stored
+    if (!userId && calUserId) {
+      const { data: integration } = await supabaseAdmin
+        .from("integrations")
+        .select("user_id")
+        .eq("provider", "calcom")
+        .eq("cal_user_id", String(calUserId))
+        .maybeSingle();
+      if (integration?.user_id) {
+        userId = integration.user_id;
+        console.log("[calcom-webhook] Found user by cal_user_id", { calUserId, userId });
+      }
+    }
+    
+    // Method 2: Try Cal.com username in integrations
+    if (!userId && calUsername) {
       const { data: integration } = await supabaseAdmin
         .from("integrations")
         .select("user_id")
         .eq("provider", "calcom")
         .eq("cal_username", calUsername)
         .maybeSingle();
-      
       if (integration?.user_id) {
         userId = integration.user_id;
-      } else {
-        // Try profiles table
-        const { data: profile } = await supabaseAdmin
-          .from("profiles")
-          .select("user_id")
-          .eq("cal_username", calUsername)
-          .maybeSingle();
-        userId = profile?.user_id || null;
+        console.log("[calcom-webhook] Found user by cal_username in integrations", { calUsername, userId });
       }
     }
     
-    // Fallback: try to find by organizer email
-    if (!userId && organizer.email) {
+    // Method 3: Try Cal.com username in profiles
+    if (!userId && calUsername) {
       const { data: profile } = await supabaseAdmin
         .from("profiles")
         .select("user_id")
-        .eq("email", organizer.email)
+        .eq("cal_username", calUsername)
         .maybeSingle();
-      userId = profile?.user_id || null;
+      if (profile?.user_id) {
+        userId = profile.user_id;
+        console.log("[calcom-webhook] Found user by cal_username in profiles", { calUsername, userId });
+      }
+    }
+    
+    // Method 4: Try organizer email in profiles
+    if (!userId && organizerEmail) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id")
+        .eq("email", organizerEmail)
+        .maybeSingle();
+      if (profile?.user_id) {
+        userId = profile.user_id;
+        console.log("[calcom-webhook] Found user by email in profiles", { organizerEmail, userId });
+      }
+    }
+    
+    // Method 5: Try organizer email via auth.users (email match)
+    if (!userId && organizerEmail) {
+      const { data: users } = await supabaseAdmin.auth.admin.listUsers();
+      const matchingUser = users?.users?.find(u => u.email?.toLowerCase() === organizerEmail.toLowerCase());
+      if (matchingUser?.id) {
+        userId = matchingUser.id;
+        console.log("[calcom-webhook] Found user by email in auth.users", { organizerEmail, userId });
+      }
+    }
+    
+    // Method 6: Try Cal.com booking URL pattern match
+    if (!userId && bookingData.booking?.url) {
+      // Extract username from URL like "https://cal.com/username/event"
+      const urlMatch = bookingData.booking.url.match(/cal\.com\/([^\/]+)/i);
+      if (urlMatch?.[1]) {
+        const urlUsername = urlMatch[1];
+        const { data: integration } = await supabaseAdmin
+          .from("integrations")
+          .select("user_id")
+          .eq("provider", "calcom")
+          .ilike("cal_username", urlUsername)
+          .maybeSingle();
+        if (integration?.user_id) {
+          userId = integration.user_id;
+          console.log("[calcom-webhook] Found user by URL pattern", { urlUsername, userId });
+        }
+      }
     }
     
     if (!userId) {
-      console.warn("[calcom-webhook] Could not find user for booking", { calUsername, organizerEmail: organizer.email });
+      console.warn("[calcom-webhook] Could not find user for booking after all fallbacks", { 
+        calUsername, 
+        organizerEmail, 
+        calUserId,
+        eventSlug: eventType.slug,
+      });
+      // Track this for debugging
+      trackError({
+        error: new Error("Cal.com webhook - user not found"),
+        context: { 
+          source: "calcom-webhook", 
+          calUsername, 
+          organizerEmail, 
+          calUserId,
+          triggerEvent,
+        },
+        severity: "medium",
+        endpoint: "/webhooks/calcom",
+        method: "POST",
+      });
       // Still return 200 to acknowledge receipt
       return res.json({ ok: true, warning: "User not found" });
     }
@@ -9957,9 +10298,17 @@ const retryFailedWebhooks = async () => {
   }
 };
 
-// Start webhook retry interval (every 30 seconds)
-setInterval(retryFailedWebhooks, 30_000);
-console.log("🔗 [webhook-retry] Webhook retry system started (30s interval)");
+// Start webhook retry interval (every 30 seconds, with distributed locking)
+setInterval(async () => {
+  const gotLock = await acquireDistributedLock("webhook-retry", 60);
+  if (!gotLock) return;
+  try {
+    await retryFailedWebhooks();
+  } finally {
+    await releaseDistributedLock("webhook-retry");
+  }
+}, 30_000);
+console.log("🔗 [webhook-retry] Webhook retry system started (30s interval, distributed lock)");
 
 // GET /api/webhooks - List user's webhooks
 app.get("/api/webhooks", requireAuth, resolveEffectiveUser, async (req, res) => {
@@ -14155,6 +14504,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
   }
   const areaCode = areaCodeRaw;
 
+  // Check if user already has a phone number deployed (IDEMPOTENCY CHECK)
   const { data: existingAgent } = await supabaseAdmin
     .from("agents")
     .select("agent_id, phone_number")
@@ -14162,7 +14512,49 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  const updateExisting = Boolean(existingAgent?.phone_number);
+  
+  // If already has phone number, return success (idempotent)
+  if (existingAgent?.phone_number) {
+    console.info("[deployAgentForUser] User already has phone number, returning existing", {
+      deployRequestId: reqId,
+      userId: targetUserId,
+      phone_number: existingAgent.phone_number,
+      agent_id: existingAgent.agent_id,
+    });
+    return {
+      ok: true,
+      phone_number: existingAgent.phone_number,
+      agent_id: existingAgent.agent_id,
+      existing: true,
+    };
+  }
+  
+  // Acquire deployment lock to prevent race conditions
+  const source = options.source || "wizard";
+  const gotLock = await acquireDeploymentLock(targetUserId, reqId, source);
+  if (!gotLock) {
+    console.warn("[deployAgentForUser] Could not acquire deployment lock", {
+      deployRequestId: reqId,
+      userId: targetUserId,
+    });
+    // Re-check if phone was created by concurrent request
+    const { data: recheckAgent } = await supabaseAdmin
+      .from("agents")
+      .select("agent_id, phone_number")
+      .eq("user_id", targetUserId)
+      .not("phone_number", "is", null)
+      .maybeSingle();
+    
+    if (recheckAgent?.phone_number) {
+      return {
+        ok: true,
+        phone_number: recheckAgent.phone_number,
+        agent_id: recheckAgent.agent_id,
+        existing: true,
+      };
+    }
+    return { error: "Deployment already in progress. Please wait." };
+  }
 
   const plan = sub?.plan_type || null;
   console.info("[deployAgentForUser] calling provisionPhoneNumberOnly", {
@@ -14171,7 +14563,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
     businessName,
     areaCode,
     plan,
-    updateExisting: updateExisting || undefined,
+    hasLock: true,
   });
   const transferNumber = normalizePhoneE164(options.transferNumber);
   const industry = String(profile.industry || "hvac").toLowerCase();
@@ -14191,7 +14583,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
       areaCode,
       deployRequestId: reqId,
       transferNumber: transferNumber || undefined,
-      updateExisting,
+      updateExisting: false,  // Never update existing, we return early if exists
       industry,  // Pass industry so correct master template is used
       // New wizard fields
       agentTone,
@@ -14205,12 +14597,19 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
       .from("profiles")
       .update({ deploy_error: null })
       .eq("user_id", targetUserId);
+    
+    // Release deployment lock on success
+    await releaseDeploymentLock(targetUserId, reqId);
+    
     return {
       ok: true,
       phone_number: result.phone_number,
       agent_id: result.agent_id,
     };
   } catch (err) {
+    // Release deployment lock on error
+    await releaseDeploymentLock(targetUserId, reqId);
+    
     const msg = err.message || "";
     const isAreaCode =
       /area|area.?code|unavailable|not available|invalid/i.test(msg);
@@ -16007,7 +16406,58 @@ app.use(async (err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Kryonex backend running on port ${PORT}`);
+  
+  // Validate master agents on startup
+  validateMasterAgents();
 });
+
+// =============================================================================
+// MASTER AGENT HEALTH VALIDATION
+// =============================================================================
+const validateMasterAgents = async () => {
+  console.log("[startup] Validating master agents...");
+  
+  const agents = [
+    { id: RETELL_MASTER_AGENT_ID_HVAC, industry: "HVAC", version: RETELL_AGENT_VERSION_HVAC },
+    { id: RETELL_MASTER_AGENT_ID_PLUMBING, industry: "Plumbing", version: RETELL_AGENT_VERSION_PLUMBING },
+  ];
+  
+  for (const agent of agents) {
+    if (!agent.id) {
+      console.warn(`[startup] ⚠️ RETELL_MASTER_AGENT_ID_${agent.industry.toUpperCase()} not configured`);
+      continue;
+    }
+    
+    try {
+      const response = await retellClient.get(`/get-agent/${encodeURIComponent(agent.id)}`);
+      const agentData = response.data;
+      
+      console.log(`[startup] ✅ Master agent ${agent.industry}: ${agent.id}`);
+      console.log(`         - Name: ${agentData.agent_name || "N/A"}`);
+      console.log(`         - LLM ID: ${agentData.response_engine?.llm_id || agentData.llm_id || "N/A"}`);
+      console.log(`         - Version: ${agent.version || "draft (latest)"}`);
+      
+      // Verify the LLM is configured
+      const llmId = agent.industry === "HVAC" ? RETELL_LLM_ID_HVAC : RETELL_LLM_ID_PLUMBING;
+      if (llmId && agentData.response_engine?.llm_id !== llmId && agentData.llm_id !== llmId) {
+        console.warn(`[startup] ⚠️ ${agent.industry} agent LLM mismatch: expected ${llmId}, got ${agentData.response_engine?.llm_id || agentData.llm_id}`);
+      }
+    } catch (err) {
+      console.error(`[startup] ❌ Master agent ${agent.industry} FAILED: ${err.message}`);
+      
+      // Log critical alert to database
+      supabaseAdmin.from("ops_alerts").insert({
+        alert_type: "master_agent_unavailable",
+        severity: "critical",
+        message: `Master agent ${agent.industry} (${agent.id}) is not accessible`,
+        details: { agent_id: agent.id, error: err.message },
+        acknowledged: false,
+      }).catch(() => {}); // Don't block startup on DB error
+    }
+  }
+  
+  console.log("[startup] Master agent validation complete.");
+};
 
 scheduleAppointmentReminders();
 
@@ -16017,6 +16467,8 @@ scheduleAppointmentReminders();
 const scheduleNightlyReconciliation = () => {
   // Run at 3 AM UTC daily
   const TARGET_HOUR_UTC = 3;
+  const LOCK_NAME = "nightly-reconciliation";
+  const LOCK_TTL_SECONDS = 600; // 10 minutes
   
   const calculateNextRun = () => {
     const now = new Date();
@@ -16032,12 +16484,24 @@ const scheduleNightlyReconciliation = () => {
   };
   
   const runAndReschedule = async () => {
-    try {
-      console.log("[NightlyReconciliation] Starting scheduled run...");
-      await runReconciliation("scheduler");
-      console.log("[NightlyReconciliation] Completed.");
-    } catch (err) {
-      console.error("[NightlyReconciliation] Error:", err.message);
+    // Distributed lock: only one instance should run reconciliation
+    const gotLock = await acquireDistributedLock(LOCK_NAME, LOCK_TTL_SECONDS);
+    
+    if (!gotLock) {
+      console.log("[NightlyReconciliation] Another instance is running, skipping");
+      await recordJobRun(LOCK_NAME, "skipped", "Another instance has lock");
+    } else {
+      try {
+        console.log("[NightlyReconciliation] Starting scheduled run...");
+        await runReconciliation("scheduler");
+        console.log("[NightlyReconciliation] Completed.");
+        await recordJobRun(LOCK_NAME, "success");
+      } catch (err) {
+        console.error("[NightlyReconciliation] Error:", err.message);
+        await recordJobRun(LOCK_NAME, "failed", err.message);
+      } finally {
+        await releaseDistributedLock(LOCK_NAME);
+      }
     }
     
     // Schedule next run
@@ -16060,19 +16524,34 @@ const scheduleRetellTemplateSync = () => {
     return;
   }
   const intervalMs = Math.max(5, intervalMinutes) * 60_000;
+  const LOCK_NAME = "retell-template-sync";
+  const LOCK_TTL_SECONDS = 300;
+  
   const runSync = async () => {
-    for (const llmId of [RETELL_LLM_ID_PLUMBING, RETELL_LLM_ID_HVAC]) {
-      if (!llmId) continue;
-      try {
-        const result = await syncRetellTemplates({ llmId });
-        console.log(
-          `Retell template sync: ${llmId} ok=${result.success} failed=${result.failed}`
-        );
-      } catch (err) {
-        console.error(
-          `Retell template sync failed for ${llmId}: ${err.message}`
-        );
+    // Distributed lock: only one instance should run sync
+    const gotLock = await acquireDistributedLock(LOCK_NAME, LOCK_TTL_SECONDS);
+    if (!gotLock) {
+      console.log("[RetellSync] Another instance is running, skipping");
+      return;
+    }
+    
+    try {
+      for (const llmId of [RETELL_LLM_ID_PLUMBING, RETELL_LLM_ID_HVAC]) {
+        if (!llmId) continue;
+        try {
+          const result = await syncRetellTemplates({ llmId });
+          console.log(
+            `Retell template sync: ${llmId} ok=${result.success} failed=${result.failed}`
+          );
+        } catch (err) {
+          console.error(
+            `Retell template sync failed for ${llmId}: ${err.message}`
+          );
+        }
       }
+      await recordJobRun(LOCK_NAME, "success");
+    } finally {
+      await releaseDistributedLock(LOCK_NAME);
     }
   };
 
