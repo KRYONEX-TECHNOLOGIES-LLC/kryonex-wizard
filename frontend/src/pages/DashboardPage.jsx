@@ -10,6 +10,7 @@ import {
   getCalcomAuthorizeUrl,
   disconnectCalcom,
   getEnhancedStats,
+  getWebhooks,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import TopMenu from "../components/TopMenu.jsx";
@@ -98,6 +99,7 @@ export default function DashboardPage() {
       : window.localStorage.getItem("kryonex_sms_banner_dismissed") === "true"
   );
   const [loadError, setLoadError] = React.useState(null);
+  const [webhooksConfigured, setWebhooksConfigured] = React.useState(false);
 
   // Live clock effect
   React.useEffect(() => {
@@ -109,17 +111,22 @@ export default function DashboardPage() {
     let mounted = true;
     const load = async (isInitial = false) => {
       try {
-        const [statsRes, enhancedRes, leadsRes, subRes, usageRes] = await Promise.all([
+        const [statsRes, enhancedRes, leadsRes, subRes, usageRes, webhooksRes] = await Promise.all([
           getStats(),
           getEnhancedStats().catch(() => ({ data: {} })),
           getLeads(),
           getSubscriptionStatus(),
           getUsageStatus(),
+          getWebhooks().catch(() => ({ data: { webhooks: [] } })),
         ]);
         if (mounted) {
           setStats(statsRes.data);
           if (enhancedRes.data) {
             setEnhancedStats(prev => ({ ...prev, ...enhancedRes.data }));
+          }
+          // Check if user has any webhooks configured
+          const webhooks = webhooksRes.data?.webhooks || [];
+          setWebhooksConfigured(webhooks.length > 0);
           }
           setLeads(leadsRes.data.leads || []);
           setSubscription(subRes.data || { status: "none", plan_type: null });
@@ -433,7 +440,7 @@ export default function DashboardPage() {
               bookingRate: stats.booking_rate || 0,
               appointments: stats.appointments_booked || 0,
               calendarConnected: calConnected,
-              integrationsEnabled: false, // TODO: Check if webhooks configured
+              integrationsEnabled: webhooksConfigured,
             }}
           />
           

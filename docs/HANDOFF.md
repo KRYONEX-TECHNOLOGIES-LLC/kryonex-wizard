@@ -1,20 +1,47 @@
-# Kryonex Wizard — Full Handoff Document
+# Kryonex Wizard — Complete Handoff Document
 
-**Purpose:** Bring a new developer or AI up to speed as if they’ve always been on the project. Covers app architecture, what was recently built, critical flows, debugging, and what to do next.
+**Purpose:** This document brings a new developer, buyer, or AI assistant up to speed as if they've been on the project from day one. It covers architecture, features, critical flows, debugging, and operational knowledge.
 
-**Last updated:** January 30, 2026
+**Last updated:** February 6, 2026
+
+---
+
+## Table of Contents
+
+1. [What This App Is](#1-what-this-app-is)
+2. [Architecture Overview](#2-architecture-overview)
+3. [Feature Inventory](#3-feature-inventory)
+4. [Critical Flows](#4-critical-flows)
+5. [Key Files Reference](#5-key-files-reference)
+6. [Environment Variables](#6-environment-variables)
+7. [Database Schema](#7-database-schema)
+8. [Webhooks](#8-webhooks)
+9. [Error Handling](#9-error-handling)
+10. [Testing](#10-testing)
+11. [Deployment](#11-deployment)
+12. [Operations](#12-operations)
+13. [Common Issues & Solutions](#13-common-issues--solutions)
+14. [Recent Major Updates](#14-recent-major-updates)
+15. [Documentation Index](#15-documentation-index)
 
 ---
 
 ## 1. What This App Is
 
-**Kryonex Wizard** is a full-stack SaaS for onboarding, deploying, and managing AI phone agents (Retell AI) for field-service businesses (HVAC, Plumbing). It includes:
+**Kryonex Wizard** is an enterprise-grade SaaS platform for deploying and managing AI phone agents for field-service businesses (HVAC, Plumbing, Electrical). 
 
-- **User onboarding wizard** — Business name, area code, consent, plan selection → Stripe checkout → Retell agent provisioning
-- **AI call agent (Grace)** — Answers inbound calls with personalized greeting using `{{business_name}}` and other dynamic variables
-- **Admin control plane** — Fleet registry, manual onboarding, call center, financials, logs
-- **Ops infrastructure** — Raw webhook persistence, idempotency, event storage, usage enforcement, alerts
-- **Integrations** — Stripe (billing), Retell (calls, SMS), Cal.com (booking), Resend (email), Supabase (auth, DB)
+### Core Value Proposition
+
+- **24/7 AI Receptionist**: Never miss a call. AI agent (Grace) answers with personalized greeting.
+- **Automated Booking**: Cal.com integration for real-time appointment scheduling.
+- **Lead Intelligence**: Every call transcribed, summarized, and scored.
+- **Usage-Based Billing**: Stripe subscriptions with minute/SMS tracking.
+- **Admin Control Plane**: Full fleet management, manual onboarding, financials.
+
+### Who Uses It
+
+- **End Users (Plumbers/HVAC techs)**: Use the wizard to deploy their AI agent, manage leads, view analytics
+- **Platform Admin**: Manages all users, approves referrals, monitors ops
 
 ---
 
@@ -22,272 +49,584 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  FRONTEND (Vite + React)                                                     │
-│  - Landing, Login, Wizard, Dashboard, Billing, Calendar, Leads, Messages     │
-│  - Admin suite: /admin/dashboard, /admin/users, /admin/wizard/create, etc.   │
-└─────────────────────────────────────┬───────────────────────────────────────┘
-                                      │ VITE_API_URL (backend)
-                                      ▼
+│  FRONTEND (Vite + React 18)                                                  │
+│  ├── Landing Page (marketing, pricing)                                       │
+│  ├── Auth (login, signup with Supabase)                                     │
+│  ├── Wizard (5-step onboarding with Stripe)                                 │
+│  ├── User Portal (dashboard, leads, calendar, messages, analytics)          │
+│  └── Admin Portal (users, referrals, financials, ops)                       │
+└─────────────────────────────────────────┬───────────────────────────────────┘
+                                          │ axios → VITE_API_URL
+                                          ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  SERVER (Express, server.js at repo root)                                    │
-│  - Auth, webhooks, deploy, billing, calendar, tracking, admin ops            │
-└─────────────────────────────────────┬───────────────────────────────────────┘
-                                      │ SUPABASE_SERVICE_ROLE_KEY
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  SUPABASE                                                                   │
-│  - Auth, profiles, agents, leads, subscriptions, usage_limits, webhook_queue │
-│  - call_events, sms_events, unknown_phone, alerts, billing_line_items        │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-              RETELL AI         STRIPE            CAL.COM
-              (calls, SMS)      (billing)         (bookings)
+│  SERVER (Express.js - server.js, ~16,000 lines)                              │
+│  ├── Auth Middleware (requireAuth, requireAdmin, resolveEffectiveUser)      │
+│  ├── Rate Limiting (per-endpoint, configurable)                              │
+│  ├── Webhook Handlers (Retell, Stripe, Cal.com, SMS)                        │
+│  ├── Business Logic (deploy, billing, usage, referrals)                     │
+│  └── Ops Infrastructure (error tracking, alerts, reconciliation)            │
+└─────────────────────────────────────────┬───────────────────────────────────┘
+                                          │
+              ┌───────────────────────────┼───────────────────────────────────┐
+              ▼                           ▼                                   ▼
+        SUPABASE                     RETELL AI                           STRIPE
+        (PostgreSQL)                 (Voice/SMS)                         (Billing)
+        - Auth                       - Master agent                      - Subscriptions
+        - 40+ tables                 - Phone provisioning                - Top-ups
+        - RLS policies               - Dynamic variables                 - Webhooks
+        - Real-time                  - Call recordings
 ```
 
-| Layer     | Tech             | Location                         |
-|----------|------------------|-----------------------------------|
-| Frontend | Vite + React     | `frontend/`                       |
-| Backend  | Express (Node 20+)| `server.js` (root)               |
-| Database | Supabase (Postgres) | `supabase/*.sql`              |
-| Hosting  | Vercel (frontend), Railway (server) | —             |
+### Tech Stack Details
+
+| Component | Technology | Notes |
+|-----------|------------|-------|
+| Frontend | Vite + React 18 | Lucide icons, responsive CSS |
+| Backend | Express.js (Node 20+) | Single monolith, no microservices |
+| Database | Supabase PostgreSQL | RLS for security, 40+ tables |
+| AI Calls | Retell AI | Master agent with per-user phone numbers |
+| Payments | Stripe | Checkout sessions, subscriptions, webhooks |
+| Calendar | Cal.com | OAuth integration |
+| Email | Resend | Transactional emails |
+| Frontend Host | Vercel | Auto-deploy from main branch |
+| Backend Host | Railway | Auto-deploy from main branch |
 
 ---
 
-## 3. What Was Just Done (Recent Work)
+## 3. Feature Inventory
 
-### 3.1 `business_name` Persistence Fix
+### Core Platform Features
 
-**Problem:** The AI agent (Grace) was saying `{{business_name}}` literally instead of the actual business name (e.g. "CUT GAMING HVAC").
+| Feature | Status | Description |
+|---------|--------|-------------|
+| User Onboarding Wizard | ✅ Complete | 5-step: Identity → Plan → Payment → Deploy → Dashboard |
+| AI Call Agent (Grace) | ✅ Complete | Dynamic greeting with business name, Cal.com URL |
+| Lead Management | ✅ Complete | CRUD, transcripts, sentiment, AI summaries |
+| Calendar/Appointments | ✅ Complete | Cal.com integration, color-coded status |
+| SMS Messaging | ✅ Complete | Shared number with per-tenant routing |
+| Black Box Recordings | ✅ Complete | Waveform visualization, flagging, download |
+| Real-time Tracking | ✅ Complete | Technician GPS with ETA notifications |
+| Customer CRM | ✅ Complete | History grouped by phone number |
 
-**Root causes:**
-1. **localStorage keys** — After Stripe redirect, the wizard checked `wizard.form` instead of `wizard.form.{userId}`, so form data looked empty.
-2. **Initial state race** — `form` initialized as empty before `loadProfile`/localStorage restore ran.
-3. **Single-key saves** — `updateField` only saved to one key; if `userId` wasn’t ready, data was lost.
+### Revenue Features
 
-**Fixes:**
-- Form saved to both `wizard.form` and `wizard.form.{userId}`.
-- Initial `useState` for `form` restores from localStorage (generic and user-specific keys) on first render.
-- `checkWizardAccess` uses the correct user-specific key.
-- **Server backfill:** If `profiles.business_name` is empty but `agents.nickname` exists (from provision time), we update `profiles` and use `nickname` as fallback.
-- **Fallback chain:** `profiles.business_name` → `agents.nickname` → `"your business"`.
+| Feature | Status | Price | Description |
+|---------|--------|-------|-------------|
+| Referral Program | ✅ Complete | Free | $25 + 10% × 12 months |
+| Post-Call SMS | ✅ Complete | $29/mo | Auto-text after calls |
+| Review Requests | ✅ Complete | $19/mo | Auto-request Google reviews |
+| Zapier Integration | ✅ Complete | $49/mo | Outbound webhooks |
 
-**Key files:** `frontend/src/pages/WizardPage.jsx`, `server.js` (`/webhooks/retell-inbound`, `/deploy-agent-self`).
+### Retention Features
 
-### 3.2 Ops Infrastructure
+| Feature | Status | Description |
+|---------|--------|-------------|
+| ROI Dashboard | ✅ Complete | Revenue tracking, conversion rates |
+| Smart Upgrade Prompts | ✅ Complete | Usage-based upsell at 80%+ |
+| Customer Health Scores | ✅ Complete | A-F grading system |
+| Churn Prevention Alerts | ✅ Complete | Proactive admin notifications |
+| Analytics Dashboard | ✅ Complete | Charts, trends, performance |
 
-**Goal:** Reliable webhook handling, event storage, and billing attribution.
+### Enterprise Operations
 
-**Implemented:**
-- **Raw webhook persistence** — All webhooks stored in `webhook_queue` before processing (replay/audit).
-- **Idempotency** — SHA256-based keys; duplicate events are detected and skipped.
-- **Unknown phone handling** — Webhooks for numbers not in `agents` go to `unknown_phone`, not dropped.
-- **Event storage** — `call_events`, `sms_events` with normalized fields for billing.
-- **Alerts** — Usage warnings and blocks stored in `alerts`.
-- **Tier enforcement** — `evaluateUsageThresholds()` for soft/hard limits.
-
-**Migration:** `supabase/ops_infrastructure.sql` (run in Supabase SQL Editor).
-
-**Helper functions in `server.js`:**  
-`generateIdempotencyKey`, `persistRawWebhook`, `markWebhookProcessed`, `isDuplicateEvent`,  
-`storeUnknownPhone`, `storeCallEvent`, `storeSmsEvent`, `createAlert`, `evaluateUsageThresholds`.
-
-### 3.3 README Updates
-
-All READMEs updated for:
-- Ops infrastructure
-- Form persistence and wizard behavior
-- Webhook simulation script
-- Supabase schema and migrations
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Ops Dashboard | ✅ Complete | Errors, alerts, health, webhooks, reconciliation |
+| Error Tracking | ✅ Complete | Centralized error_logs table with resolution |
+| Webhook Queue | ✅ Complete | Raw storage, replay capability |
+| Reconciliation Job | ✅ Complete | Nightly usage comparison at 3 AM UTC |
+| Session Management | ✅ Complete | Active sessions with revocation |
+| Audit Trails | ✅ Complete | All actions logged |
 
 ---
 
 ## 4. Critical Flows
 
-### 4.1 User Wizard (Deployment Wizard v3)
+### 4.1 User Wizard Flow
 
-1. **Step 1 — Identity:** Business name, area code, consent.  
-   - Saves via `POST /onboarding/identity`.  
-   - Persists in localStorage (`kryonex:wizard.form`, `kryonex:wizard.form.{userId}`).
-2. **Step 2 — Plan Selection:** PRO ($249), ELITE ($497), SCALE ($997). CORE is backend-only.
-3. **Stripe:** User clicks "Select Plan" → Stripe checkout → redirect to success.
-4. **Step 3 / Deploy:** After payment, user sees deploy step.  
-   - `POST /deploy-agent-self` with `business_name`, `area_code`.  
-   - Creates Retell agent, provisions phone number, sets `inbound_webhook_url` to our server.
-5. **Dashboard:** Shows agent phone, business info, Cal.com CTA.
+```
+Step 1: Identity
+├── Business name, area code, consent
+├── Saves to localStorage (kryonex:wizard.form + kryonex:wizard.form.{userId})
+└── API: POST /onboarding/identity
+
+Step 2: Plan Selection
+├── PRO ($249), ELITE ($497), SCALE ($997)
+└── Shows feature comparison
+
+Step 3: Payment
+├── Stripe Checkout Session
+├── Success URL: /wizard?checkout=success
+└── Stripe webhook creates subscription record
+
+Step 4: Deploy (after payment)
+├── API: POST /deploy-agent-self
+├── Creates/updates profile with business_name
+├── Provisions phone number via Retell
+├── Sets inbound webhook URL
+└── Creates agent record in DB
+
+Step 5: Dashboard
+└── Shows agent phone, Cal.com CTA, usage stats
+```
 
 ### 4.2 Inbound Call Flow
 
-1. Caller dials provisioned number → Retell receives call.
-2. Retell `POST`s to `{SERVER_URL}/webhooks/retell-inbound` with `call_inbound` payload.
+```
+1. Caller dials provisioned number
+   ↓
+2. Retell receives call, POSTs to /webhooks/retell-inbound
+   ↓
 3. Server:
-   - Looks up `agents` by `to_number` → gets `user_id`.
-   - Loads `profiles` (business_name, cal_com_url).
-   - Computes `business_name` (profile → agent nickname → fallback).
-   - Returns `call_inbound` with `override_agent_id`, `dynamic_variables`, `begin_message`.
-4. Retell connects caller to agent; Grace uses `{{business_name}}` in greeting.
+   a. Persist raw webhook to webhook_queue
+   b. Check idempotency (skip if duplicate)
+   c. Look up agent by phone number
+   d. Load profile (business_name, cal_com_url, settings)
+   e. Build dynamic_variables object
+   f. Return call_inbound response with override_agent_id
+   ↓
+4. Retell connects caller to master agent with variables
+   ↓
+5. Grace greets: "Hello, thank you for calling {business_name}..."
+   ↓
+6. Call ends → Retell POSTs to /retell-webhook (call_ended)
+   ↓
+7. Server:
+   a. Create lead record with transcript
+   b. Update usage_limits (call_used_seconds)
+   c. Store call_event for billing
+   d. Trigger post-call SMS if enabled
+   e. Send outbound webhooks (Zapier)
+```
 
-### 4.3 Admin Quick Onboard
+### 4.3 SMS Flow (Shared Number)
 
-- **Where:** `/admin/wizard/create` → Mini Onboarding Wizard.
-- **Fields:** Business Name, Area Code, Email.
-- **API:** `POST /admin/quick-onboard` (admin-only, rate-limited).
-- **Behavior:** Creates/finds user, saves profile, sets Core tier, provisions Retell agent. No Stripe.
+```
+1. Inbound SMS to shared number
+   ↓
+2. Retell POSTs to /webhooks/sms-inbound
+   ↓
+3. Server determines routing:
+   a. Check sms_thread_locks (active conversation lock)
+   b. Check recent outbound SMS (last sent to this number)
+   c. Check leads table (customer phone matches)
+   d. If multiple tenants match → send disambiguation SMS
+   ↓
+4. Route to correct user, store message
+   ↓
+5. Process keywords (STOP, HELP, YES, NO)
+   ↓
+6. If keyword requires auto-response → send it
+```
+
+### 4.4 Admin Quick Onboard
+
+```
+1. Admin visits /admin/wizard/create
+2. Fills: Business Name, Area Code, Email
+3. API: POST /admin/quick-onboard
+4. Server:
+   a. Creates/finds user by email
+   b. Saves profile with business_name
+   c. Sets tier to CORE (free)
+   d. Provisions Retell phone number
+   e. No Stripe (admin-provisioned)
+5. User can log in and start receiving calls
+```
 
 ---
 
 ## 5. Key Files Reference
 
-| Purpose             | Location                                      |
-|---------------------|-----------------------------------------------|
-| Backend entry       | `server.js`                                   |
-| Frontend entry      | `frontend/src/main.jsx`                       |
-| Routes              | `frontend/src/App.jsx`                        |
-| Wizard logic        | `frontend/src/pages/WizardPage.jsx`           |
-| Persistence helpers | `frontend/src/lib/persistence.js`             |
-| API client          | `frontend/src/lib/api.js`                     |
-| Wizard constants    | `frontend/src/lib/wizardConstants.js`         |
-| Core schema         | `supabase/command_suite.sql`                  |
-| Ops schema          | `supabase/ops_infrastructure.sql`             |
-| Env template        | `env.template`                                |
-| Simulate webhook    | `scripts/simulate_retell.js`                  |
+### Backend
+
+| File | Purpose |
+|------|---------|
+| `server.js` | All backend logic (~16,000 lines) |
+| `env.template` | Environment variable template |
+| `package.json` | Dependencies, scripts |
+
+### Frontend
+
+| File | Purpose |
+|------|---------|
+| `frontend/src/App.jsx` | React Router config |
+| `frontend/src/pages/WizardPage.jsx` | Onboarding wizard |
+| `frontend/src/pages/DashboardPage.jsx` | User dashboard |
+| `frontend/src/pages/AdminOpsPage.jsx` | Operations dashboard |
+| `frontend/src/lib/api.js` | Axios API client |
+| `frontend/src/lib/phone.js` | E.164 phone normalization |
+| `frontend/src/lib/persistence.js` | localStorage helpers |
+
+### Database
+
+| File | Purpose |
+|------|---------|
+| `supabase/command_suite.sql` | Core tables |
+| `supabase/ops_infrastructure.sql` | Ops tables |
+| `supabase/god_tier_hardening.sql` | Health, sessions, errors |
+| `supabase/fix_agents_constraints.sql` | Agent unique constraints |
+| `supabase/referral_system.sql` | Referral program |
 
 ---
 
 ## 6. Environment Variables
 
-**Root `.env` (backend):**
-- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `RETELL_API_KEY`, `RETELL_LLM_ID_HVAC`, `RETELL_LLM_ID_PLUMBING`, etc.
-- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, price IDs
-- `FRONTEND_URL`, `APP_URL`, `SERVER_URL` — webhooks need public `SERVER_URL`
-- `ADMIN_EMAIL` — comma-separated admin emails
+### Backend (.env)
 
-**Frontend `frontend/.env`:**
-- `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
-- `VITE_API_URL` — backend URL
-- `VITE_ADMIN_EMAIL` or `VITE_ADMIN_EMAILS` — admin UI visibility
+```bash
+# === REQUIRED ===
 
-See `env.template` for full list.
+# Supabase
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...  # Never expose to frontend!
 
----
+# Retell AI
+RETELL_API_KEY=key_...
+RETELL_LLM_ID_HVAC=llm_...
+RETELL_LLM_ID_PLUMBING=llm_...
+RETELL_MASTER_AGENT_ID=agent_...  # Shared agent for all users
 
-## 7. Webhooks
+# Stripe
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_CORE=price_...
+STRIPE_PRICE_PRO=price_...
+STRIPE_PRICE_ELITE=price_...
+STRIPE_PRICE_SCALE=price_...
+STRIPE_TOPUP_300MIN=price_...
+STRIPE_TOPUP_800MIN=price_...
+STRIPE_TOPUP_500SMS=price_...
+STRIPE_TOPUP_1000SMS=price_...
 
-| Endpoint                   | Provider | Purpose                                         |
-|---------------------------|----------|--------------------------------------------------|
-| `POST /webhooks/retell-inbound` | Retell   | Inbound calls; returns dynamic vars             |
-| `POST /retell-webhook`    | Retell   | Call events (started, ended)                     |
-| `POST /webhooks/sms-inbound`    | Retell   | Inbound SMS                                      |
-| `POST /stripe-webhook`    | Stripe   | Checkout, subscriptions                          |
+# URLs (must be publicly accessible for webhooks)
+SERVER_URL=https://your-backend.railway.app
+FRONTEND_URL=https://your-frontend.vercel.app
+APP_URL=https://your-frontend.vercel.app
 
-**Retell inbound webhook URL:** Set on each phone number in Retell dashboard, or via API when provisioning. Must be `{SERVER_URL}/webhooks/retell-inbound`.
+# Email
+RESEND_API_KEY=re_...
 
----
+# Admin (comma-separated emails)
+ADMIN_EMAIL=admin@example.com
 
-## 8. Testing & Debugging
-
-### Simulate inbound webhook
-
-```powershell
-$env:WEBHOOK_URL="https://YOUR-RAILWAY-URL/webhooks/retell-inbound"
-$env:TO_NUMBER="+14154297307"   # Must exist in agents table
-node scripts/simulate_retell.js
+# === OPTIONAL ===
+RETELL_AUTO_SYNC_MINUTES=60    # Sync templates every N minutes
+PORT=3000
 ```
 
-Verifies: HTTP 200, `call_inbound.dynamic_variables.business_name` set, `begin_message` override present.
+### Frontend (frontend/.env)
 
-### API check
+```bash
+VITE_SUPABASE_URL=https://xxx.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJ...   # Public anon key, safe to expose
+VITE_API_URL=http://localhost:3000
+VITE_ADMIN_EMAIL=admin@example.com
+```
+
+---
+
+## 7. Database Schema
+
+### Core Tables
+
+| Table | Key Columns | Purpose |
+|-------|-------------|---------|
+| `profiles` | user_id, business_name, area_code, role | User settings |
+| `agents` | user_id, agent_id, phone_number | Retell agent config |
+| `leads` | user_id, phone, name, transcript, sentiment | Customer leads |
+| `messages` | user_id, thread_id, direction, body | SMS history |
+| `appointments` | user_id, customer_phone, start_time | Bookings |
+| `subscriptions` | user_id, stripe_subscription_id, tier | Billing state |
+| `usage_limits` | user_id, call_used_seconds, sms_used | Usage tracking |
+
+### Operations Tables
+
+| Table | Key Columns | Purpose |
+|-------|-------------|---------|
+| `webhook_queue` | phone_number, event_type, raw_payload | Raw webhook storage |
+| `error_logs` | error_type, message, stack_trace, resolved_at | Error tracking |
+| `ops_alerts` | alert_type, severity, message | Operational alerts |
+| `customer_health_scores` | user_id, score, grade, risk_level | Health grading |
+| `churn_alerts` | user_id, reason, severity | Churn warnings |
+| `active_sessions` | user_id, token_hash, created_at | Session tracking |
+| `reconciliation_runs` | run_type, status, discrepancies_found | Reconciliation logs |
+
+---
+
+## 8. Webhooks
+
+### Incoming Webhooks
+
+| Endpoint | Source | Purpose |
+|----------|--------|---------|
+| `POST /webhooks/retell-inbound` | Retell | Inbound call routing |
+| `POST /retell-webhook` | Retell | Call events (started, ended) |
+| `POST /webhooks/sms-inbound` | Retell | Inbound SMS routing |
+| `POST /stripe-webhook` | Stripe | Payment events |
+| `POST /webhooks/calcom` | Cal.com | Booking events |
+
+### Outgoing Webhooks (Zapier)
+
+Events sent to user-configured webhook URLs:
+
+- `call_ended` - Call completed with duration, outcome
+- `call_started` - Call initiated
+- `appointment_booked` - New appointment created
+- `appointment_updated` - Appointment modified
+- `lead_created` - New lead from call
+- `sms_received` - Inbound text message
+
+---
+
+## 9. Error Handling
+
+### Frontend
+
+- **Global axios interceptor** in `api.js` transforms all API errors
+- **User-friendly messages** based on status code
+- **Auto-redirect on 401** to login page
+- **Error states** (`loadError`, `actionError`) on all data-loading pages
+- **Error banners** with retry buttons
+
+### Backend
+
+- **Centralized `trackError()` function** logs to `error_logs` table
+- **Global error handler** catches unhandled exceptions
+- **Per-webhook error handling** with graceful degradation
+- **Ops alerts** created for critical failures
+
+### Error Log Schema
+
+```sql
+error_logs (
+  id, error_type, endpoint, user_id, message, 
+  stack_trace, request_body, resolved_at, resolved_by
+)
+```
+
+---
+
+## 10. Testing
+
+### E2E Tests (Cypress)
+
+```bash
+# Set credentials
+$env:CYPRESS_TEST_EMAIL="test@example.com"
+$env:CYPRESS_TEST_PASSWORD="password123"
+
+# Run all tests
+npm run test:e2e
+
+# Run specific spec
+npx cypress run --spec "cypress/e2e/smoke.spec.js"
+```
+
+### Test Specs
+
+| Spec | Coverage |
+|------|----------|
+| `smoke.spec.js` | Dashboard, leads, calendar, messages, black box |
+| `critical.spec.js` | Auth, core navigation |
+| `wizard-matrix.spec.js` | Wizard field combinations |
+
+### API Health Check
 
 ```bash
 npm run test:api
 ```
 
-### E2E tests
+### Simulate Webhook
 
-```bash
-npm run test:e2e
+```powershell
+$env:WEBHOOK_URL="https://your-backend/webhooks/retell-inbound"
+$env:TO_NUMBER="+14155551234"  # Must exist in agents table
+node scripts/simulate_retell.js
 ```
 
-Requires: `CYPRESS_TEST_EMAIL`, `CYPRESS_TEST_PASSWORD`, `CYPRESS_SUPABASE_URL`, `CYPRESS_SUPABASE_ANON_KEY`.
+---
 
-### Deploy verification
+## 11. Deployment
 
-- **Server:** `[deploy-agent-self] profiles updated` with `verified_in_db` in logs.
-- **DB:** `profiles.business_name` for user.
-- **Webhook:** `simulate_retell.js` returns correct `business_name`.
+### Frontend → Vercel
+
+1. Connect GitHub repo
+2. Build command: `cd frontend && npm run build`
+3. Output directory: `frontend/dist`
+4. Environment variables from `frontend/.env`
+
+### Backend → Railway
+
+1. Connect GitHub repo
+2. Start command: `node server.js`
+3. Environment variables from `.env`
+4. Note public URL for webhook config
+
+### Post-Deploy Checklist
+
+- [ ] Run all SQL migrations in Supabase
+- [ ] Configure Stripe webhook: `{SERVER_URL}/stripe-webhook`
+- [ ] Configure Retell phone webhooks: `{SERVER_URL}/webhooks/retell-inbound`
+- [ ] Test wizard flow: signup → payment → deploy
+- [ ] Test call flow: dial number → verify greeting
+- [ ] Verify admin access: `/admin/dashboard`
+- [ ] Check Ops Dashboard for errors
 
 ---
 
-## 9. Database Tables (High Level)
+## 12. Operations
 
-| Table               | Purpose                                      |
-|---------------------|----------------------------------------------|
-| `profiles`          | User metadata, business_name, area_code, role|
-| `agents`            | Retell agents, phone_number, user_id, nickname |
-| `subscriptions`     | Stripe subscription state                    |
-| `usage_limits`      | Minutes/SMS caps, tier, limit_state          |
-| `webhook_queue`     | Raw webhooks for replay/audit                |
-| `unknown_phone`     | Webhooks for unrecognized numbers            |
-| `call_events`       | Normalized call records                      |
-| `sms_events`        | Normalized SMS records                       |
-| `alerts`            | Usage warnings, blocks, failures             |
-| `leads`, `messages` | CRM and comms                                |
+### Scheduled Jobs
 
----
+| Job | Schedule | Purpose |
+|-----|----------|---------|
+| Nightly Reconciliation | 3:00 AM UTC | Compare usage aggregates vs actual |
+| Appointment Reminders | Continuous | Send 24h/1h reminders |
+| Template Sync | Configurable | Sync Retell templates |
 
-## 10. Common Gotchas
+### Monitoring
 
-1. **`business_name` empty after deploy**  
-   - Check localStorage keys (`wizard.form`, `wizard.form.{userId}`).  
-   - Check `profiles.business_name` and `agents.nickname` in DB.  
-   - Server falls back to `agents.nickname` if profile is empty.
+- **Ops Dashboard** (`/admin/ops`): Errors, alerts, webhooks, reconciliation
+- **Error Logs Tab**: All tracked errors with resolution
+- **Webhook Queue Tab**: Pending/failed webhooks with replay
+- **Reconciliation Tab**: Usage discrepancy reports
 
-2. **"Agent not found for number" (404)**  
-   - `TO_NUMBER` in simulate script must match `agents.phone_number` exactly (E.164).
+### Alerts
 
-3. **Pending agent IDs**  
-   - Agents can have `agent_id` like `pending-{uuid}` until Retell finishes provisioning; webhook may receive different `agent_id` from Retell.
-
-4. **Stripe redirect clears form**  
-   - Form is restored from user-specific localStorage; ensure both keys are written in `updateField`.
-
-5. **Ops tables missing**  
-   - Run `supabase/ops_infrastructure.sql` in Supabase SQL Editor.
+Automatic alerts created for:
+- Usage thresholds (80%, 100%, hard stop)
+- Webhook delivery failures
+- Reconciliation discrepancies
+- Churn risk indicators
 
 ---
 
-## 11. What to Do Next
+## 13. Common Issues & Solutions
 
-1. **Deploy** — Commit and push; Railway deploys server, Vercel deploys frontend.
-2. **Run ops migration** — If not done: `supabase/ops_infrastructure.sql`.
-3. **Test webhook** — Use `simulate_retell.js` with a real provisioned number.
-4. **Test full flow** — New account → wizard → Stripe → deploy → call number.
-5. **Future work (from OPS_CHECKLIST.md):**
-   - Webhook signature validation
-   - Replay UI for queued webhooks
-   - Nightly reconciliation job
-   - Dashboard metrics for calls/SMS/errors
+### "Agent not found for number" (404)
+
+**Cause**: Phone number lookup failed
+**Solution**: 
+1. Verify number is in E.164 format (+1XXXXXXXXXX)
+2. Check `agents` table for matching `phone_number`
+3. Run `fix_agents_constraints.sql` if duplicate key errors
+
+### Business Name Not Showing in Greeting
+
+**Cause**: Profile not saved or variable not passed
+**Solution**:
+1. Check `profiles.business_name` for user
+2. Check `agents.nickname` as fallback
+3. Verify `/webhooks/retell-inbound` returns `dynamic_variables.business_name`
+
+### Duplicate Key Error on Deploy
+
+**Cause**: Wrong unique constraint on `agents` table
+**Solution**: Run `supabase/fix_agents_constraints.sql`
+
+### Stripe Redirect Goes to Wrong Step
+
+**Cause**: Outdated `persistStep()` call
+**Solution**: Verify `WizardPage.jsx` uses `persistStep(5)` after payment success
+
+### SMS Not Sending
+
+**Cause**: Usage cap reached
+**Solution**:
+1. Check `usage_limits.sms_used` vs `sms_cap + sms_credit`
+2. Add top-up or reset period
+
+### Phone Numbers Missing +1
+
+**Cause**: Number not normalized to E.164
+**Solution**: 
+1. `normalizePhoneE164()` in `frontend/src/lib/phone.js`
+2. All phone fields use `onBlur` normalization
+3. Backend normalizes on save
 
 ---
 
-## 12. Doc Index
+## 14. Recent Major Updates
 
-| Doc                      | Content                                      |
-|--------------------------|----------------------------------------------|
-| `docs/README.md`         | Doc index                                    |
-| `docs/ADMIN_WORKFLOW.md` | Admin security, quick onboard, Fleet Registry|
-| `docs/OPS_CHECKLIST.md`  | Ops implementation status                    |
-| `docs/AGENT_PROMPT_GRACE.md` | Grace prompt and dynamic vars            |
-| `docs/RETELL_RAILWAY_REFERENCE.md` | Retell/Railway reference            |
-| `docs/RETELL_DYNAMIC_VARS_DEBUG_PROMPT.md` | Dynamic vars debugging   |
-| `README.md` (root)       | Architecture, quick start, flows             |
-| `frontend/README.md`     | Routes, wizard, env                          |
-| `server/README.md`       | Endpoints, webhooks, ops helpers             |
-| `supabase/README.md`     | Schema files and tables                      |
-| `scripts/README.md`      | api-check, create-test-user, simulate_retell |
+### God-Tier Launch Hardening (Feb 2026)
+
+1. **Customer Health Scores**: A-F grading based on usage, engagement, billing
+2. **Churn Prevention**: Proactive alerts when users show decline
+3. **ROI Dashboard**: Revenue tracking visible on user dashboard
+4. **Smart Upgrade Prompts**: Usage-based upsell at 80%+
+5. **Session Security**: Active session tracking with revocation
+6. **Error Tracking**: Centralized `trackError()` with `error_logs` table
+7. **Ops Dashboard**: Full admin visibility into system health
+
+### Ops Infrastructure
+
+1. **Webhook Queue**: Raw storage, replay capability
+2. **Reconciliation Job**: Nightly usage comparison (3 AM UTC)
+3. **Ops Alerts**: Automatic alerts for critical issues
+
+### Critical Bug Fixes
+
+1. **Duplicate Agent Key**: Changed to upsert with `user_id` conflict
+2. **Stripe Redirect**: Now goes to Deploy step (5) not Communications (3)
+3. **Phone Normalization**: E.164 format on all devices (including mobile)
+4. **Error Handling**: Global interceptor + per-page error states
 
 ---
 
-*This handoff is maintained as the source of truth for onboarding new contributors and AI assistants.*
+## 15. Documentation Index
+
+| Document | Location | Description |
+|----------|----------|-------------|
+| Main README | `README.md` | Architecture, quick start, features |
+| **This Handoff** | `docs/HANDOFF.md` | Complete handoff for new devs |
+| Admin Workflow | `docs/ADMIN_WORKFLOW.md` | Admin portal documentation |
+| Ops Checklist | `docs/OPS_CHECKLIST.md` | Operations status |
+| Implementation Audit | `docs/IMPLEMENTATION_AND_AUDIT.md` | Feature audit trail |
+| Agent Prompt | `docs/AGENT_PROMPT_GRACE.md` | Grace AI configuration |
+| Variables Reference | `docs/VARIABLES_AND_PROMPTS.md` | Dynamic variables |
+| Frontend README | `frontend/README.md` | Frontend architecture |
+| Server README | `server/README.md` | Backend API reference |
+| Database README | `supabase/README.md` | Schema documentation |
+| Scripts README | `scripts/README.md` | Utility scripts |
+| Cypress README | `cypress/README.md` | E2E testing guide |
+
+---
+
+## Quick Reference Card
+
+```
+DEPLOY NEW USER:
+1. User: Wizard → Pay → Deploy
+2. Admin: /admin/wizard/create → Quick Onboard
+
+TEST A CALL:
+1. Get phone from agents table
+2. Dial number
+3. Listen for business name in greeting
+
+DEBUG MISSING DATA:
+1. Check profiles.business_name
+2. Check agents.nickname
+3. Check localStorage (kryonex:wizard.form.{userId})
+4. Check server logs for deploy response
+
+REPLAY FAILED WEBHOOK:
+1. /admin/ops → Webhook Queue tab
+2. Filter by "failed"
+3. Click Replay button
+
+CHECK USAGE:
+1. /billing page shows user usage
+2. usage_limits table has raw numbers
+3. /admin/financials shows platform-wide
+
+MONITOR ERRORS:
+1. /admin/ops → Errors tab
+2. Click "Resolve" when fixed
+3. Check error_logs table for details
+```
+
+---
+
+*This handoff is the source of truth for anyone taking over this codebase. Keep it updated.*

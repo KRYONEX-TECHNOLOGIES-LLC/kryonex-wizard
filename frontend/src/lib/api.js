@@ -286,4 +286,12 @@ export const revokeSession = (sessionId) => api.delete(`/api/sessions/${sessionI
 export const revokeAllSessions = () => api.delete("/api/sessions");
 export const changePassword = (newPassword) => api.post("/api/change-password", { new_password: newPassword });
 
+// Admin: Webhook Queue & Replay
+export const getWebhookQueue = (params) => api.get("/admin/webhook-queue", { params });
+export const replayWebhook = (queueId) => api.post(`/admin/webhook-queue/${queueId}/replay`);
+
+// Admin: Reconciliation Runs
+export const getReconciliationRuns = (params) => api.get("/admin/reconciliation-runs", { params });
+export const triggerReconciliation = () => api.post("/admin/reconciliation-runs/trigger");
+
 export default api;

@@ -1,100 +1,201 @@
-# Docs
+# Documentation Index
 
-Feature and workflow documentation for Kryonex Wizard.
+Comprehensive documentation for the Kryonex Wizard platform. Start with the HANDOFF.md for a complete overview.
 
-## Contents
+---
 
-| Doc | Description |
-|-----|-------------|
-| **[HANDOFF.md](./HANDOFF.md)** | **Start here** — Full handoff for new devs/AI: app overview, recent work, flows, debugging, next steps. |
-| [ADMIN_WORKFLOW.md](./ADMIN_WORKFLOW.md) | Admin menu security, admin user-dashboard access, mini Admin Quick Onboarding, and Fleet Registry. |
-| [IMPLEMENTATION_AND_AUDIT.md](./IMPLEMENTATION_AND_AUDIT.md) | Feature implementation audit trail and system architecture details. |
-| [OPS_CHECKLIST.md](./OPS_CHECKLIST.md) | Ops infrastructure implementation status, testing checklist, and future enhancements. |
-| [AGENT_PROMPT_GRACE.md](./AGENT_PROMPT_GRACE.md) | Grace AI agent prompt with dynamic variables context section. |
+## Quick Start
 
-## Feature Overview
+| If you want to... | Read this |
+|-------------------|-----------|
+| Understand the entire system | [HANDOFF.md](./HANDOFF.md) |
+| Get complete technical specs | [../TECHNICAL_SUMMARY.md](../TECHNICAL_SUMMARY.md) |
+| Get a quick reference card | [QUICK_REFERENCE.md](./QUICK_REFERENCE.md) |
+| Set up the project | [../README.md](../README.md) |
+| Understand admin workflows | [ADMIN_WORKFLOW.md](./ADMIN_WORKFLOW.md) |
+| Check ops infrastructure | [OPS_CHECKLIST.md](./OPS_CHECKLIST.md) |
+| Configure the AI agent | [AGENT_PROMPT_GRACE.md](./AGENT_PROMPT_GRACE.md) |
 
-### Revenue Features (Money Printers)
+---
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **Referral Program** | Complete | $25 upfront + 10% recurring for 12 months. Anti-fraud with 30-day hold. |
-| **Upsell Automation** | Complete | Smart modal prompts at 80%+ usage with one-click upgrades. |
-| **Post-Call SMS** | Complete | Auto-text customers after every call ($29/mo add-on). |
-| **Review Requests** | Complete | Auto-request Google reviews after completed appointments ($19/mo). |
-| **Zapier Integration** | Complete | Outbound webhooks to 5000+ apps ($49/mo add-on). |
+## Document Map
 
-### Retention Features
+### Core Documentation
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **Customer CRM** | Complete | Full customer history grouped by phone number. |
-| **Appointment Reminders** | Complete | Auto SMS 24h/1h before appointments. |
-| **ETA Notifications** | Complete | Text customers when technician is X minutes away. |
-| **Analytics Dashboard** | Complete | Charts for calls, booking rates, peak hours. |
+| Document | Description |
+|----------|-------------|
+| **[HANDOFF.md](./HANDOFF.md)** | **START HERE** - Complete handoff for new developers, buyers, or AI assistants |
+| [QUICK_REFERENCE.md](./QUICK_REFERENCE.md) | One-page reference card for common tasks |
+| [../README.md](../README.md) | Architecture, quick start, features, API reference |
+| [IMPLEMENTATION_AND_AUDIT.md](./IMPLEMENTATION_AND_AUDIT.md) | Feature implementation audit trail |
 
-### Core Platform
+### Operations
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **AI Call Agent** | Complete | 24/7 automated call handling via Retell AI. |
-| **Lead Management** | Complete | CRM with transcripts, sentiment, AI summaries. |
-| **Calendar Booking** | Complete | Cal.com integration with color-coded appointments. |
-| **Black Box** | Complete | Call recordings with waveform visualization. |
-| **Live Tracking** | Complete | Real-time technician tracking maps. |
-| **Billing/Stripe** | Complete | Subscription tiers, top-ups, usage tracking. |
+| Document | Description |
+|----------|-------------|
+| [OPS_CHECKLIST.md](./OPS_CHECKLIST.md) | Operations infrastructure status and testing checklist |
+| [ADMIN_WORKFLOW.md](./ADMIN_WORKFLOW.md) | Admin portal security, quick onboard, Fleet Registry |
 
-## Database Migrations
+### Technical Reference
 
-Run these in Supabase SQL Editor (in order):
+| Document | Description |
+|----------|-------------|
+| [AGENT_PROMPT_GRACE.md](./AGENT_PROMPT_GRACE.md) | Grace AI agent prompt with dynamic variables |
+| [VARIABLES_AND_PROMPTS.md](./VARIABLES_AND_PROMPTS.md) | All dynamic variables reference |
+| [RETELL_DYNAMIC_VARS_DEBUG_PROMPT.md](./RETELL_DYNAMIC_VARS_DEBUG_PROMPT.md) | Debugging dynamic variables |
+| [RETELL_RAILWAY_REFERENCE.md](./RETELL_RAILWAY_REFERENCE.md) | Retell + Railway integration notes |
 
-1. `supabase/command_suite.sql` - Core tables (profiles, leads, agents, etc.)
-2. `supabase/ops_infrastructure.sql` - Ops tables (webhooks, events, alerts)
-3. `supabase/referral_system.sql` - Referral program tables
-4. `supabase/sms_automation.sql` - SMS automation + webhook configs
+### Deployment & Troubleshooting
 
-## API Endpoints
+| Document | Description |
+|----------|-------------|
+| [DEPLOY_DEBUG.md](./DEPLOY_DEBUG.md) | Deployment debugging guide |
+| [DEPLOY_404_TROUBLESHOOTING.md](./DEPLOY_404_TROUBLESHOOTING.md) | 404 error troubleshooting |
+| [SUPABASE_AUTH_PRODUCTION.md](./SUPABASE_AUTH_PRODUCTION.md) | Supabase auth production setup |
+| [EMAIL_VERIFICATION_SETUP.md](./EMAIL_VERIFICATION_SETUP.md) | Email verification configuration |
+
+### Component READMEs
+
+| Document | Description |
+|----------|-------------|
+| [../frontend/README.md](../frontend/README.md) | Frontend architecture, pages, components |
+| [../server/README.md](../server/README.md) | Backend API endpoints, webhooks, ops |
+| [../supabase/README.md](../supabase/README.md) | Database schema, migrations, RLS |
+| [../scripts/README.md](../scripts/README.md) | Utility scripts documentation |
+| [../cypress/README.md](../cypress/README.md) | E2E testing guide |
+
+---
+
+## Feature Status
+
+### Core Platform ✅
+
+| Feature | Status |
+|---------|--------|
+| User Onboarding Wizard | Complete |
+| AI Call Agent (Grace) | Complete |
+| Lead Management | Complete |
+| Calendar/Appointments | Complete |
+| SMS Messaging | Complete |
+| Black Box Recordings | Complete |
+| Real-time Tracking | Complete |
+| Customer CRM | Complete |
+
+### Revenue Features ✅
+
+| Feature | Price | Status |
+|---------|-------|--------|
+| Referral Program | Free | Complete |
+| Post-Call SMS | $29/mo | Complete |
+| Review Requests | $19/mo | Complete |
+| Zapier Integration | $49/mo | Complete |
+
+### Retention Features ✅
+
+| Feature | Status |
+|---------|--------|
+| ROI Dashboard | Complete |
+| Smart Upgrade Prompts | Complete |
+| Customer Health Scores | Complete |
+| Churn Prevention Alerts | Complete |
+| Analytics Dashboard | Complete |
+
+### Enterprise Operations ✅
+
+| Feature | Status |
+|---------|--------|
+| Ops Dashboard | Complete |
+| Error Tracking | Complete |
+| Webhook Queue + Replay | Complete |
+| Usage Reconciliation | Complete |
+| Session Management | Complete |
+
+---
+
+## API Quick Reference
 
 ### User Endpoints
+
 ```
-# Dashboard
-GET /api/dashboard/stats-enhanced
-
-# Referrals
+GET  /api/dashboard/stats-enhanced
+GET  /api/leads
+GET  /api/customers
+GET  /api/appointments
+GET  /api/messages
+GET  /api/webhooks
+GET  /api/settings
 GET  /referral/my-code
-GET  /referral/stats
-GET  /referral/history
-POST /referral/request-payout
-
-# Customers
-GET /api/customers
-GET /api/customers/:phone/history
-
-# Webhooks
-GET    /api/webhooks
-POST   /api/webhooks
-PUT    /api/webhooks/:id
-DELETE /api/webhooks/:id
-POST   /api/webhooks/:id/test
-
-# Settings (includes SMS automation)
-GET /api/settings
-PUT /api/settings
+GET  /usage/status
 ```
 
 ### Admin Endpoints
+
 ```
+GET  /admin/users
 GET  /admin/metrics-enhanced
 GET  /admin/referrals
-POST /admin/referrals/:id/approve
-POST /admin/referrals/:id/reject
-GET  /admin/referral-settings
-PUT  /admin/referral-settings
+GET  /admin/error-logs
+GET  /admin/ops-alerts
+GET  /admin/webhook-queue
+GET  /admin/reconciliation-runs
+POST /admin/quick-onboard
 ```
 
-## Related
+### Webhooks
 
-- Root [README.md](../README.md) — Architecture, quick start, key flows.
-- [frontend/README.md](../frontend/README.md) — Routes, wizard flow, admin UI.
-- [server/README.md](../server/README.md) — Auth, endpoints, webhooks.
-- [supabase/README.md](../supabase/README.md) — Schema, migrations, ops tables.
+```
+POST /webhooks/retell-inbound   (Retell calls)
+POST /retell-webhook            (Retell events)
+POST /webhooks/sms-inbound      (Retell SMS)
+POST /stripe-webhook            (Stripe events)
+POST /webhooks/calcom           (Cal.com events)
+```
+
+---
+
+## Database Migrations
+
+Run in Supabase SQL Editor in this order:
+
+1. `supabase/command_suite.sql`
+2. `supabase/ops_infrastructure.sql`
+3. `supabase/god_tier_hardening.sql`
+4. `supabase/fix_agents_constraints.sql` ← **Required**
+5. `supabase/referral_system.sql`
+6. `supabase/sms_automation.sql`
+
+---
+
+## Environment Variables
+
+### Backend (.env)
+
+```bash
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+RETELL_API_KEY=...
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+SERVER_URL=...
+FRONTEND_URL=...
+ADMIN_EMAIL=...
+RESEND_API_KEY=...
+```
+
+### Frontend (frontend/.env)
+
+```bash
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+VITE_API_URL=...
+VITE_ADMIN_EMAIL=...
+```
+
+---
+
+## Support
+
+1. Check [HANDOFF.md](./HANDOFF.md) for comprehensive overview
+2. Search relevant documentation above
+3. Check `error_logs` table in Supabase
+4. Review Ops Dashboard at `/admin/ops`

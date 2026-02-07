@@ -593,9 +593,23 @@ export default function CalendarPage() {
             </div>
             <div className="calendar-connection-body">
               {calConnected ? (
-                <span className="calendar-connection-note">
-                  Cal.com is linked. Automated bookings are enabled.
-                </span>
+                <>
+                  <span className="calendar-connection-note">
+                    Cal.com is linked. Automated bookings are enabled.
+                  </span>
+                  <details className="webhook-setup-details" style={{ marginTop: "10px", fontSize: "13px", color: "#9ca3af" }}>
+                    <summary style={{ cursor: "pointer", color: "#22d3ee" }}>Webhook Setup (Optional)</summary>
+                    <div style={{ marginTop: "8px", padding: "10px", background: "rgba(0,0,0,0.3)", borderRadius: "6px" }}>
+                      <p style={{ marginBottom: "8px" }}>To sync bookings made directly on Cal.com:</p>
+                      <ol style={{ marginLeft: "16px", lineHeight: "1.6" }}>
+                        <li>Go to Cal.com Settings &rarr; Developer &rarr; Webhooks</li>
+                        <li>Add new webhook with URL: <code style={{ background: "#1e293b", padding: "2px 6px", borderRadius: "3px" }}>{window.location.origin.replace(/:\d+$/, ':3001')}/webhooks/calcom</code></li>
+                        <li>Enable events: BOOKING_CREATED, BOOKING_RESCHEDULED, BOOKING_CANCELLED</li>
+                        <li>Save the webhook</li>
+                      </ol>
+                    </div>
+                  </details>
+                </>
               ) : (
                 <span className="calendar-connection-note">
                   Connect Cal.com so the AI can book appointments automatically.

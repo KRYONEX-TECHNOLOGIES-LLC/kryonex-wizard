@@ -45,10 +45,13 @@ ON public.usage_alerts FOR SELECT
 USING (auth.uid() = user_id);
 
 -- ============================================
--- 3. APPOINTMENTS TABLE - Add Cal.com booking reference
+-- 3. APPOINTMENTS TABLE - Add Cal.com booking reference and customer_email
 -- ============================================
 ALTER TABLE public.appointments 
 ADD COLUMN IF NOT EXISTS cal_booking_uid text;
+
+ALTER TABLE public.appointments 
+ADD COLUMN IF NOT EXISTS customer_email text;
 
 -- Index for Cal.com booking lookups (prevent duplicates)
 CREATE INDEX IF NOT EXISTS idx_appointments_cal_uid 

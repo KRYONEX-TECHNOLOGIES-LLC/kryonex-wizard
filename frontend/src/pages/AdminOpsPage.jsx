@@ -27,6 +27,10 @@ import {
   getAdminHealthScores,
   getAdminChurnAlerts,
   resolveChurnAlert,
+  getWebhookQueue,
+  replayWebhook,
+  getReconciliationRuns,
+  triggerReconciliation,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
@@ -40,13 +44,20 @@ export default function AdminOpsPage() {
   const [opsAlerts, setOpsAlerts] = useState([]);
   const [healthStats, setHealthStats] = useState(null);
   const [churnAlerts, setChurnAlerts] = useState([]);
+  const [webhookQueue, setWebhookQueue] = useState([]);
+  const [webhookQueueTotal, setWebhookQueueTotal] = useState(0);
+  const [reconciliationRuns, setReconciliationRuns] = useState([]);
+  const [reconTotal, setReconTotal] = useState(0);
   
   // UI states
   const [activeTab, setActiveTab] = useState("errors");
   const [errorFilter, setErrorFilter] = useState("unresolved");
   const [alertFilter, setAlertFilter] = useState("unacked");
+  const [webhookFilter, setWebhookFilter] = useState("pending");
   const [resolving, setResolving] = useState({});
   const [acknowledging, setAcknowledging] = useState({});
+  const [replaying, setReplaying] = useState({});
+  const [triggeringRecon, setTriggeringRecon] = useState(false);
 
   // Check admin access
   useEffect(() => {
@@ -89,10 +100,35 @@ export default function AdminOpsPage() {
       setOpsAlerts(alertsRes.data?.alerts || []);
       setHealthStats(healthRes.data?.stats || null);
       setChurnAlerts(churnRes.data?.alerts || []);
+      
+      // Load webhook queue separately (non-blocking)
+      loadWebhookQueue();
     } catch (err) {
       console.error("Load error:", err);
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadWebhookQueue = useCallback(async (status = "pending") => {
+    try {
+      const res = await getWebhookQueue({ status, limit: 50 });
+      setWebhookQueue(res.data?.items || []);
+      setWebhookQueueTotal(res.data?.total || 0);
+    } catch (err) {
+      console.error("Load webhook queue error:", err);
+      setWebhookQueue([]);
+    }
+  }, []);
+
+  const loadReconciliationRuns = useCallback(async () => {
+    try {
+      const res = await getReconciliationRuns({ limit: 25 });
+      setReconciliationRuns(res.data?.runs || []);
+      setReconTotal(res.data?.total || 0);
+    } catch (err) {
+      console.error("Load reconciliation runs error:", err);
+      setReconciliationRuns([]);
     }
   }, []);
 
@@ -129,6 +165,32 @@ export default function AdminOpsPage() {
       console.error("Resolve churn error:", err);
     } finally {
       setResolving(prev => ({ ...prev, [alertId]: false }));
+    }
+  };
+
+  const handleReplayWebhook = async (queueId) => {
+    try {
+      setReplaying(prev => ({ ...prev, [queueId]: true }));
+      await replayWebhook(queueId);
+      // Reload queue to show updated status
+      await loadWebhookQueue(webhookFilter);
+    } catch (err) {
+      console.error("Replay webhook error:", err);
+    } finally {
+      setReplaying(prev => ({ ...prev, [queueId]: false }));
+    }
+  };
+
+  const handleTriggerReconciliation = async () => {
+    try {
+      setTriggeringRecon(true);
+      await triggerReconciliation();
+      // Reload runs to show new run
+      await loadReconciliationRuns();
+    } catch (err) {
+      console.error("Trigger reconciliation error:", err);
+    } finally {
+      setTriggeringRecon(false);
     }
   };
 
@@ -249,6 +311,21 @@ export default function AdminOpsPage() {
           >
             <TrendingUp size={18} />
             Health Overview
+          </button>
+          <button 
+            className={`ops-tab ${activeTab === "webhooks" ? "active" : ""}`}
+            onClick={() => { setActiveTab("webhooks"); loadWebhookQueue(webhookFilter); }}
+          >
+            <Zap size={18} />
+            Webhook Queue
+            {webhookQueueTotal > 0 && <span className="badge">{webhookQueueTotal}</span>}
+          </button>
+          <button 
+            className={`ops-tab ${activeTab === "reconciliation" ? "active" : ""}`}
+            onClick={() => { setActiveTab("reconciliation"); loadReconciliationRuns(); }}
+          >
+            <Server size={18} />
+            Reconciliation
           </button>
         </div>
 
@@ -534,6 +611,207 @@ export default function AdminOpsPage() {
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Webhook Queue Tab */}
+              {activeTab === "webhooks" && (
+                <div className="ops-section">
+                  <div className="ops-section-header">
+                    <div className="ops-section-title">
+                      <Zap size={20} />
+                      Webhook Queue
+                    </div>
+                    <div className="filter-buttons">
+                      <button 
+                        className={`filter-btn ${webhookFilter === "pending" ? "active" : ""}`}
+                        onClick={() => { setWebhookFilter("pending"); loadWebhookQueue("pending"); }}
+                      >
+                        Pending
+                      </button>
+                      <button 
+                        className={`filter-btn ${webhookFilter === "failed" ? "active" : ""}`}
+                        onClick={() => { setWebhookFilter("failed"); loadWebhookQueue("failed"); }}
+                      >
+                        Failed
+                      </button>
+                      <button 
+                        className={`filter-btn ${webhookFilter === "success" ? "active" : ""}`}
+                        onClick={() => { setWebhookFilter("success"); loadWebhookQueue("success"); }}
+                      >
+                        Success
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {webhookQueue.length === 0 ? (
+                    <div className="empty-state">
+                      <CheckCircle size={32} />
+                      <p>No {webhookFilter} webhooks in queue</p>
+                    </div>
+                  ) : (
+                    <table className="ops-table">
+                      <thead>
+                        <tr>
+                          <th>Received</th>
+                          <th>Event Type</th>
+                          <th>Phone</th>
+                          <th>Attempts</th>
+                          <th>Status</th>
+                          <th>Error</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {webhookQueue.map((item) => (
+                          <tr key={item.id}>
+                            <td>{formatDate(item.received_at)}</td>
+                            <td>
+                              <span className="event-type-badge">{item.event_type}</span>
+                            </td>
+                            <td>{item.phone_number || "—"}</td>
+                            <td>{item.attempts || 0}</td>
+                            <td>
+                              {item.processed_at ? (
+                                <span className="status-badge success">
+                                  <CheckCircle size={14} />
+                                  {item.result || "Processed"}
+                                </span>
+                              ) : item.error_message ? (
+                                <span className="status-badge error">
+                                  <XCircle size={14} />
+                                  Failed
+                                </span>
+                              ) : (
+                                <span className="status-badge pending">
+                                  <Clock size={14} />
+                                  Pending
+                                </span>
+                              )}
+                            </td>
+                            <td className="error-cell">
+                              {item.error_message ? (
+                                <span title={item.error_message}>
+                                  {item.error_message.substring(0, 50)}...
+                                </span>
+                              ) : "—"}
+                            </td>
+                            <td>
+                              {!item.processed_at && (
+                                <button
+                                  className="action-btn replay"
+                                  onClick={() => handleReplayWebhook(item.id)}
+                                  disabled={replaying[item.id]}
+                                >
+                                  {replaying[item.id] ? (
+                                    <RefreshCw size={14} className="spinning" />
+                                  ) : (
+                                    <>
+                                      <RefreshCw size={14} />
+                                      Replay
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* Reconciliation Tab */}
+              {activeTab === "reconciliation" && (
+                <div className="ops-section">
+                  <div className="ops-section-header">
+                    <div className="ops-section-title">
+                      <Server size={20} />
+                      Usage Reconciliation
+                    </div>
+                    <button 
+                      className="action-btn primary"
+                      onClick={handleTriggerReconciliation}
+                      disabled={triggeringRecon}
+                    >
+                      {triggeringRecon ? (
+                        <>
+                          <RefreshCw size={14} className="spinning" />
+                          Running...
+                        </>
+                      ) : (
+                        <>
+                          <Zap size={14} />
+                          Run Now
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  
+                  <p className="section-description">
+                    Compares aggregated usage in usage_limits with actual usage_calls/usage_sms records.
+                    Runs automatically at 3:00 AM UTC daily.
+                  </p>
+                  
+                  {reconciliationRuns.length === 0 ? (
+                    <div className="empty-state">
+                      <Server size={32} />
+                      <p>No reconciliation runs yet</p>
+                    </div>
+                  ) : (
+                    <table className="ops-table">
+                      <thead>
+                        <tr>
+                          <th>Started</th>
+                          <th>Type</th>
+                          <th>Status</th>
+                          <th>Records</th>
+                          <th>Discrepancies</th>
+                          <th>Triggered By</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reconciliationRuns.map((run) => (
+                          <tr key={run.id}>
+                            <td>{formatDate(run.started_at)}</td>
+                            <td>
+                              <span className="event-type-badge">{run.run_type}</span>
+                            </td>
+                            <td>
+                              {run.status === "completed" ? (
+                                <span className="status-badge success">
+                                  <CheckCircle size={14} />
+                                  Completed
+                                </span>
+                              ) : run.status === "failed" ? (
+                                <span className="status-badge error">
+                                  <XCircle size={14} />
+                                  Failed
+                                </span>
+                              ) : (
+                                <span className="status-badge pending">
+                                  <Clock size={14} />
+                                  Running
+                                </span>
+                              )}
+                            </td>
+                            <td>{run.records_checked || 0}</td>
+                            <td>
+                              {(run.discrepancies_found || 0) > 0 ? (
+                                <span className="discrepancy-count warning">
+                                  {run.discrepancies_found}
+                                </span>
+                              ) : (
+                                <span className="discrepancy-count ok">0</span>
+                              )}
+                            </td>
+                            <td>{run.triggered_by || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               )}
             </>

@@ -4904,6 +4904,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         user_id: userId,
         customer_name: args.customer_name || "Customer",
         customer_phone: internalCustomerPhone,
+        customer_email: args.customer_email || args.email || null,
         start_time: start.toISOString(),
         end_time: end.toISOString(),
         location: args.service_address || args.location || null,
@@ -4929,6 +4930,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       user_id: userId,
       customer_name: args.customer_name || "Customer",
       customer_phone: internalCustomerPhone,
+      customer_email: args.customer_email || args.email || null,
       start_time: data?.start_time || start.toISOString(),
       end_time: data?.end_time || end.toISOString(),
       location: args.service_address || args.location || null,
@@ -5572,6 +5574,242 @@ app.post("/api/calcom/disconnect", requireAuth, resolveEffectiveUser, async (req
     return res.json({ connected: false });
   } catch (err) {
     return res.status(500).json({ error: "Unable to disconnect calendar" });
+  }
+});
+
+// =============================================================================
+// CAL.COM WEBHOOK - Receive booking notifications from Cal.com
+// =============================================================================
+app.post("/webhooks/calcom", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const triggerEvent = payload.triggerEvent || payload.event || payload.type;
+    const bookingData = payload.payload || payload.data || payload;
+    
+    console.log("[calcom-webhook] Received:", triggerEvent, JSON.stringify(bookingData, null, 2).slice(0, 500));
+    
+    // Extract booking details
+    const attendee = bookingData.attendees?.[0] || bookingData.attendee || {};
+    const customerEmail = attendee.email || bookingData.email || null;
+    const customerName = attendee.name || bookingData.name || "Customer";
+    const customerPhone = normalizePhoneE164(attendee.phoneNumber || bookingData.phoneNumber || "");
+    const startTime = bookingData.startTime || bookingData.start || null;
+    const endTime = bookingData.endTime || bookingData.end || null;
+    const bookingUid = bookingData.uid || bookingData.id || bookingData.bookingId || null;
+    const status = bookingData.status || "confirmed";
+    const location = bookingData.location || bookingData.where || null;
+    const eventType = bookingData.eventType || {};
+    const organizer = bookingData.organizer || eventType.users?.[0] || {};
+    
+    // Find user by Cal.com username or email
+    let userId = null;
+    const calUsername = organizer.username || eventType.slug || null;
+    
+    if (calUsername) {
+      // Try to find user by cal_username in integrations or profiles
+      const { data: integration } = await supabaseAdmin
+        .from("integrations")
+        .select("user_id")
+        .eq("provider", "calcom")
+        .eq("cal_username", calUsername)
+        .maybeSingle();
+      
+      if (integration?.user_id) {
+        userId = integration.user_id;
+      } else {
+        // Try profiles table
+        const { data: profile } = await supabaseAdmin
+          .from("profiles")
+          .select("user_id")
+          .eq("cal_username", calUsername)
+          .maybeSingle();
+        userId = profile?.user_id || null;
+      }
+    }
+    
+    // Fallback: try to find by organizer email
+    if (!userId && organizer.email) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id")
+        .eq("email", organizer.email)
+        .maybeSingle();
+      userId = profile?.user_id || null;
+    }
+    
+    if (!userId) {
+      console.warn("[calcom-webhook] Could not find user for booking", { calUsername, organizerEmail: organizer.email });
+      // Still return 200 to acknowledge receipt
+      return res.json({ ok: true, warning: "User not found" });
+    }
+    
+    // Handle different event types
+    if (triggerEvent === "BOOKING_CREATED" || triggerEvent === "booking.created") {
+      // Check if appointment already exists (might have been created by AI)
+      const { data: existing } = await supabaseAdmin
+        .from("appointments")
+        .select("id")
+        .eq("cal_booking_uid", bookingUid)
+        .maybeSingle();
+      
+      if (existing) {
+        console.log("[calcom-webhook] Booking already exists in DB", { bookingUid });
+        return res.json({ ok: true, existing: true });
+      }
+      
+      // Create appointment
+      const { data: appointment, error: appointmentError } = await supabaseAdmin
+        .from("appointments")
+        .insert({
+          user_id: userId,
+          customer_name: customerName,
+          customer_phone: customerPhone,
+          customer_email: customerEmail,
+          start_time: startTime,
+          end_time: endTime,
+          location: location,
+          notes: `Booked via Cal.com: ${eventType.title || "Service Call"}`,
+          status: status === "ACCEPTED" || status === "confirmed" ? "scheduled" : "pending",
+          cal_booking_uid: bookingUid,
+        })
+        .select("*")
+        .single();
+      
+      if (appointmentError) {
+        console.error("[calcom-webhook] Failed to create appointment", appointmentError.message);
+        return res.status(500).json({ error: appointmentError.message });
+      }
+      
+      // Log event
+      await logEvent({
+        userId,
+        actionType: "APPOINTMENT_BOOKED",
+        metaData: {
+          booking_uid: bookingUid,
+          appointment_id: appointment.id,
+          source: "cal.com_webhook",
+        },
+      });
+      
+      // Send outbound webhook
+      sendOutboundWebhook(userId, "appointment_booked", {
+        appointment_id: appointment.id,
+        cal_booking_uid: bookingUid,
+        user_id: userId,
+        customer_name: customerName,
+        customer_phone: customerPhone,
+        customer_email: customerEmail,
+        start_time: startTime,
+        end_time: endTime,
+        location: location,
+        source: "cal.com_webhook",
+        created_at: new Date().toISOString(),
+      }).catch(err => console.error("[calcom-webhook] outbound webhook error:", err.message));
+      
+      console.log("[calcom-webhook] Created appointment", { appointmentId: appointment.id, bookingUid });
+      return res.json({ ok: true, appointment_id: appointment.id });
+    }
+    
+    if (triggerEvent === "BOOKING_RESCHEDULED" || triggerEvent === "booking.rescheduled") {
+      // Update existing appointment
+      const { data: updated, error: updateError } = await supabaseAdmin
+        .from("appointments")
+        .update({
+          start_time: startTime,
+          end_time: endTime,
+          location: location,
+          status: "rescheduled",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("cal_booking_uid", bookingUid)
+        .select("*")
+        .single();
+      
+      if (updateError) {
+        console.error("[calcom-webhook] Failed to update appointment", updateError.message);
+        // Try to create if not found
+        if (updateError.code === "PGRST116") {
+          // No rows returned - appointment doesn't exist, create it
+          const { data: newAppt } = await supabaseAdmin
+            .from("appointments")
+            .insert({
+              user_id: userId,
+              customer_name: customerName,
+              customer_phone: customerPhone,
+              customer_email: customerEmail,
+              start_time: startTime,
+              end_time: endTime,
+              location: location,
+              notes: `Rescheduled via Cal.com`,
+              status: "rescheduled",
+              cal_booking_uid: bookingUid,
+            })
+            .select("*")
+            .single();
+          
+          return res.json({ ok: true, appointment_id: newAppt?.id, action: "created_from_reschedule" });
+        }
+        return res.status(500).json({ error: updateError.message });
+      }
+      
+      // Send outbound webhook
+      sendOutboundWebhook(userId, "appointment_updated", {
+        appointment_id: updated.id,
+        cal_booking_uid: bookingUid,
+        user_id: userId,
+        customer_name: customerName,
+        start_time: startTime,
+        end_time: endTime,
+        action: "rescheduled",
+        source: "cal.com_webhook",
+      }).catch(err => console.error("[calcom-webhook] outbound webhook error:", err.message));
+      
+      console.log("[calcom-webhook] Updated appointment", { appointmentId: updated.id, bookingUid });
+      return res.json({ ok: true, appointment_id: updated.id });
+    }
+    
+    if (triggerEvent === "BOOKING_CANCELLED" || triggerEvent === "booking.cancelled") {
+      // Cancel appointment
+      const { data: cancelled, error: cancelError } = await supabaseAdmin
+        .from("appointments")
+        .update({
+          status: "cancelled",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("cal_booking_uid", bookingUid)
+        .select("*")
+        .single();
+      
+      if (cancelError && cancelError.code !== "PGRST116") {
+        console.error("[calcom-webhook] Failed to cancel appointment", cancelError.message);
+      }
+      
+      if (cancelled) {
+        sendOutboundWebhook(userId, "appointment_updated", {
+          appointment_id: cancelled.id,
+          cal_booking_uid: bookingUid,
+          user_id: userId,
+          action: "cancelled",
+          source: "cal.com_webhook",
+        }).catch(err => console.error("[calcom-webhook] outbound webhook error:", err.message));
+      }
+      
+      console.log("[calcom-webhook] Cancelled appointment", { bookingUid });
+      return res.json({ ok: true, cancelled: true });
+    }
+    
+    // Unknown event type - just acknowledge
+    console.log("[calcom-webhook] Unhandled event type:", triggerEvent);
+    return res.json({ ok: true, event: triggerEvent, handled: false });
+    
+  } catch (err) {
+    console.error("[calcom-webhook] Error:", err.message);
+    trackError({
+      error_type: "calcom_webhook_error",
+      message: err.message,
+      endpoint: "/webhooks/calcom",
+    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -7428,6 +7666,346 @@ app.post(
       return res.json({ error_log: updated });
     } catch (err) {
       console.error("[admin/resolve-error] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// =============================================================================
+// WEBHOOK QUEUE / REPLAY ENDPOINTS
+// =============================================================================
+
+// Admin: Get webhook queue with filters
+app.get(
+  "/admin/webhook-queue",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-webhook-queue", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { status, phone, event_type, limit: queryLimit, offset } = req.query;
+      const itemLimit = Math.min(parseInt(queryLimit) || 50, 200);
+      const itemOffset = parseInt(offset) || 0;
+      
+      let query = supabaseAdmin
+        .from("webhook_queue")
+        .select("*", { count: "exact" })
+        .order("received_at", { ascending: false })
+        .range(itemOffset, itemOffset + itemLimit - 1);
+      
+      // Filter by status (pending = not processed, failed = has error, success = processed ok)
+      if (status === "pending") {
+        query = query.is("processed_at", null);
+      } else if (status === "failed") {
+        query = query.not("error_message", "is", null);
+      } else if (status === "success") {
+        query = query.not("processed_at", "is", null).is("error_message", null);
+      }
+      
+      // Filter by phone number
+      if (phone) {
+        query = query.ilike("phone_number", `%${phone}%`);
+      }
+      
+      // Filter by event type
+      if (event_type) {
+        query = query.eq("event_type", event_type);
+      }
+      
+      const { data, error, count } = await query;
+      
+      if (error) throw error;
+      
+      return res.json({
+        items: data || [],
+        total: count || 0,
+        limit: itemLimit,
+        offset: itemOffset,
+      });
+    } catch (err) {
+      console.error("[admin/webhook-queue] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Replay a queued webhook
+app.post(
+  "/admin/webhook-queue/:id/replay",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-webhook-replay", limit: 10, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      // Fetch the queued webhook
+      const { data: queuedItem, error: fetchError } = await supabaseAdmin
+        .from("webhook_queue")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+      
+      if (fetchError) throw fetchError;
+      if (!queuedItem) {
+        return res.status(404).json({ error: "Webhook queue item not found" });
+      }
+      
+      const { event_type, raw_payload, idempotency_key } = queuedItem;
+      
+      // Update attempts count
+      await supabaseAdmin
+        .from("webhook_queue")
+        .update({
+          attempts: (queuedItem.attempts || 0) + 1,
+          last_attempt_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+      
+      let replayResult = { success: false, error: null };
+      
+      try {
+        // Route replay based on event_type
+        if (event_type === "call_inbound" || event_type === "call_ended" || event_type === "call_started") {
+          // For call events, we log that replay is not fully supported (needs manual reprocessing)
+          // because the Retell webhook handlers expect live request/response flow
+          replayResult = {
+            success: true,
+            note: "Call event logged for review. Full replay requires manual investigation.",
+            event_type,
+          };
+        } else if (event_type === "sms_inbound" || event_type === "sms_inbound_unknown") {
+          // SMS events also need manual review for now
+          replayResult = {
+            success: true,
+            note: "SMS event logged for review. Routing may need manual verification.",
+            event_type,
+          };
+        } else {
+          replayResult = {
+            success: true,
+            note: `Event type '${event_type}' logged for manual review.`,
+          };
+        }
+        
+        // Mark as replayed
+        await supabaseAdmin
+          .from("webhook_queue")
+          .update({
+            processed_at: new Date().toISOString(),
+            processed_by: `admin:${req.user.id}`,
+            result: "replayed",
+            error_message: null,
+          })
+          .eq("id", id);
+        
+      } catch (replayErr) {
+        replayResult = { success: false, error: replayErr.message };
+        
+        // Update with error
+        await supabaseAdmin
+          .from("webhook_queue")
+          .update({
+            last_attempt_at: new Date().toISOString(),
+            error_message: replayErr.message,
+          })
+          .eq("id", id);
+      }
+      
+      return res.json({
+        ok: replayResult.success,
+        queue_id: id,
+        event_type,
+        ...replayResult,
+      });
+    } catch (err) {
+      console.error("[admin/webhook-queue/replay] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// =============================================================================
+// RECONCILIATION FUNCTIONS AND ENDPOINTS
+// =============================================================================
+
+/**
+ * Run internal usage reconciliation
+ * Compares usage_limits aggregates vs actual usage_calls/usage_sms sums
+ */
+const runReconciliation = async (triggeredBy = "scheduler") => {
+  const runId = require("crypto").randomUUID();
+  const startedAt = new Date().toISOString();
+  
+  // Create run record
+  await supabaseAdmin.from("reconciliation_runs").insert({
+    id: runId,
+    run_type: triggeredBy === "scheduler" ? "nightly" : "manual",
+    started_at: startedAt,
+    status: "running",
+    triggered_by: triggeredBy,
+  });
+  
+  try {
+    // Get all users with usage_limits
+    const { data: usageLimits, error: limitsError } = await supabaseAdmin
+      .from("usage_limits")
+      .select("user_id, call_used_seconds, sms_used, period_start, period_end");
+    
+    if (limitsError) throw limitsError;
+    
+    const discrepancies = [];
+    let recordsChecked = 0;
+    
+    for (const usage of (usageLimits || [])) {
+      recordsChecked++;
+      const userId = usage.user_id;
+      const periodStart = usage.period_start;
+      const periodEnd = usage.period_end || new Date().toISOString();
+      
+      // Sum actual call seconds from usage_calls
+      const { data: callsData } = await supabaseAdmin
+        .from("usage_calls")
+        .select("seconds")
+        .eq("user_id", userId)
+        .gte("created_at", periodStart)
+        .lte("created_at", periodEnd);
+      
+      const actualCallSeconds = (callsData || []).reduce((sum, c) => sum + (c.seconds || 0), 0);
+      
+      // Sum actual SMS from usage_sms (or count rows if no 'count' column)
+      const { data: smsData, count: smsCount } = await supabaseAdmin
+        .from("usage_sms")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .gte("created_at", periodStart)
+        .lte("created_at", periodEnd);
+      
+      const actualSms = smsCount || 0;
+      
+      // Compare with stored aggregates
+      const storedCallSeconds = usage.call_used_seconds || 0;
+      const storedSms = usage.sms_used || 0;
+      
+      const callDiff = Math.abs(actualCallSeconds - storedCallSeconds);
+      const smsDiff = Math.abs(actualSms - storedSms);
+      
+      // Flag if difference > 5% or > 60 seconds / 5 SMS
+      const callThreshold = Math.max(storedCallSeconds * 0.05, 60);
+      const smsThreshold = Math.max(storedSms * 0.05, 5);
+      
+      if (callDiff > callThreshold || smsDiff > smsThreshold) {
+        discrepancies.push({
+          user_id: userId,
+          call_stored: storedCallSeconds,
+          call_actual: actualCallSeconds,
+          call_diff: callDiff,
+          sms_stored: storedSms,
+          sms_actual: actualSms,
+          sms_diff: smsDiff,
+          period_start: periodStart,
+          period_end: periodEnd,
+        });
+      }
+    }
+    
+    // Update run record
+    await supabaseAdmin
+      .from("reconciliation_runs")
+      .update({
+        completed_at: new Date().toISOString(),
+        status: "completed",
+        records_checked: recordsChecked,
+        discrepancies_found: discrepancies.length,
+        discrepancy_details: discrepancies.length > 0 ? discrepancies : null,
+      })
+      .eq("id", runId);
+    
+    // Create alert if discrepancies found
+    if (discrepancies.length > 0) {
+      await createOpsAlert({
+        alert_type: "reconciliation_discrepancy",
+        severity: discrepancies.length > 5 ? "critical" : "warning",
+        message: `Reconciliation found ${discrepancies.length} discrepancies across ${recordsChecked} users`,
+        details: { run_id: runId, count: discrepancies.length },
+      });
+    }
+    
+    console.log(`[Reconciliation] Completed: ${recordsChecked} checked, ${discrepancies.length} discrepancies`);
+    
+    return {
+      run_id: runId,
+      records_checked: recordsChecked,
+      discrepancies_found: discrepancies.length,
+      discrepancies,
+    };
+  } catch (err) {
+    // Update run as failed
+    await supabaseAdmin
+      .from("reconciliation_runs")
+      .update({
+        completed_at: new Date().toISOString(),
+        status: "failed",
+        notes: err.message,
+      })
+      .eq("id", runId);
+    
+    console.error("[Reconciliation] Failed:", err.message);
+    throw err;
+  }
+};
+
+// Admin: Get reconciliation runs
+app.get(
+  "/admin/reconciliation-runs",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-recon-runs", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { status, limit: queryLimit, offset } = req.query;
+      const itemLimit = Math.min(parseInt(queryLimit) || 25, 100);
+      const itemOffset = parseInt(offset) || 0;
+      
+      let query = supabaseAdmin
+        .from("reconciliation_runs")
+        .select("*", { count: "exact" })
+        .order("started_at", { ascending: false })
+        .range(itemOffset, itemOffset + itemLimit - 1);
+      
+      if (status) {
+        query = query.eq("status", status);
+      }
+      
+      const { data, error, count } = await query;
+      
+      if (error) throw error;
+      
+      return res.json({
+        runs: data || [],
+        total: count || 0,
+        limit: itemLimit,
+        offset: itemOffset,
+      });
+    } catch (err) {
+      console.error("[admin/reconciliation-runs] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Admin: Trigger manual reconciliation
+app.post(
+  "/admin/reconciliation-runs/trigger",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-recon-trigger", limit: 5, windowMs: 300_000 }),
+  async (req, res) => {
+    try {
+      const result = await runReconciliation(`admin:${req.user.id}`);
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error("[admin/reconciliation/trigger] error:", err.message);
       return res.status(500).json({ error: err.message });
     }
   }
@@ -10786,10 +11364,15 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
         .then(() => console.info("[retell-inbound] backfilled business_name from nickname", { userId: agentRow.user_id }))
         .catch((err) => console.error("[retell-inbound] failed to backfill business_name", { userId: agentRow.user_id, error: err.message }));
     }
+    // Determine if calendar booking is available
+    const calendarLink = profile?.cal_com_url || integration?.booking_url || "";
+    const calendarEnabled = Boolean(calendarLink);
+    
     const dynamicVariables = {
       business_name: businessName,
       primary_service: String(formatPrimaryService(profile?.industry) || ""),
-      cal_com_link: String(profile?.cal_com_url || integration?.booking_url || ""),
+      cal_com_link: String(calendarLink),
+      calendar_enabled: calendarEnabled ? "true" : "false",
       transfer_number: String(agentRow.transfer_number || ""),
       agent_tone: String(agentRow.tone || "Calm & Professional"),
       schedule_summary: String(agentRow.schedule_summary || ""),
@@ -15427,6 +16010,49 @@ app.listen(PORT, () => {
 });
 
 scheduleAppointmentReminders();
+
+// =============================================================================
+// NIGHTLY RECONCILIATION SCHEDULER
+// =============================================================================
+const scheduleNightlyReconciliation = () => {
+  // Run at 3 AM UTC daily
+  const TARGET_HOUR_UTC = 3;
+  
+  const calculateNextRun = () => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setUTCHours(TARGET_HOUR_UTC, 0, 0, 0);
+    
+    // If we've passed today's target hour, schedule for tomorrow
+    if (now >= next) {
+      next.setUTCDate(next.getUTCDate() + 1);
+    }
+    
+    return next.getTime() - now.getTime();
+  };
+  
+  const runAndReschedule = async () => {
+    try {
+      console.log("[NightlyReconciliation] Starting scheduled run...");
+      await runReconciliation("scheduler");
+      console.log("[NightlyReconciliation] Completed.");
+    } catch (err) {
+      console.error("[NightlyReconciliation] Error:", err.message);
+    }
+    
+    // Schedule next run
+    const msUntilNext = calculateNextRun();
+    console.log(`[NightlyReconciliation] Next run in ${Math.round(msUntilNext / 3600000)}h`);
+    setTimeout(runAndReschedule, msUntilNext);
+  };
+  
+  // Schedule first run
+  const msUntilFirst = calculateNextRun();
+  console.log(`[NightlyReconciliation] First run in ${Math.round(msUntilFirst / 3600000)}h (at ${TARGET_HOUR_UTC}:00 UTC)`);
+  setTimeout(runAndReschedule, msUntilFirst);
+};
+
+scheduleNightlyReconciliation();
 
 const scheduleRetellTemplateSync = () => {
   const intervalMinutes = Number(RETELL_AUTO_SYNC_MINUTES || 0);

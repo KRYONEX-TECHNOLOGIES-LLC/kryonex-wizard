@@ -31,8 +31,9 @@ import {
 } from "lucide-react";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook, getWebhookDeliveries, retryWebhookDelivery } from "../lib/api";
+import { getWebhooks, createWebhook, updateWebhook, deleteWebhook, testWebhook, getWebhookDeliveries, retryWebhookDelivery, getCalcomStatus, getCalcomAuthorizeUrl, disconnectCalcom } from "../lib/api";
 import { supabase } from "../lib/supabase";
+import { Calendar } from "lucide-react";
 
 const AVAILABLE_EVENTS = [
   { id: "call_ended", label: "Call Ended", description: "When a call completes" },
@@ -149,6 +150,11 @@ export default function IntegrationsPage() {
   const [deliveries, setDeliveries] = useState({});
   const [deliveriesLoading, setDeliveriesLoading] = useState({});
   const [retrying, setRetrying] = useState({});
+  
+  // Cal.com state
+  const [calConnected, setCalConnected] = useState(false);
+  const [calLoading, setCalLoading] = useState(true);
+  const [calConnecting, setCalConnecting] = useState(false);
 
   const loadWebhooks = useCallback(async () => {
     try {
@@ -184,6 +190,25 @@ export default function IntegrationsPage() {
       }
     };
     loadRole();
+    return () => { mounted = false; };
+  }, []);
+
+  // Load Cal.com connection status
+  useEffect(() => {
+    let mounted = true;
+    const loadCalStatus = async () => {
+      try {
+        const res = await getCalcomStatus();
+        if (mounted) {
+          setCalConnected(Boolean(res.data?.connected));
+        }
+      } catch (err) {
+        console.error("Error loading Cal.com status:", err);
+      } finally {
+        if (mounted) setCalLoading(false);
+      }
+    };
+    loadCalStatus();
     return () => { mounted = false; };
   }, []);
 
@@ -378,6 +403,32 @@ export default function IntegrationsPage() {
     }
   };
 
+  // Cal.com connect handler
+  const handleCalConnect = async () => {
+    try {
+      setCalConnecting(true);
+      const response = await getCalcomAuthorizeUrl();
+      if (response.data?.url) {
+        window.location.href = response.data.url;
+      }
+    } catch (err) {
+      console.error("Cal.com connect error:", err);
+    } finally {
+      setCalConnecting(false);
+    }
+  };
+
+  // Cal.com disconnect handler
+  const handleCalDisconnect = async () => {
+    if (!window.confirm("Disconnect Cal.com? The AI will no longer be able to automatically book appointments.")) return;
+    try {
+      await disconnectCalcom();
+      setCalConnected(false);
+    } catch (err) {
+      console.error("Cal.com disconnect error:", err);
+    }
+  };
+
   return (
     <div className="war-room bg-black text-cyan-400 font-mono">
       <TopMenu />
@@ -446,6 +497,71 @@ export default function IntegrationsPage() {
               <p>Connect Kryonex to thousands of apps. Send data to your CRM, Google Sheets, Slack, and more.</p>
             </div>
             <span className="premium-badge">$49/mo Add-On</span>
+          </div>
+
+          {/* Cal.com Integration Card */}
+          <div className="integration-card glass-panel" style={{ marginBottom: "24px" }}>
+            <div className="integration-card-header">
+              <div className="integration-info">
+                <Calendar size={24} style={{ color: "#22d3ee" }} />
+                <div>
+                  <h3 style={{ margin: 0, color: "#fff" }}>Cal.com Calendar</h3>
+                  <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#9ca3af" }}>
+                    Let your AI agent automatically book appointments on your calendar
+                  </p>
+                </div>
+              </div>
+              <div className="integration-status">
+                {calLoading ? (
+                  <span className="status-pill status-pending">Loading...</span>
+                ) : calConnected ? (
+                  <span className="status-pill status-active">Connected</span>
+                ) : (
+                  <span className="status-pill status-none">Not Connected</span>
+                )}
+              </div>
+            </div>
+            <div className="integration-card-body" style={{ padding: "16px" }}>
+              {calConnected ? (
+                <>
+                  <p style={{ margin: "0 0 12px", color: "#22c55e" }}>
+                    Your Cal.com calendar is connected. The AI can check availability and book appointments automatically.
+                  </p>
+                  <details style={{ fontSize: "13px", color: "#9ca3af" }}>
+                    <summary style={{ cursor: "pointer", color: "#22d3ee" }}>Webhook Setup (Optional - for direct Cal.com bookings)</summary>
+                    <div style={{ marginTop: "8px", padding: "10px", background: "rgba(0,0,0,0.3)", borderRadius: "6px" }}>
+                      <p style={{ marginBottom: "8px" }}>To sync bookings made directly on Cal.com:</p>
+                      <ol style={{ marginLeft: "16px", lineHeight: "1.6" }}>
+                        <li>Go to Cal.com Settings &rarr; Developer &rarr; Webhooks</li>
+                        <li>Add webhook URL: <code style={{ background: "#1e293b", padding: "2px 6px", borderRadius: "3px" }}>{window.location.origin.replace(/:\d+$/, ':3001')}/webhooks/calcom</code></li>
+                        <li>Enable: BOOKING_CREATED, BOOKING_RESCHEDULED, BOOKING_CANCELLED</li>
+                        <li>Save</li>
+                      </ol>
+                    </div>
+                  </details>
+                  <button
+                    className="button-primary danger"
+                    onClick={handleCalDisconnect}
+                    style={{ marginTop: "12px" }}
+                  >
+                    Disconnect Cal.com
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p style={{ margin: "0 0 12px", color: "#9ca3af" }}>
+                    Connect your Cal.com account to enable AI-powered appointment booking. Your customers can ask the AI to schedule a service call, and it will book directly on your calendar.
+                  </p>
+                  <button
+                    className="button-primary"
+                    onClick={handleCalConnect}
+                    disabled={calConnecting}
+                  >
+                    {calConnecting ? "Connecting..." : "Connect Cal.com Account"}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Webhook Form */}
