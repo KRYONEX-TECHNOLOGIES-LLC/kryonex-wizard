@@ -11033,16 +11033,14 @@ app.post(
         return phone;
       };
 
-      // Build rows for insert
+      // Build rows for insert - use only columns that exist in leads table
       const rows = leads.map((lead) => ({
         user_id: req.user.id, // Admin owns imported leads
-        business_name: (lead.business_name || "Unknown").substring(0, 200),
+        owner_id: req.user.id,
+        name: (lead.business_name || lead.contact || "Unknown").substring(0, 200),
         phone: normalizePhone(lead.phone || ""),
-        email: (lead.email || "").substring(0, 200),
-        contact: (lead.contact || "").substring(0, 200),
-        source: "import",
         status: "new",
-        metadata: { imported_by: req.user.id, imported_at: new Date().toISOString() },
+        summary: lead.email ? `Imported lead. Email: ${lead.email}` : "Imported lead",
       }));
 
       const { data, error } = await supabaseAdmin
