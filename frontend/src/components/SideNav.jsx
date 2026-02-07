@@ -226,6 +226,9 @@ export default function SideNav({
                 <Link to="/admin/wizard/create" className="side-nav-link" onClick={handleLinkClick}>
                   Client Wizard
                 </Link>
+                <Link to="/admin/leads" className="side-nav-link" onClick={handleLinkClick}>
+                  Lead Grid
+                </Link>
                 <Link to="/admin/call-center" className="side-nav-link" onClick={handleLinkClick}>
                   Live Dialer
                 </Link>
