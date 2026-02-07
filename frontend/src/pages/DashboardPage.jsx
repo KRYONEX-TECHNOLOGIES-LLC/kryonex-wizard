@@ -412,8 +412,8 @@ export default function DashboardPage() {
             }}
           />
           
-          {/* ROI Dashboard - show after some activity */}
-          {(stats.total_calls || 0) >= 5 && <ROIDashboard />}
+          {/* ROI Dashboard */}
+          <ROIDashboard />
           
           <div className="top-bar glass-panel">
             <div className="status-indicator">
