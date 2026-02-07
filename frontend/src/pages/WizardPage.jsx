@@ -554,9 +554,18 @@ export default function WizardPage({
       return false;
     }
 
+    // Normalize any phone number fields before saving (mobile doesn't always trigger onBlur)
+    const normalizedUpdates = { ...updates };
+    if (normalizedUpdates.transfer_number) {
+      normalizedUpdates.transfer_number = normalizePhone(normalizedUpdates.transfer_number) || normalizedUpdates.transfer_number;
+    }
+    if (normalizedUpdates.user_personal_phone) {
+      normalizedUpdates.user_personal_phone = normalizePhone(normalizedUpdates.user_personal_phone) || normalizedUpdates.user_personal_phone;
+    }
+
     const { error } = await supabase.from("profiles").upsert({
       user_id: user.id,
-      ...updates,
+      ...normalizedUpdates,
     });
 
     setSaving(false);
@@ -889,6 +898,9 @@ export default function WizardPage({
       return;
     }
     try {
+      // Normalize phone numbers before sending (mobile doesn't always trigger onBlur)
+      const normalizedTransferNumber = normalizePhone(form.transferNumber) || form.transferNumber;
+      
       const response = await deployAgent({
         businessName: form.nameInput,
         industry: form.industryInput,
@@ -898,7 +910,7 @@ export default function WizardPage({
         standardFee: form.standardFee,
         emergencyFee: form.emergencyFee,
         paymentId: form.paymentId,
-        transferNumber: form.transferNumber,
+        transferNumber: normalizedTransferNumber,
         calComLink: form.calComLink,
         planTier,
         dispatchBaseLocation: baseInputValue,
@@ -975,10 +987,31 @@ export default function WizardPage({
       } catch (saveErr) {
         console.warn("[handleSelfDeploy] saveOnboardingIdentity failed, continuing with deploy", saveErr);
       }
+      // Normalize phone numbers before sending (mobile doesn't always trigger onBlur)
+      const normalizedTransferNumber = normalizePhone(form.transferNumber) || form.transferNumber || null;
+      const normalizedPersonalPhone = normalizePhone(form.userPersonalPhone) || form.userPersonalPhone || null;
+      
       const payload = {
         business_name: businessName,
         area_code: areaCode,
-        transfer_number: form.transferNumber || null,
+        transfer_number: normalizedTransferNumber,
+        // Logistics fields
+        agent_tone: form.toneInput || "Calm & Professional",
+        standard_fee: form.standardFee || "89",
+        emergency_fee: form.emergencyFee || "189",
+        weekday_open: form.weekdayOpen || "08:00 AM",
+        weekday_close: form.weekdayClose || "05:00 PM",
+        weekend_enabled: form.weekendEnabled ?? false,
+        saturday_open: form.saturdayOpen || "08:00 AM",
+        saturday_close: form.saturdayClose || "02:00 PM",
+        emergency_24_7: form.emergency247 ?? false,
+        business_timezone: form.businessTimezone || "America/Chicago",
+        // Communications fields
+        post_call_sms_enabled: form.postCallSmsEnabled ?? true,
+        confirmation_sms_enabled: form.confirmationSmsEnabled ?? true,
+        user_personal_phone: normalizedPersonalPhone,
+        email_on_booking: form.emailOnBooking ?? true,
+        sms_on_booking: form.smsOnBooking ?? true,
       };
       console.log("🚀 PAYLOAD LEAVING FRONTEND:", payload);
       const res = await deployAgentSelf(payload);
