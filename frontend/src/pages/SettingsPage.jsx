@@ -176,9 +176,13 @@ export default function SettingsPage() {
       // Auto-generate schedule summary from business hours
       const autoScheduleSummary = generateScheduleSummary(settings.business_hours);
       
+      // Normalize phone numbers to E.164 format before sending
+      const normalizedTransferNumber = normalizePhone(settings.transfer_number) || settings.transfer_number;
+      const normalizedPersonalPhone = normalizePhone(settings.user_personal_phone) || settings.user_personal_phone;
+      
       await updateSettings({
         business_name: settings.business_name,
-        transfer_number: settings.transfer_number,
+        transfer_number: normalizedTransferNumber,
         service_call_fee: settings.service_call_fee,
         emergency_fee: settings.emergency_fee,
         schedule_summary: autoScheduleSummary,
@@ -195,7 +199,7 @@ export default function SettingsPage() {
         post_call_sms_delay_seconds: settings.post_call_sms_delay_seconds,
         confirmation_sms_enabled: settings.confirmation_sms_enabled,
         // User personal phone for receiving notifications
-        user_personal_phone: settings.user_personal_phone,
+        user_personal_phone: normalizedPersonalPhone,
       });
       setSaveStatus("Settings saved successfully!");
       setLastUpdated(new Date());

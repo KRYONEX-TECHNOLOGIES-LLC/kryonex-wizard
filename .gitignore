@@ -13,3 +13,4 @@ database.sqlite
 cypress/screenshots/
 cypress/videos/
 cypress/downloads/
+.cypress-cache/

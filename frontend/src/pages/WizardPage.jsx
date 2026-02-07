@@ -1457,6 +1457,12 @@ export default function WizardPage({
                           placeholder="+1 (555) 123-4567"
                           value={form.transferNumber}
                           onChange={(e) => updateField("transferNumber", e.target.value)}
+                          onBlur={(e) => {
+                            const normalized = normalizePhone(e.target.value);
+                            if (normalized) {
+                              updateField("transferNumber", normalized);
+                            }
+                          }}
                         />
                         <p className="text-xs text-white/40">
                           AI transfers here for emergencies or when callers request a human
@@ -1766,6 +1772,12 @@ export default function WizardPage({
                         placeholder="+1 (555) 987-6543"
                         value={form.userPersonalPhone}
                         onChange={(e) => updateField("userPersonalPhone", e.target.value)}
+                        onBlur={(e) => {
+                          const normalized = normalizePhone(e.target.value);
+                          if (normalized) {
+                            updateField("userPersonalPhone", normalized);
+                          }
+                        }}
                       />
                       <p className="text-xs text-white/40">
                         This is where YOU receive booking alerts

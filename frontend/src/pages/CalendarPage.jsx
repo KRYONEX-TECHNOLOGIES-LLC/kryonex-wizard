@@ -234,9 +234,12 @@ export default function CalendarPage() {
       return;
     }
     try {
+      // Normalize phone to E.164 format before sending
+      const normalizedPhone = normalizePhone(form.customer_phone) || form.customer_phone || null;
+      
       const response = await createAppointment({
         customer_name: form.customer_name,
-        customer_phone: form.customer_phone || null,
+        customer_phone: normalizedPhone,
         start_date: form.start_date,
         start_time: form.start_time,
         duration_minutes: form.duration_minutes,
@@ -477,9 +480,12 @@ export default function CalendarPage() {
       return;
     }
     try {
+      // Normalize phone to E.164 format before sending
+      const normalizedPhone = normalizePhone(editForm.customer_phone) || editForm.customer_phone || null;
+      
       await updateAppointment(editAppointmentId, {
         customer_name: editForm.customer_name,
-        customer_phone: editForm.customer_phone || null,
+        customer_phone: normalizedPhone,
         start_date: editForm.start_date,
         start_time: editForm.start_time,
         duration_minutes: editForm.duration_minutes,

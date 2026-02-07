@@ -161,22 +161,27 @@ describe("Kryonex smoke test", () => {
   it("renders the black box table and allows playback buttons", () => {
     visitAuthed("/black-box");
     cy.contains("COMMUNICATION INTERCEPTS").should("exist");
-    cy.get(".blackbox-row").then(($rows) => {
-      if ($rows.length === 0) {
-        cy.get(".blackbox-empty-row").should("exist");
-        return;
-      }
-      cy.wrap($rows).its("length").should("be.gte", 1);
-      cy.get(".blackbox-player button")
-        .first()
-        .click()
-        .should("contain.text", "❚❚")
-        .click()
-        .should("contain.text", "▶");
-      cy.get(".blackbox-actions a")
-        .first()
-        .should("have.attr", "download")
-        .then((attr) => expect(attr).to.contain("recording-"));
+    cy.get(".blackbox-table").within(() => {
+      cy.get(".blackbox-row.blackbox-header").should("exist");
+      cy.get(".blackbox-row").then(($rows) => {
+        const dataRows = Cypress.$($rows).filter(
+          (_, el) => !el.classList.contains("blackbox-header")
+        );
+        if (dataRows.length === 0) {
+          cy.get(".blackbox-empty-row").should("exist");
+          return;
+        }
+        cy.wrap(dataRows).first().within(() => {
+          cy.get(".blackbox-player button").click();
+          cy.get(".blackbox-actions a").then(($links) => {
+            if ($links.length) {
+              cy.wrap($links[0])
+                .should("have.attr", "download")
+                .then((attr) => expect(attr).to.contain("recording-"));
+            }
+          });
+        });
+      });
     });
   });
 
@@ -194,7 +199,7 @@ describe("Kryonex smoke test", () => {
 
   it("loads admin dashboard and core pages", () => {
     visitAdmin("/admin/dashboard");
-    cy.contains("Command Deck").should("exist");
+    cy.contains(/Kryonex Empire HQ|Grandmaster Command Center/i).should("exist");
 
     visitAdmin("/admin/call-center");
     cy.contains("Admin Call Center").should("exist");

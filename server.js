@@ -1683,6 +1683,31 @@ const normalizePhoneForLookup = (phone) => {
   return String(phone).trim();
 };
 
+// Normalize phone to E.164 format (+1XXXXXXXXXX for US) - used for saving and API calls
+const normalizePhoneE164 = (phone) => {
+  if (!phone) return null;
+  const raw = String(phone).trim();
+  if (!raw) return null;
+  
+  // Remove all non-digit characters except leading +
+  const digits = raw.replace(/\D/g, "");
+  
+  if (digits.length < 10 || digits.length > 15) return null;
+  
+  // 10 digits = US number without country code
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  
+  // 11 digits starting with 1 = US number with country code
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  
+  // Already has country code
+  return `+${digits}`;
+};
+
 // Get business phone for "call us" messages
 const getBusinessPhone = async (tenantId) => {
   if (!tenantId) return null;
@@ -1752,6 +1777,14 @@ const sendSmsInternal = async ({
   if (!body || !to) {
     throw new Error("body and to are required");
   }
+  
+  // Normalize phone to E.164 format (+1XXXXXXXXXX for US)
+  const normalizedTo = normalizePhoneE164(to);
+  if (!normalizedTo) {
+    throw new Error("Invalid phone number format");
+  }
+  // Use normalized phone for all operations
+  to = normalizedTo;
 
   // BULLETPROOF SMS: Validate source type - reject freeform manual sends
   const normalizedSource = (source || "manual").toLowerCase();
@@ -1777,12 +1810,12 @@ const sendSmsInternal = async ({
   }
 
   // Check for opt-outs: per-tenant AND global (for shared number compliance)
-  const normalizedTo = normalizePhoneForLookup(to);
+  const lookupPhone = normalizePhoneForLookup(to);
   const { data: optOut } = await supabaseAdmin
     .from("sms_opt_outs")
     .select("id, global_opt_out")
     .eq("user_id", userId)
-    .eq("phone", normalizedTo)
+    .eq("phone", lookupPhone)
     .maybeSingle();
   
   // Also check for GLOBAL opt-out (customer said STOP on shared number)
@@ -1791,14 +1824,14 @@ const sendSmsInternal = async ({
     const { data: globalCheck } = await supabaseAdmin
       .from("sms_opt_outs")
       .select("id")
-      .eq("phone", normalizedTo)
+      .eq("phone", lookupPhone)
       .eq("global_opt_out", true)
       .maybeSingle();
     globalOptOut = globalCheck;
   }
   
   if (optOut || globalOptOut) {
-    console.log("[sendSms] Blocked - recipient opted out", { phone: normalizedTo, global: !!globalOptOut });
+    console.log("[sendSms] Blocked - recipient opted out", { phone: lookupPhone, global: !!globalOptOut });
     throw new Error("Recipient opted out");
   }
 
@@ -3172,13 +3205,8 @@ const sanitizeString = (str, maxLength = 1000) => {
     .trim();
 };
 
-// Sanitize phone number
-const sanitizePhone = (phone) => {
-  if (typeof phone !== "string") return null;
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length < 10 || digits.length > 15) return null;
-  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
-};
+// Sanitize phone number (alias for normalizePhoneE164 defined earlier)
+const sanitizePhone = normalizePhoneE164;
 
 // Validate email format
 const isValidEmail = (email) => {
@@ -4689,13 +4717,14 @@ const fetchCalSlots = async ({ config, userId, start, end, durationMinutes }) =>
 };
 
 const createCalBooking = async ({ config, userId, start, args }) => {
+  const customerPhone = normalizePhoneE164(args.customer_phone || args.phone);
   const body = {
     start: start.toISOString(),
     attendee: {
       name: args.customer_name || args.name || "Customer",
       email: args.customer_email || args.email || "unknown@kryonex.local",
       timeZone: args.time_zone || config.cal_time_zone || "UTC",
-      phoneNumber: args.customer_phone || args.phone || null,
+      phoneNumber: customerPhone,
     },
     eventTypeId: config.cal_event_type_id || undefined,
     eventTypeSlug: config.cal_event_type_slug || undefined,
@@ -4772,12 +4801,13 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       const booking = await createCalBooking({ config: calConfig, userId, start, args });
       
       // Also insert into appointments table so it appears in calendar UI
+      const normalizedCustomerPhone = normalizePhoneE164(args.customer_phone || booking?.attendee?.phoneNumber);
       const { data: appointmentData, error: appointmentError } = await supabaseAdmin
         .from("appointments")
         .insert({
           user_id: userId,
           customer_name: args.customer_name || booking?.attendee?.name || "Customer",
-          customer_phone: args.customer_phone || booking?.attendee?.phoneNumber || null,
+          customer_phone: normalizedCustomerPhone,
           start_time: booking?.start || start.toISOString(),
           end_time: booking?.end || end.toISOString(),
           location: args.service_address || args.location || null,
@@ -4813,7 +4843,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         cal_booking_uid: booking?.uid || booking?.id || null,
         user_id: userId,
         customer_name: args.customer_name || booking?.attendee?.name || "Customer",
-        customer_phone: args.customer_phone || booking?.attendee?.phoneNumber || null,
+        customer_phone: normalizedCustomerPhone,
         start_time: booking?.start || start.toISOString(),
         end_time: booking?.end || end.toISOString(),
         location: args.service_address || args.location || null,
@@ -4824,12 +4854,13 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       
       return { ok: true, source: "cal.com", booking, appointment: appointmentData };
     }
+    const internalCustomerPhone = normalizePhoneE164(args.customer_phone);
     const { data, error } = await supabaseAdmin
       .from("appointments")
       .insert({
         user_id: userId,
         customer_name: args.customer_name || "Customer",
-        customer_phone: args.customer_phone || null,
+        customer_phone: internalCustomerPhone,
         start_time: start.toISOString(),
         end_time: end.toISOString(),
         location: args.service_address || args.location || null,
@@ -4854,7 +4885,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       appointment_id: data?.id || null,
       user_id: userId,
       customer_name: args.customer_name || "Customer",
-      customer_phone: args.customer_phone || null,
+      customer_phone: internalCustomerPhone,
       start_time: data?.start_time || start.toISOString(),
       end_time: data?.end_time || end.toISOString(),
       location: args.service_address || args.location || null,
@@ -5847,12 +5878,12 @@ const retellWebhookHandler = async (req, res) => {
         extractedVars?.customer_name || 
         regexExtracted.name || 
         null;
-      const bestPhone = 
+      const bestPhone = normalizePhoneE164(
         analysisData.customer_phone || 
         extractedVars?.customer_phone || 
         regexExtracted.phone || 
-        fromNumber ||
-        null;
+        fromNumber
+      );
       const bestSummary = 
         analysisData.call_summary || 
         analysisData.issue_description ||
@@ -6452,8 +6483,7 @@ app.post(
       const llmId = pickLlmId(industry);
       const llmVersion = pickLlmVersion(industry);
       const llmVersionNumber = parseRetellVersionNumber(llmVersion);
-      const cleanTransfer =
-        transferNumber && String(transferNumber).replace(/[^\d+]/g, "");
+      const cleanTransfer = normalizePhoneE164(transferNumber);
       const baseInput = String(dispatchBaseLocation || "").trim();
       if (!baseInput) {
         return res
@@ -7576,8 +7606,8 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     if (business_hours !== undefined) profileUpdates.business_hours = business_hours;
     if (business_timezone !== undefined) profileUpdates.business_timezone = business_timezone;
     if (emergency_24_7 !== undefined) profileUpdates.emergency_24_7 = emergency_24_7;
-    // User personal phone for notifications
-    if (user_personal_phone !== undefined) profileUpdates.user_personal_phone = user_personal_phone;
+    // User personal phone for notifications (normalize to E.164)
+    if (user_personal_phone !== undefined) profileUpdates.user_personal_phone = normalizePhoneE164(user_personal_phone);
     // Notification preferences (stored in profiles)
     if (notification_preferences !== undefined) profileUpdates.notification_preferences = notification_preferences;
     
@@ -7594,7 +7624,7 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
     
     // Update agent settings (including SMS automation)
     const agentUpdates = {};
-    if (transfer_number !== undefined) agentUpdates.transfer_number = transfer_number;
+    if (transfer_number !== undefined) agentUpdates.transfer_number = normalizePhoneE164(transfer_number);
     if (service_call_fee !== undefined) agentUpdates.standard_fee = service_call_fee;
     if (emergency_fee !== undefined) agentUpdates.emergency_fee = emergency_fee;
     if (schedule_summary !== undefined) agentUpdates.schedule_summary = schedule_summary;
@@ -10737,6 +10767,10 @@ app.post(
       if (!to) {
         return res.status(400).json({ error: "to is required" });
       }
+      const normalizedTo = normalizePhoneE164(to);
+      if (!normalizedTo) {
+        return res.status(400).json({ error: "Invalid phone number format" });
+      }
       if (!RETELL_DEMO_AGENT_ID || !RETELL_DEMO_FROM_NUMBER) {
         return res
           .status(500)
@@ -10745,7 +10779,7 @@ app.post(
 
       const payload = {
         from_number: RETELL_DEMO_FROM_NUMBER,
-        to_number: to,
+        to_number: normalizedTo,
         override_agent_id: RETELL_DEMO_AGENT_ID,
         retell_llm_dynamic_variables: name ? { customer_name: name } : undefined,
         metadata: {
@@ -10944,7 +10978,7 @@ app.post(
       // Auto-create tracking session if enabled
       let etaLink = null;
       let trackingUrls = null;
-      if (tracking_enabled && customer_phone) {
+      if (tracking_enabled && sanitizedPhone) {
         try {
           const token = generateToken(12);
           const updateKey = generateToken(16);
@@ -10956,7 +10990,7 @@ app.post(
               token,
               update_key: updateKey,
               created_by: uid,
-              customer_phone: customer_phone || null,
+              customer_phone: sanitizedPhone,
               eta_minutes: eta,
               status: "active",
             })
@@ -10980,12 +11014,12 @@ app.post(
         .from("appointments")
         .insert({
           user_id: uid,
-          customer_name,
-          customer_phone: customer_phone || null,
+          customer_name: sanitizedName,
+          customer_phone: sanitizedPhone,
           start_time: startTime.toISOString(),
           end_time: endTime.toISOString(),
-          location: location || null,
-          notes: notes || null,
+          location: sanitizedLocation,
+          notes: sanitizedNotes,
           reminder_minutes: parseInt(reminder_minutes || "0", 10),
           reminder_enabled: Boolean(reminder_enabled),
           eta_enabled: Boolean(eta_enabled),
@@ -11893,9 +11927,7 @@ app.post(
       const body = req.body || {};
       
       // Extract identity fields
-      const transferNumber = typeof body.transfer_number !== "undefined"
-        ? String(body.transfer_number || "").trim() || null
-        : null;
+      const transferNumber = normalizePhoneE164(body.transfer_number);
       const businessNameRaw = body.business_name != null ? String(body.business_name || "").trim() : null;
       const areaCodeRaw = body.area_code != null ? String(body.area_code || "").trim() : null;
       
@@ -11914,7 +11946,7 @@ app.post(
       // Extract communications fields
       const postCallSmsEnabled = body.post_call_sms_enabled ?? body.postCallSmsEnabled ?? true;
       const confirmationSmsEnabled = body.confirmation_sms_enabled ?? body.confirmationSmsEnabled ?? true;
-      const userPersonalPhone = String(body.user_personal_phone || body.userPersonalPhone || "").trim() || null;
+      const userPersonalPhone = normalizePhoneE164(body.user_personal_phone || body.userPersonalPhone);
       const emailOnBooking = body.email_on_booking ?? body.emailOnBooking ?? true;
       const smsOnBooking = body.sms_on_booking ?? body.smsOnBooking ?? true;
       
@@ -13332,10 +13364,7 @@ const provisionPhoneNumberOnly = async ({
     throw new Error("Agent creation failed: missing phone_number");
   }
   
-  const transferNumber =
-    transferNumberRaw != null
-      ? String(transferNumberRaw).replace(/[^\d+]/g, "").trim() || null
-      : null;
+  const transferNumber = normalizePhoneE164(transferNumberRaw);
   
   const agentRow = {
     agent_id: masterAgentId,  // Reference to master (tracking uses phone_number)
@@ -13490,10 +13519,7 @@ const deployAgentForUser = async (userId, deployRequestId, options = {}) => {
     plan,
     updateExisting: updateExisting || undefined,
   });
-  const transferNumber =
-    options.transferNumber != null
-      ? String(options.transferNumber || "").trim().replace(/[^\d+]/g, "") || null
-      : null;
+  const transferNumber = normalizePhoneE164(options.transferNumber);
   const industry = String(profile.industry || "hvac").toLowerCase();
   
   // Extract new wizard options with defaults
