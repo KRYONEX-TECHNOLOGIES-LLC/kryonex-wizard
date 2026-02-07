@@ -127,7 +127,6 @@ export default function DashboardPage() {
           // Check if user has any webhooks configured
           const webhooks = webhooksRes.data?.webhooks || [];
           setWebhooksConfigured(webhooks.length > 0);
-          }
           setLeads(leadsRes.data.leads || []);
           setSubscription(subRes.data || { status: "none", plan_type: null });
           setUsage(usageRes.data || null);
