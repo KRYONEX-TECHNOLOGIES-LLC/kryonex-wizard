@@ -1,6 +1,6 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Mail, MessageSquare, Phone, Search, Tag, Sparkles, Trash2, RefreshCw, Upload } from "lucide-react";
+import { Mail, MessageSquare, Phone, Search, Tag, Sparkles, Trash2, RefreshCw, Upload, CheckSquare, Square, Filter } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
@@ -61,6 +61,8 @@ export default function AdminLeadsPage() {
   const [importModal, setImportModal] = React.useState(false);
   const [importText, setImportText] = React.useState("");
   const [importing, setImporting] = React.useState(false);
+  const [dateFilter, setDateFilter] = React.useState("all"); // all, today, week, new
+  const [statusFilter, setStatusFilter] = React.useState("all"); // all, new, contacted, interested, not_interested
 
   // Fetch real leads from backend
   const fetchLeads = React.useCallback(async () => {
@@ -230,6 +232,70 @@ export default function AdminLeadsPage() {
     tag.toLowerCase().includes(tagSearch.toLowerCase())
   );
 
+  // Date filtering helpers
+  const isToday = (dateStr) => {
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    const now = new Date();
+    return d.toDateString() === now.toDateString();
+  };
+
+  const isThisWeek = (dateStr) => {
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return d >= weekAgo;
+  };
+
+  // Apply all filters to leads
+  const getFilteredLeads = () => {
+    return leads.filter((lead) => {
+      // Text search
+      if (searchFilter) {
+        const term = searchFilter.toLowerCase();
+        const matchesSearch = 
+          (lead.business_name || "").toLowerCase().includes(term) ||
+          (lead.contact || "").toLowerCase().includes(term) ||
+          (lead.phone || "").toLowerCase().includes(term) ||
+          (lead.status || "").toLowerCase().includes(term) ||
+          (lead.tags || []).some(tag => tag.toLowerCase().includes(term));
+        if (!matchesSearch) return false;
+      }
+      
+      // Date filter
+      if (dateFilter === "today" && !isToday(lead.lastActivity)) return false;
+      if (dateFilter === "week" && !isThisWeek(lead.lastActivity)) return false;
+      if (dateFilter === "new" && lead.status?.toLowerCase() !== "new") return false;
+      
+      // Status filter
+      if (statusFilter !== "all") {
+        const leadStatus = (lead.status || "").toLowerCase();
+        if (statusFilter === "new" && leadStatus !== "new") return false;
+        if (statusFilter === "contacted" && leadStatus !== "contacted") return false;
+        if (statusFilter === "interested" && leadStatus !== "interested") return false;
+        if (statusFilter === "not_interested" && leadStatus !== "not interested" && leadStatus !== "not_interested") return false;
+      }
+      
+      return true;
+    });
+  };
+
+  const filteredLeads = getFilteredLeads();
+
+  // Select all visible (filtered) leads
+  const handleSelectAll = () => {
+    const allFilteredIds = filteredLeads.map(lead => lead.id);
+    persistSelectedIdsValue(allFilteredIds);
+    showToast(`Selected ${allFilteredIds.length} leads`);
+  };
+
+  // Deselect all
+  const handleDeselectAll = () => {
+    persistSelectedIdsValue([]);
+    showToast("Deselected all leads");
+  };
+
   // Parse pasted lead data (supports multiple formats)
   const parseImportText = (text) => {
     const lines = text.trim().split("\n").filter(line => line.trim());
@@ -386,12 +452,77 @@ export default function AdminLeadsPage() {
             </div>
           </div>
             {error && <div className="mt-3 text-neon-pink text-sm">{error}</div>}
-            <div className="mt-5 flex flex-wrap gap-3 text-xs text-white/60">
+            
+            {/* Filter Row */}
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              {/* Date Filters */}
+              <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/5 p-1">
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${dateFilter === "all" ? "bg-neon-cyan/20 text-neon-cyan" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setDateFilter("all")}
+                >
+                  All Time
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${dateFilter === "today" ? "bg-neon-cyan/20 text-neon-cyan" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setDateFilter("today")}
+                >
+                  Today
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${dateFilter === "week" ? "bg-neon-cyan/20 text-neon-cyan" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setDateFilter("week")}
+                >
+                  This Week
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${dateFilter === "new" ? "bg-neon-cyan/20 text-neon-cyan" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setDateFilter("new")}
+                >
+                  New Only
+                </button>
+              </div>
+
+              {/* Status Filter */}
+              <select
+                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 outline-none"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              >
+                <option value="all">All Statuses</option>
+                <option value="new">New</option>
+                <option value="contacted">Contacted</option>
+                <option value="interested">Interested</option>
+                <option value="not_interested">Not Interested</option>
+              </select>
+
+              <div className="flex-1" />
+
+              {/* Select All / Deselect All */}
+              <button
+                className="button-secondary text-xs"
+                onClick={handleSelectAll}
+                title="Select all visible leads"
+              >
+                <CheckSquare size={14} /> Select All ({filteredLeads.length})
+              </button>
+              <button
+                className="button-secondary text-xs"
+                onClick={handleDeselectAll}
+                title="Deselect all"
+                disabled={selectedIds.length === 0}
+              >
+                <Square size={14} /> Deselect
+              </button>
+            </div>
+
+            {/* Stats Row */}
+            <div className="mt-4 flex flex-wrap gap-3 text-xs text-white/60">
               <div className="status-live">
                 <Sparkles size={12} />
                 {selectedIds.length} selected
               </div>
-              <div className="status-live">Total: {leads.length} leads</div>
+              <div className="status-live">Showing: {filteredLeads.length} of {leads.length} leads</div>
               {loading && <div className="status-live">Loading...</div>}
             </div>
           </motion.div>
@@ -411,21 +542,15 @@ export default function AdminLeadsPage() {
                 <div className="lead-row">
                   <div className="col-span-7 text-center text-white/60 py-8">Loading leads...</div>
                 </div>
-              ) : leads.length === 0 ? (
+              ) : filteredLeads.length === 0 ? (
                 <div className="lead-row">
-                  <div className="col-span-7 text-center text-white/60 py-8">No leads found. Leads will appear here as calls come in.</div>
+                  <div className="col-span-7 text-center text-white/60 py-8">
+                    {leads.length === 0 
+                      ? "No leads yet. Import leads or wait for calls to come in." 
+                      : "No leads match your filters. Try adjusting filters above."}
+                  </div>
                 </div>
-              ) : leads.filter((lead) => {
-                if (!searchFilter) return true;
-                const term = searchFilter.toLowerCase();
-                return (
-                  (lead.business_name || "").toLowerCase().includes(term) ||
-                  (lead.contact || "").toLowerCase().includes(term) ||
-                  (lead.phone || "").toLowerCase().includes(term) ||
-                  (lead.status || "").toLowerCase().includes(term) ||
-                  (lead.tags || []).some(tag => tag.toLowerCase().includes(term))
-                );
-              }).map((lead) => {
+              ) : filteredLeads.map((lead) => {
                 const days = dayDiff(lead.lastActivity);
                 const rowTone =
                   days >= 7
