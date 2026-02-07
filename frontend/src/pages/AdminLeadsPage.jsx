@@ -227,6 +227,24 @@ export default function AdminLeadsPage() {
     tag.toLowerCase().includes(tagSearch.toLowerCase())
   );
 
+  const handleDeleteLead = async (leadId) => {
+    if (!window.confirm("Are you sure you want to delete this lead?")) return;
+    try {
+      // Remove from local state immediately
+      setLeads((prev) => prev.filter((lead) => lead.id !== leadId));
+      setSelectedIds((prev) => prev.filter((id) => id !== leadId));
+      
+      // Delete from database if it's a real UUID
+      if (isUuid(leadId)) {
+        await supabase.from("leads").delete().eq("id", leadId);
+      }
+      showToast("Lead deleted.");
+    } catch (err) {
+      showToast("Failed to delete lead.");
+      fetchLeads(); // Refresh to restore state
+    }
+  };
+
   return (
     <div className="min-h-screen bg-void-black text-white relative overflow-hidden">
       <TopMenu />
