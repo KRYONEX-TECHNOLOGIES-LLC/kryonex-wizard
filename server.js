@@ -7608,10 +7608,16 @@ app.get(
       const hoursSaved = totalDurationSeconds / 3600;
       const revenueGenerated = bookedAppointments * avgTicketValue;
       
-      // Get plan cost (rough estimates)
-      const planCosts = { starter: 99, core: 199, pro: 349 };
-      const planType = subscription?.plan_type || profile?.plan_type || "core";
-      const monthlyCost = planCosts[planType] || 199;
+      // Get plan cost - MUST match billingConstants.js
+      const planCosts = { 
+        core: 149, 
+        pro: 249, 
+        elite: 497, 
+        scale: 997,
+        white_glove: 997, // Legacy alias for scale
+      };
+      const planType = (subscription?.plan_type || profile?.plan_type || "pro").toLowerCase();
+      const monthlyCost = planCosts[planType] || 249; // Default to pro if unknown
       
       // Calculate ROI
       const laborSavings = (hoursSaved / 160) * receptionistMonthlyCost; // Pro-rated receptionist salary
