@@ -3672,6 +3672,11 @@ const planPriceId = (planTier) => {
 /** Single source of truth: tier → Stripe price ID + minutes/SMS caps. Used by /admin/stripe-link and webhook metadata. */
 const PLAN_TIERS = ["pro", "elite", "scale"];
 const PLAN_CONFIG = {
+  core: {
+    priceId: STRIPE_PRICE_ID_CORE,
+    minutesCap: 150,
+    smsCap: 250,
+  },
   pro: {
     priceId: STRIPE_PRICE_ID_PRO || STRIPE_PRICE_ID_HVAC,
     minutesCap: 300,
