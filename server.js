@@ -11005,6 +11005,66 @@ app.post(
   }
 );
 
+// Import leads from external sources (paste list from AI, spreadsheet, etc.)
+app.post(
+  "/admin/import-leads",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "import-leads", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { leads } = req.body || {};
+      if (!Array.isArray(leads) || leads.length === 0) {
+        return res.status(400).json({ error: "leads array is required" });
+      }
+
+      // Limit to 500 leads per import
+      if (leads.length > 500) {
+        return res.status(400).json({ error: "Maximum 500 leads per import" });
+      }
+
+      // Normalize phone numbers to E.164
+      const normalizePhone = (phone) => {
+        if (!phone) return "";
+        const digits = phone.replace(/\D/g, "");
+        if (digits.length === 10) return `+1${digits}`;
+        if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+        if (digits.length > 10) return `+${digits}`;
+        return phone;
+      };
+
+      // Build rows for insert
+      const rows = leads.map((lead) => ({
+        user_id: req.user.id, // Admin owns imported leads
+        business_name: (lead.business_name || "Unknown").substring(0, 200),
+        phone: normalizePhone(lead.phone || ""),
+        email: (lead.email || "").substring(0, 200),
+        contact: (lead.contact || "").substring(0, 200),
+        source: "import",
+        status: "new",
+        metadata: { imported_by: req.user.id, imported_at: new Date().toISOString() },
+      }));
+
+      const { data, error } = await supabaseAdmin
+        .from("leads")
+        .insert(rows)
+        .select("id");
+
+      if (error) {
+        console.error("[import-leads] DB error:", error);
+        return res.status(500).json({ error: error.message });
+      }
+
+      console.log(`[import-leads] Imported ${data?.length || 0} leads by admin ${req.user.id}`);
+      return res.json({ inserted: data?.length || 0 });
+    } catch (err) {
+      console.error("[import-leads] Error:", err);
+      trackError({ type: "import_leads_error", error: err.message, userId: req.user?.id });
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 app.post(
   "/leads/update-status",
   requireAuth,

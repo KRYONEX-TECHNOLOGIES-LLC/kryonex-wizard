@@ -226,6 +226,8 @@ export const approveCommissionPayout = (commissionId, payload) =>
 export const getDialerQueue = () => api.get("/admin/dialer-queue");
 export const transferLeadsToDialer = (leadIds) =>
   api.post("/admin/dialer-queue", { leadIds });
+export const importLeads = (leads) =>
+  api.post("/admin/import-leads", { leads });
 
 export const triggerDemoCall = (data) => api.post("/retell/demo-call", data);
 export const logBlackBoxEvent = (action_type, meta_data) =>

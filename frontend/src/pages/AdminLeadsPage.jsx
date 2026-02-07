@@ -1,11 +1,11 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { Mail, MessageSquare, Phone, Search, Tag, Sparkles, Trash2, RefreshCw } from "lucide-react";
+import { Mail, MessageSquare, Phone, Search, Tag, Sparkles, Trash2, RefreshCw, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
 import { supabase, supabaseReady } from "../lib/supabase";
-import { getAdminLeads, transferLeadsToDialer } from "../lib/api";
+import { getAdminLeads, transferLeadsToDialer, importLeads } from "../lib/api";
 import { getSavedState, saveState } from "../lib/persistence.js";
 
 const TAG_OPTIONS = [
@@ -58,6 +58,9 @@ export default function AdminLeadsPage() {
   const [toast, setToast] = React.useState("");
   const [transfering, setTransfering] = React.useState(false);
   const toastTimer = React.useRef(null);
+  const [importModal, setImportModal] = React.useState(false);
+  const [importText, setImportText] = React.useState("");
+  const [importing, setImporting] = React.useState(false);
 
   // Fetch real leads from backend
   const fetchLeads = React.useCallback(async () => {
@@ -227,6 +230,77 @@ export default function AdminLeadsPage() {
     tag.toLowerCase().includes(tagSearch.toLowerCase())
   );
 
+  // Parse pasted lead data (supports multiple formats)
+  const parseImportText = (text) => {
+    const lines = text.trim().split("\n").filter(line => line.trim());
+    const leads = [];
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      
+      // Try CSV format: "Business Name, Phone, Email" or "Business Name, Phone"
+      if (trimmed.includes(",")) {
+        const parts = trimmed.split(",").map(p => p.trim());
+        leads.push({
+          business_name: parts[0] || "Unknown",
+          phone: parts[1] || "",
+          email: parts[2] || "",
+          contact: parts[3] || "",
+        });
+      } 
+      // Try tab-separated
+      else if (trimmed.includes("\t")) {
+        const parts = trimmed.split("\t").map(p => p.trim());
+        leads.push({
+          business_name: parts[0] || "Unknown",
+          phone: parts[1] || "",
+          email: parts[2] || "",
+          contact: parts[3] || "",
+        });
+      }
+      // Single value - assume it's a business name or phone
+      else {
+        const isPhone = /^[\d\s\-\(\)\+]+$/.test(trimmed) && trimmed.replace(/\D/g, "").length >= 10;
+        leads.push({
+          business_name: isPhone ? "Unknown" : trimmed,
+          phone: isPhone ? trimmed : "",
+          email: "",
+          contact: "",
+        });
+      }
+    }
+    
+    return leads;
+  };
+
+  const handleImport = async () => {
+    if (!importText.trim()) {
+      showToast("Paste some leads first.");
+      return;
+    }
+    
+    const parsedLeads = parseImportText(importText);
+    if (parsedLeads.length === 0) {
+      showToast("No leads found. Check format.");
+      return;
+    }
+    
+    setImporting(true);
+    try {
+      const response = await importLeads(parsedLeads);
+      const inserted = response.data?.inserted || parsedLeads.length;
+      showToast(`Imported ${inserted} leads!`);
+      setImportModal(false);
+      setImportText("");
+      fetchLeads(); // Refresh the list
+    } catch (err) {
+      showToast(err.response?.data?.error || err.message || "Import failed");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleDeleteLead = async (leadId) => {
     if (!window.confirm("Are you sure you want to delete this lead?")) return;
     try {
@@ -294,6 +368,13 @@ export default function AdminLeadsPage() {
               </div>
               <button className="button-secondary" onClick={fetchLeads} type="button" disabled={loading}>
                 <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
+              </button>
+              <button 
+                className="button-secondary" 
+                onClick={() => setImportModal(true)} 
+                type="button"
+              >
+                <Upload size={14} /> Import Leads
               </button>
               <button
                 className="glow-button"
@@ -502,6 +583,91 @@ export default function AdminLeadsPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Import Leads Modal */}
+      {importModal ? (
+        <div className="glass-modal" onClick={() => setImportModal(false)}>
+          <div 
+            className="glass-modal-card" 
+            style={{ maxWidth: "600px", width: "90%" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-white/40">
+                  Import Leads
+                </div>
+                <div className="text-lg font-semibold">Paste Your Lead List</div>
+              </div>
+              <button className="text-white/60 hover:text-white" onClick={() => setImportModal(false)}>
+                ✕
+              </button>
+            </div>
+            
+            <p className="mb-3 text-sm text-white/60">
+              Paste leads from your AI, spreadsheet, or any list.
+            </p>
+
+            <div className="mb-4 rounded-xl border border-white/15 bg-white/5 p-3 text-sm">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider text-white/50">Copy & paste this to your AI when you need the format</span>
+                <button
+                  type="button"
+                  className="rounded bg-white/10 px-2 py-1 text-xs text-white/80 hover:bg-white/20"
+                  onClick={() => {
+                    const example = `Business Name, Phone, Email
+John's Plumbing, 614-555-1234, john@email.com
+Ace HVAC, 555-987-6543, ace@email.com
+Mike's Heating & Cooling, 555-123-4567, mike@example.com`;
+                    navigator.clipboard.writeText(example);
+                    showToast("CSV example copied — paste into your AI.");
+                  }}
+                >
+                  Copy example
+                </button>
+              </div>
+              <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-white/80 text-xs leading-relaxed">
+{`Format: Business Name, Phone, Email (one per line)
+
+John's Plumbing, 614-555-1234, john@email.com
+Ace HVAC, 555-987-6543, ace@email.com
+Mike's Heating & Cooling, 555-123-4567, mike@example.com
+
+Also OK: Name, Phone only · One name per line · One phone per line · Tab from Excel`}
+              </pre>
+            </div>
+            
+            <textarea
+              className="glass-input w-full text-sm text-white font-mono"
+              style={{ minHeight: "200px" }}
+              placeholder={`Example:\nJohn's Plumbing, 614-555-1234, john@example.com\nAce HVAC Services, 555-987-6543\nMike's Heating & Cooling\n5551234567`}
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+            />
+            
+            <div className="mt-2 text-xs text-white/40">
+              {importText.trim() ? `${importText.trim().split("\n").filter(l => l.trim()).length} lines detected` : "Paste your leads above"}
+            </div>
+            
+            <div className="mt-4 flex justify-end gap-3">
+              <button 
+                className="button-secondary" 
+                onClick={() => { setImportModal(false); setImportText(""); }}
+              >
+                Cancel
+              </button>
+              <button 
+                className="glow-button" 
+                onClick={handleImport}
+                disabled={importing || !importText.trim()}
+              >
+                {importing ? "Importing..." : "Import Leads"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
