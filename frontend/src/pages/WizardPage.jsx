@@ -623,7 +623,7 @@ export default function WizardPage({
   useEffect(() => {
     if (!paymentVerified || step !== 2 || advancedToDeployRef.current) return;
     advancedToDeployRef.current = true;
-    persistStep(3);
+    persistStep(5);
   }, [paymentVerified, step]);
 
   useEffect(() => {
@@ -651,9 +651,9 @@ export default function WizardPage({
     };
   }, [embeddedMode, embeddedMode?.targetUserId, step]);
 
-  // After Stripe return: verify with session_id if present (works in test mode without webhook), then persist Step 3 and clean URL
+  // After Stripe return: verify with session_id if present (works in test mode without webhook), then go to Deploy and clean URL
   useEffect(() => {
-    if (embeddedMode || LEGACY_STEPS_ENABLED) return;
+    if (LEGACY_STEPS_ENABLED) return;
     if (searchParams.get("checkout") !== "success") return;
     let mounted = true;
     (async () => {
@@ -673,7 +673,7 @@ export default function WizardPage({
         }
       }
       if (!mounted) return;
-      persistStep(3);
+      persistStep(5);
       navigate("/wizard", { replace: true });
     })();
     return () => { mounted = false; };
