@@ -16,7 +16,7 @@ export default function LandingPage() {
   const benefits = [
     { icon: Clock, title: "24/7 Coverage", desc: "Never miss after-hours emergencies" },
     { icon: Zap, title: "Instant Booking", desc: "AI schedules jobs in real-time" },
-    { icon: Shield, title: "Zero Setup", desc: "Live in 5 minutes, not 5 weeks" },
+    { icon: Shield, title: "Fast Setup", desc: "Live in under 10 minutes, not 5 weeks" },
   ];
 
   return (
@@ -112,7 +112,7 @@ export default function LandingPage() {
             marginTop: "0.5rem",
           }}
         >
-          Get Started — Takes 2 Minutes
+          Get Started — Live in Under 10 Minutes
         </motion.button>
 
         <motion.p
