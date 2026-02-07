@@ -94,6 +94,7 @@ export default function SettingsPage() {
     user_personal_phone: "",
   });
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState(null);
   const [saving, setSaving] = React.useState(false);
   const [saveStatus, setSaveStatus] = React.useState("");
   const [isSeller, setIsSeller] = React.useState(false);
@@ -124,6 +125,9 @@ export default function SettingsPage() {
         }
       } catch (err) {
         console.error("Failed to load settings:", err);
+        if (mounted) {
+          setLoadError(err.userMessage || err.message || "Failed to load settings");
+        }
       } finally {
         if (mounted) setLoading(false);
       }
@@ -247,6 +251,23 @@ export default function SettingsPage() {
               </button>
             </div>
           </div>
+
+          {loadError && (
+            <div className="glass-panel error-banner" style={{ background: "rgba(239, 68, 68, 0.15)", borderColor: "#ef4444", marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <span style={{ fontSize: "1.25rem" }}>⚠️</span>
+              <div style={{ flex: 1 }}>
+                <strong style={{ color: "#ef4444" }}>Error loading settings</strong>
+                <p style={{ margin: 0, opacity: 0.8 }}>{loadError}</p>
+              </div>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => { setLoadError(null); window.location.reload(); }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {loading ? (
             <div className="glass-panel" style={{ padding: "2rem", textAlign: "center" }}>

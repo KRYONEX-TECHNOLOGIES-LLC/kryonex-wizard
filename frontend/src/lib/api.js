@@ -26,6 +26,83 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+// Response interceptor for consistent error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // Transform error for consistent handling across the app
+    const enhancedError = {
+      ...error,
+      userMessage: getUserFriendlyMessage(error),
+      statusCode: error.response?.status || 0,
+      isNetworkError: !error.response,
+      isAuthError: error.response?.status === 401,
+      isServerError: error.response?.status >= 500,
+    };
+    
+    // Log errors for debugging (only in development)
+    if (import.meta.env.DEV) {
+      console.error("[API Error]", {
+        url: error.config?.url,
+        status: error.response?.status,
+        message: error.response?.data?.error || error.message,
+      });
+    }
+    
+    // Auto-redirect on auth errors (401)
+    if (error.response?.status === 401 && typeof window !== "undefined") {
+      const currentPath = window.location.pathname;
+      // Don't redirect if already on login page or public pages
+      if (!["/login", "/", "/affiliate", "/thank-you"].includes(currentPath)) {
+        console.warn("[API] Session expired, redirecting to login");
+        window.location.href = "/login?session=expired";
+      }
+    }
+    
+    return Promise.reject(enhancedError);
+  }
+);
+
+// Helper to get user-friendly error messages
+function getUserFriendlyMessage(error) {
+  const status = error.response?.status;
+  const serverMessage = error.response?.data?.error;
+  
+  // Use server message if it's user-friendly
+  if (serverMessage && !serverMessage.includes("Error:") && serverMessage.length < 200) {
+    return serverMessage;
+  }
+  
+  // Network errors
+  if (!error.response) {
+    return "Unable to connect. Please check your internet connection.";
+  }
+  
+  // Status-based messages
+  switch (status) {
+    case 400:
+      return serverMessage || "Invalid request. Please check your input.";
+    case 401:
+      return "Your session has expired. Please log in again.";
+    case 403:
+      return "You don't have permission to perform this action.";
+    case 404:
+      return "The requested resource was not found.";
+    case 409:
+      return serverMessage || "This action conflicts with existing data.";
+    case 422:
+      return serverMessage || "Please check your input and try again.";
+    case 429:
+      return "Too many requests. Please wait a moment and try again.";
+    case 500:
+    case 502:
+    case 503:
+      return "Server error. Our team has been notified. Please try again later.";
+    default:
+      return serverMessage || "Something went wrong. Please try again.";
+  }
+}
+
 export const deployAgent = (data) => api.post("/deploy-agent", data);
 export const getStats = () => api.get("/api/dashboard/stats");
 export const getEnhancedStats = () => api.get("/api/dashboard/stats-enhanced");

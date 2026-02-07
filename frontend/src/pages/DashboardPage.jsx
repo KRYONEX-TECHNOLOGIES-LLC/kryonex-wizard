@@ -97,6 +97,7 @@ export default function DashboardPage() {
       ? false
       : window.localStorage.getItem("kryonex_sms_banner_dismissed") === "true"
   );
+  const [loadError, setLoadError] = React.useState(null);
 
   // Live clock effect
   React.useEffect(() => {
@@ -165,6 +166,11 @@ export default function DashboardPage() {
               }
             }
           }
+        }
+      } catch (err) {
+        if (mounted) {
+          console.error("[Dashboard] Load error:", err);
+          setLoadError(err.userMessage || err.message || "Failed to load dashboard data");
         }
       } finally {
         if (mounted && isInitial) setLoading(false);
@@ -358,6 +364,25 @@ export default function DashboardPage() {
           isAdmin={isAdmin}
         />
         <div className="main-content">
+          {loadError && (
+            <div className="glass-panel error-banner" style={{ background: "rgba(239, 68, 68, 0.15)", borderColor: "#ef4444", marginBottom: "1rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <span style={{ fontSize: "1.25rem" }}>⚠️</span>
+                <div>
+                  <strong style={{ color: "#ef4444" }}>Error loading dashboard</strong>
+                  <p style={{ margin: 0, opacity: 0.8 }}>{loadError}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => { setLoadError(null); window.location.reload(); }}
+                style={{ marginLeft: "auto" }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
           {isLowUsage && !lowUsageDismissed ? (
             <div className="glass-panel low-usage-alert">
               <div>

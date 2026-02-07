@@ -153,6 +153,7 @@ export default function MessagesPage() {
       setLastRefresh(new Date());
     } catch (err) {
       setMessages([]);
+      setFatalError(err.userMessage || err.message || "Failed to load messages");
       console.error("Failed to load messages:", err);
     }
   }, []);

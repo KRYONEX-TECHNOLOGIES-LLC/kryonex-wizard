@@ -29,6 +29,7 @@ export default function LeadsPage() {
   const navigate = useNavigate();
   const [leads, setLeads] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState(null);
   const [query, setQuery] = React.useState("");
   const [lastUpdated, setLastUpdated] = React.useState(null);
   const [isSeller, setIsSeller] = React.useState(false);
@@ -57,6 +58,7 @@ export default function LeadsPage() {
       setLastUpdated(new Date());
     } catch (error) {
       console.error("Failed to load leads:", error);
+      setLoadError(error.userMessage || error.message || "Failed to load leads");
       setLeads([]);
     } finally {
       if (isInitial) setLoading(false);
@@ -197,6 +199,23 @@ export default function LeadsPage() {
               </button>
             </div>
           </div>
+
+          {loadError && (
+            <div className="glass-panel error-banner" style={{ background: "rgba(239, 68, 68, 0.15)", borderColor: "#ef4444", marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <span style={{ fontSize: "1.25rem" }}>⚠️</span>
+              <div style={{ flex: 1 }}>
+                <strong style={{ color: "#ef4444" }}>Error loading leads</strong>
+                <p style={{ margin: 0, opacity: 0.8 }}>{loadError}</p>
+              </div>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => { setLoadError(null); loadLeads(true); }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {/* Search & Filters Panel */}
           <div className="glass-panel bg-gray-900/50 border border-cyan-500/30 backdrop-blur-md" style={{ padding: "1.5rem" }}>

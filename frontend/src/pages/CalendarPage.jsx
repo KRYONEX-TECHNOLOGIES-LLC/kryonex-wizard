@@ -103,6 +103,8 @@ export default function CalendarPage() {
   const [calConnected, setCalConnected] = React.useState(false);
   const [calStatusLoading, setCalStatusLoading] = React.useState(true);
   const [calStatusError, setCalStatusError] = React.useState("");
+  const [loadError, setLoadError] = React.useState(null);
+  const [actionError, setActionError] = React.useState(null);
 
   const updateCurrentMonth = (updater) => {
     setCurrentMonth((prev) => {
@@ -139,7 +141,10 @@ export default function CalendarPage() {
       try {
         const res = await getAppointments(start.toISOString(), end.toISOString());
         setAppointments(res.data?.appointments || []);
-      } catch {
+        setLoadError(null);
+      } catch (err) {
+        console.error("[Calendar] Load error:", err);
+        setLoadError(err.userMessage || err.message || "Failed to load appointments");
         setAppointments([]);
       }
       setLoading(false);

@@ -735,19 +735,23 @@ export default function WizardPage({
     if (embeddedMode) return;
     let mounted = true;
     const loadConsent = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const user = sessionData?.session?.user;
-      if (!user) return;
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("consent_accepted_at, consent_version, role")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (mounted && profile?.consent_accepted_at) {
-        setConsentAccepted(true);
-      }
-      if (mounted && profile?.role === "admin") {
-        setIsAdmin(true);
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const user = sessionData?.session?.user;
+        if (!user) return;
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("consent_accepted_at, consent_version, role")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (mounted && profile?.consent_accepted_at) {
+          setConsentAccepted(true);
+        }
+        if (mounted && profile?.role === "admin") {
+          setIsAdmin(true);
+        }
+      } catch (err) {
+        console.error("[Wizard] Failed to load consent:", err);
       }
     };
     loadConsent();
@@ -775,39 +779,43 @@ export default function WizardPage({
     }
     let mounted = true;
     const checkWizardAccess = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const user = sessionData?.session?.user;
-      if (!user) return;
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("business_name, area_code, role")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const isOnboarded =
-        Boolean(profile?.business_name) && Boolean(profile?.area_code);
-      if (wizardMaintenance && profile?.role !== "admin") {
-        if (mounted) {
-          setWizardLocked(true);
-          setWizardLockReason(
-            "Wizard temporarily disabled. Please contact support."
-          );
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const user = sessionData?.session?.user;
+        if (!user) return;
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("business_name, area_code, role")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        const isOnboarded =
+          Boolean(profile?.business_name) && Boolean(profile?.area_code);
+        if (wizardMaintenance && profile?.role !== "admin") {
+          if (mounted) {
+            setWizardLocked(true);
+            setWizardLockReason(
+              "Wizard temporarily disabled. Please contact support."
+            );
+          }
+          return;
         }
-        return;
-      }
-      if (mounted) {
-        setWizardLocked(false);
-        setWizardLockReason("");
-        if (!isOnboarded) {
-          const userFormKey = `wizard.form.${user.id}`;
-          const savedForm = getSavedState(userFormKey) || {};
-          const hasWizardProgress = Boolean(
-            savedForm.nameInput || savedForm.areaCodeInput
-          );
-          if (!hasWizardProgress) {
-            persistStep(1);
-            persistForm(defaultFormState);
+        if (mounted) {
+          setWizardLocked(false);
+          setWizardLockReason("");
+          if (!isOnboarded) {
+            const userFormKey = `wizard.form.${user.id}`;
+            const savedForm = getSavedState(userFormKey) || {};
+            const hasWizardProgress = Boolean(
+              savedForm.nameInput || savedForm.areaCodeInput
+            );
+            if (!hasWizardProgress) {
+              persistStep(1);
+              persistForm(defaultFormState);
+            }
           }
         }
+      } catch (err) {
+        console.error("[Wizard] Failed to check access:", err);
       }
     };
     checkWizardAccess();

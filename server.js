@@ -1877,13 +1877,16 @@ const sendSmsInternal = async ({
     throw new Error("Usage limit reached");
   }
   const smsCap = usage.sms_cap ?? 0;
+  const smsCredit = usage.sms_credit ?? 0;
+  const totalSmsCap = smsCap + smsCredit;
   const newSmsUsed = (usage.sms_used || 0) + 1;
-  if (!bypassUsage && newSmsUsed > smsCap) {
+  if (!bypassUsage && newSmsUsed > totalSmsCap) {
     console.warn("[sendSms] SMS blocked: usage cap reached", {
       user_id: userId,
       sms_used: usage.sms_used,
       sms_cap: smsCap,
-      grace_seconds: usage.grace_seconds ?? 600,
+      sms_credit: smsCredit,
+      total_cap: totalSmsCap,
     });
     await supabaseAdmin
       .from("usage_limits")
@@ -2657,6 +2660,13 @@ app.post(
                 }
               } catch (refErr) {
                 console.error("[stripe-webhook] Referral processing error:", refErr.message);
+                trackError({
+                  error: refErr,
+                  context: { source: "stripe-webhook", action: "referral_processing" },
+                  severity: "medium",
+                  endpoint: "/stripe-webhook",
+                  method: "POST",
+                });
               }
             }
           }
@@ -2905,6 +2915,13 @@ app.post(
               }
             } catch (refErr) {
               console.error("[stripe-webhook] Referral commission error:", refErr.message);
+              trackError({
+                error: refErr,
+                context: { source: "stripe-webhook", action: "referral_commission" },
+                severity: "medium",
+                endpoint: "/stripe-webhook",
+                method: "POST",
+              });
             }
           }
         }
@@ -2956,6 +2973,13 @@ app.post(
               }
             } catch (clawErr) {
               console.error("[stripe-webhook] Clawback error:", clawErr.message);
+              trackError({
+                error: clawErr,
+                context: { source: "stripe-webhook", action: "clawback" },
+                severity: "high",
+                endpoint: "/stripe-webhook",
+                method: "POST",
+              });
             }
           }
         }
@@ -3011,6 +3035,13 @@ app.post(
             }
           } catch (disputeErr) {
             console.error("[stripe-webhook] Dispute clawback error:", disputeErr.message);
+            trackError({
+              error: disputeErr,
+              context: { source: "stripe-webhook", action: "dispute_clawback" },
+              severity: "high",
+              endpoint: "/stripe-webhook",
+              method: "POST",
+            });
           }
         }
 
@@ -3048,6 +3079,13 @@ app.post(
         }
       } catch (err) {
         console.error("Stripe webhook processing error:", err.message);
+        trackError({
+          error: err,
+          context: { source: "stripe-webhook", action: "processing" },
+          severity: "high",
+          endpoint: "/stripe-webhook",
+          method: "POST",
+        });
       }
     });
   }
@@ -3794,7 +3832,9 @@ const requireAuth = async (req, res, next) => {
       }
       
       // Track session activity (async, don't block request)
-      trackSession(data.user.id, tokenHash, req).catch(() => {});
+      trackSession(data.user.id, tokenHash, req).catch((err) => {
+        console.warn("[auth] session tracking failed", { userId: data.user.id, error: err.message });
+      });
     }
 
     req.user = data.user;
@@ -4850,7 +4890,10 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         notes: args.service_issue || args.notes || null,
         source: "cal.com",
         created_at: new Date().toISOString(),
-      }).catch(err => console.error("[webhook] appointment_booked (cal.com) error:", err.message));
+      }).catch(err => {
+        console.error("[webhook] appointment_booked (cal.com) error:", err.message);
+        trackError({ error: err, context: { source: "cal.com", action: "appointment_booked" }, severity: "medium" });
+      });
       
       return { ok: true, source: "cal.com", booking, appointment: appointmentData };
     }
@@ -4892,7 +4935,10 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       notes: args.service_issue || args.notes || null,
       source: "internal",
       created_at: new Date().toISOString(),
-    }).catch(err => console.error("[webhook] appointment_booked (internal) error:", err.message));
+    }).catch(err => {
+      console.error("[webhook] appointment_booked (internal) error:", err.message);
+      trackError({ error: err, context: { source: "internal", action: "appointment_booked" }, severity: "medium" });
+    });
     
     return { ok: true, appointment: data };
   }
@@ -5559,6 +5605,13 @@ const verifyRetellSignature = (rawBody, signature, secret) => {
     return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
   } catch (err) {
     console.error("[retell-webhook] Signature verification error:", err.message);
+    trackError({
+      error: err,
+      context: { source: "retell-webhook", action: "signature_verification" },
+      severity: "high",
+      endpoint: "/retell-webhook",
+      method: "POST",
+    });
     return false;
   }
 };
@@ -5710,7 +5763,10 @@ const retellWebhookHandler = async (req, res) => {
           to_number: call.to_number || payload.to_number || null,
           direction: call.direction || payload.direction || "inbound",
           started_at: new Date().toISOString(),
-        }).catch(err => console.error("[webhook] call_started error:", err.message));
+        }).catch(err => {
+          console.error("[webhook] call_started error:", err.message);
+          trackError({ error: err, context: { source: "retell", action: "call_started" }, severity: "medium" });
+        });
       }
     }
 
@@ -5969,7 +6025,10 @@ const retellWebhookHandler = async (req, res) => {
           recording_url: recordingUrl,
           call_duration_seconds: durationSeconds,
           created_at: new Date().toISOString(),
-        }).catch(err => console.error("[webhook] lead_created error:", err.message));
+        }).catch(err => {
+          console.error("[webhook] lead_created error:", err.message);
+          trackError({ error: err, context: { source: "retell", action: "lead_created" }, severity: "high" });
+        });
       }
 
       // Also insert into call_recordings for Black Box page
@@ -6266,7 +6325,10 @@ const retellWebhookHandler = async (req, res) => {
         call_outcome: analysisData.call_outcome || null,
         appointment_booked: analysisData.appointment_booked === true,
         ended_at: new Date().toISOString(),
-      }).catch(err => console.error("[webhook] call_ended error:", err.message));
+      }).catch(err => {
+        console.error("[webhook] call_ended error:", err.message);
+        trackError({ error: err, context: { source: "retell", action: "call_ended" }, severity: "medium" });
+      });
     }
 
     if (eventType === "sms_received") {
@@ -6328,7 +6390,10 @@ const retellWebhookHandler = async (req, res) => {
         keyword_detected: isOptOut ? body.trim().split(/\s+/)[0].toLowerCase() : null,
         is_opt_out: isOptOut,
         received_at: new Date().toISOString(),
-      }).catch(err => console.error("[webhook] sms_received error:", err.message));
+      }).catch(err => {
+        console.error("[webhook] sms_received error:", err.message);
+        trackError({ error: err, context: { source: "sms", action: "sms_received" }, severity: "medium" });
+      });
 
       if (isOptOut) {
         await supabaseAdmin.from("sms_opt_outs").insert({
@@ -6663,7 +6728,8 @@ Business Variables:
         return res.status(500).json({ error: "Agent creation failed: missing phone_number" });
       }
 
-      const { error: insertError } = await supabaseAdmin.from("agents").insert({
+      // Use upsert on user_id to handle re-deploys gracefully
+      const { error: upsertError } = await supabaseAdmin.from("agents").upsert({
         user_id: req.user.id,
         agent_id: agentId,
         phone_number: phoneNumber,
@@ -6681,10 +6747,10 @@ Business Variables:
         travel_limit_value: travelValue || null,
         travel_limit_mode: travelMode || null,
         is_active: true,
-      });
+      }, { onConflict: "user_id" });
 
-      if (insertError) {
-        return res.status(500).json({ error: insertError.message });
+      if (upsertError) {
+        return res.status(500).json({ error: upsertError.message });
       }
 
       await auditLog({
@@ -9882,7 +9948,8 @@ app.get("/call-recordings", requireAuth, resolveEffectiveUser, async (req, res) 
         recording_url,
         outcome,
         created_at,
-        lead:leads(id, name, business_name, phone, summary, transcript)
+        flagged_for_review,
+        lead:leads(id, name, business_name, phone, summary, transcript, sentiment, status, issue_type, appointment_booked, service_address, flagged_for_review)
       `
       )
       .eq("seller_id", uid)
@@ -9894,10 +9961,16 @@ app.get("/call-recordings", requireAuth, resolveEffectiveUser, async (req, res) 
 
     const recordings = (data || []).map((row) => ({
       ...row,
-      caller_name:
-        row.lead?.business_name || row.lead?.name || "Unknown Caller",
+      caller_name: row.lead?.business_name || row.lead?.name || "Unknown Caller",
       caller_phone: row.lead?.phone || "--",
       transcript: row.lead?.transcript || row.lead?.summary || "",
+      summary: row.lead?.summary || "",
+      sentiment: row.lead?.sentiment || null,
+      status: row.lead?.status || row.outcome || "Inquiry",
+      issue_type: row.lead?.issue_type || null,
+      appointment_booked: row.lead?.appointment_booked || false,
+      service_address: row.lead?.service_address || null,
+      flagged_for_review: row.flagged_for_review || row.lead?.flagged_for_review || false,
     }));
 
     return res.json({ recordings });
@@ -10398,7 +10471,9 @@ app.post("/webhooks/sms-inbound", async (req, res) => {
               phone: normalizedFromNumber,
               global_opt_out: true,
               opted_out_at: new Date().toISOString(),
-            }, { onConflict: "phone", ignoreDuplicates: true }).catch(() => {});
+            }, { onConflict: "phone", ignoreDuplicates: true }).catch((err) => {
+              console.error("[sms-inbound] failed to upsert global opt-out", { phone: normalizedFromNumber, error: err.message });
+            });
           }
           
           autoResponse = `You've been unsubscribed and will no longer receive texts from this number. Call the office directly if you need service.`;
@@ -10707,7 +10782,9 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     const businessName = profileName || agentNickname || "your business";
     // Backfill: if profile was empty but we have nickname from provision, save it so next call has it
     if (!profileName && agentNickname && agentNickname !== "Business" && agentNickname.length >= 2) {
-      supabaseAdmin.from("profiles").update({ business_name: agentNickname }).eq("user_id", agentRow.user_id).then(() => {});
+      supabaseAdmin.from("profiles").update({ business_name: agentNickname }).eq("user_id", agentRow.user_id)
+        .then(() => console.info("[retell-inbound] backfilled business_name from nickname", { userId: agentRow.user_id }))
+        .catch((err) => console.error("[retell-inbound] failed to backfill business_name", { userId: agentRow.user_id, error: err.message }));
     }
     const dynamicVariables = {
       business_name: businessName,
@@ -13192,7 +13269,8 @@ Business Variables:
     throw new Error("Agent creation failed: missing phone_number");
   }
 
-  const { error: insertError } = await supabaseAdmin.from("agents").insert({
+  // Use upsert on user_id to handle re-deploys gracefully
+  const { error: upsertError } = await supabaseAdmin.from("agents").upsert({
     user_id: userId,
     agent_id: agentId,
     phone_number: phoneNumber,
@@ -13210,10 +13288,10 @@ Business Variables:
     travel_limit_value: travelValue,
     travel_limit_mode: travelMode,
     is_active: true,
-  });
+  }, { onConflict: "user_id" });
 
-  if (insertError) {
-    throw new Error(insertError.message);
+  if (upsertError) {
+    throw new Error(upsertError.message);
   }
 
   await auditLog({
@@ -13391,26 +13469,19 @@ const provisionPhoneNumberOnly = async ({
     confirmation_sms_enabled: confirmationSmsEnabled ?? true,
   };
   
-  if (updateExisting) {
-    const { error: updateError } = await supabaseAdmin
-      .from("agents")
-      .update(agentRow)
-      .eq("user_id", userId);
-    if (updateError) {
-      console.error("[provisionAgent] update failed", { userId, error: updateError.message });
-      throw new Error(updateError.message);
-    }
-    console.info("[provisionAgent] updated existing row", { userId, phone_number: phoneNumber, masterAgentId });
-  } else {
-    const { error: insertError } = await supabaseAdmin.from("agents").insert({
-      user_id: userId,
-      ...agentRow,
-    });
-    if (insertError) {
-      console.error("[provisionAgent] insert failed", { userId, error: insertError.message });
-      throw new Error(insertError.message);
-    }
+  // Use upsert on user_id to handle re-deploys gracefully
+  // This prevents "duplicate key" errors when user deploys again
+  const { error: upsertError } = await supabaseAdmin.from("agents").upsert({
+    user_id: userId,
+    ...agentRow,
+  }, { onConflict: "user_id" });
+  
+  if (upsertError) {
+    console.error("[provisionAgent] upsert failed", { userId, error: upsertError.message });
+    throw new Error(upsertError.message);
   }
+  
+  console.info("[provisionAgent] agent upserted", { userId, phone_number: phoneNumber, masterAgentId, wasUpdate: updateExisting });
 
   await auditLog({
     userId,
@@ -15053,8 +15124,9 @@ app.get(
           0,
           (usage.sms_cap || 0) + (usage.sms_credit || 0) - (usage.sms_used || 0)
         ),
-        sms_total: usage.sms_cap || 0,
+        sms_total: (usage.sms_cap || 0) + (usage.sms_credit || 0),
         sms_used: usage.sms_used || 0,
+        sms_credit: usage.sms_credit || 0,
         limit_state: usage.limit_state || "active",
         period_start: usage.period_start,
         period_end: usage.period_end,
