@@ -610,37 +610,48 @@ export default function AdminLeadsPage() {
 
             <div className="mb-4 rounded-xl border border-white/15 bg-white/5 p-3 text-sm">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-xs uppercase tracking-wider text-white/50">Copy & paste this to your AI when you need the format</span>
+                <span className="text-xs uppercase tracking-wider text-white/50">AI Prompt — Copy this to ChatGPT/Claude</span>
                 <button
                   type="button"
                   className="rounded bg-white/10 px-2 py-1 text-xs text-white/80 hover:bg-white/20"
                   onClick={() => {
-                    const example = `Business Name, Phone, Email
-John's Plumbing, 614-555-1234, john@email.com
-Ace HVAC, 555-987-6543, ace@email.com
-Mike's Heating & Cooling, 555-123-4567, mike@example.com`;
+                    const example = `Give me a list of 100 HVAC/plumbing companies in [YOUR AREA].
+
+Format each as: Business Name, Phone, Email
+One company per line. Example:
+
+ABC Plumbing, 614-555-1234, abc@email.com
+Johnson HVAC, 555-987-6543, johnson@email.com
+Elite Heating, 555-123-4567, elite@email.com`;
                     navigator.clipboard.writeText(example);
-                    showToast("CSV example copied — paste into your AI.");
+                    showToast("Prompt copied — paste into your AI.");
                   }}
                 >
                   Copy example
                 </button>
               </div>
               <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-white/80 text-xs leading-relaxed">
-{`Format: Business Name, Phone, Email (one per line)
+{`Give me a list of 100 HVAC/plumbing companies in [YOUR AREA].
 
-John's Plumbing, 614-555-1234, john@email.com
-Ace HVAC, 555-987-6543, ace@email.com
-Mike's Heating & Cooling, 555-123-4567, mike@example.com
+Format each as: Business Name, Phone, Email
+One company per line. Example:
 
-Also OK: Name, Phone only · One name per line · One phone per line · Tab from Excel`}
+ABC Plumbing, 614-555-1234, abc@email.com
+Johnson HVAC, 555-987-6543, johnson@email.com
+Elite Heating, 555-123-4567, elite@email.com`}
               </pre>
             </div>
             
             <textarea
               className="glass-input w-full text-sm text-white font-mono"
               style={{ minHeight: "200px" }}
-              placeholder={`Example:\nJohn's Plumbing, 614-555-1234, john@example.com\nAce HVAC Services, 555-987-6543\nMike's Heating & Cooling\n5551234567`}
+              placeholder={`Paste your full list here — one lead per line:
+
+ABC Plumbing, 614-555-1234, abc@email.com
+Johnson HVAC, 555-987-6543, johnson@email.com
+Elite Heating & Cooling, 555-123-4567, elite@email.com
+Quality Air Services, 555-222-3333, quality@email.com
+Pro Plumbers Inc, 555-444-5555, pro@email.com`}
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
             />
