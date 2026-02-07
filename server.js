@@ -231,13 +231,28 @@ const allowedOrigins = [
   APP_URL,
   process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
   process.env.VERCEL_BRANCH_URL ? `https://${process.env.VERCEL_BRANCH_URL}` : null,
+  // Add common Vercel domains
+  "https://kryonex-wizard.vercel.app",
+  "https://kryonex.vercel.app",
 ].filter(Boolean);
+
+// Vercel deployment URL patterns (dynamic preview URLs)
+const vercelPatterns = [
+  /^https:\/\/kryonex.*\.vercel\.app$/,
+  /^https:\/\/.*kryonex.*\.vercel\.app$/,
+  /^https:\/\/.*-kryonex-technologies-llc.*\.vercel\.app$/,
+];
 
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
+      // Allow any Vercel deployment URL for this project
+      if (vercelPatterns.some(pattern => pattern.test(origin))) {
+        return callback(null, true);
+      }
+      console.warn(`[CORS] Blocked origin: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
