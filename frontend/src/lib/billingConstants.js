@@ -2,36 +2,86 @@ export const TIERS = [
   {
     id: "core",
     title: "CORE",
+    subtitle: "Overflow Shield",
     description: "24/7 AI Receptionist, Live Bookings, and Basic Routing.",
+    whoFor: "For 1-2 truck shops missing calls during busy hours.",
     accent: "#f59e0b",
     price: "$149/mo",
     minutes: 150,
+    sms: 250,
+    highlights: [
+      "Instant call answering (0 rings)",
+      "Basic call routing",
+      "Job booking + scheduling",
+      "Spam filtering",
+    ],
   },
   {
     id: "pro",
     title: "PRO",
+    subtitle: "24/7 Front Desk",
     description: "Emergency Transfers, Call Recordings, and Priority Logic.",
+    whoFor: "For 1-3 truck shops that want full after-hours coverage.",
     accent: "#22d3ee",
     price: "$249/mo",
-    minutes: 500,
+    minutes: 300,
+    sms: 1000,
+    popular: true,
+    highlights: [
+      "Everything in Core, plus:",
+      "After-hours emergency triage",
+      "Call recordings + transcripts",
+      "Emergency call transfers",
+      "Lead qualification",
+    ],
   },
   {
     id: "elite",
     title: "ELITE",
+    subtitle: "Full Coverage",
     description: "Multi-Location Support, VIP Onboarding, and SLA Guarantees.",
+    whoFor: "For 3-8 truck shops that need complete call automation.",
     accent: "#7c3aed",
     price: "$497/mo",
-    minutes: 1200,
+    minutes: 800,
+    sms: 3000,
+    highlights: [
+      "Everything in Pro, plus:",
+      "Multi-location support",
+      "VIP onboarding call",
+      "Priority support",
+      "Custom AI training",
+    ],
   },
   {
     id: "scale",
     title: "KRYONEX SCALE",
+    subtitle: "Dispatch Automation",
     description: "Enterprise Minutes, Dedicated Admin, and White-Glove Setup.",
+    whoFor: "For 5-20 truck fleets drowning in call volume.",
     accent: "#ec4899",
     price: "$997/mo",
     minutes: 3000,
+    sms: 5000,
+    highlights: [
+      "Everything in Elite, plus:",
+      "Unlimited locations",
+      "Dedicated account manager",
+      "White-glove setup",
+      "Custom integrations",
+    ],
   },
 ];
+
+export const VALUE_PROPS = {
+  anchor: "Replaces a $3,000/mo receptionist — never sleeps, never misses a call.",
+  roi: "One saved job pays for the entire month.",
+  trust: [
+    "Never miss a job again",
+    "No call centers, no per-minute fees",
+    "Deploys in 5 minutes — no setup calls",
+  ],
+};
 
 export const FEATURES = [
   {
