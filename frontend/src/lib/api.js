@@ -54,14 +54,10 @@ api.interceptors.response.use(
       });
     }
     
-    // Auto-redirect on auth errors (401)
+    // Log auth errors but DON'T auto-redirect - let the page handle it
+    // Auto-redirect was causing infinite loops with impersonation
     if (error.response?.status === 401 && typeof window !== "undefined") {
-      const currentPath = window.location.pathname;
-      // Don't redirect if already on login page or public pages
-      if (!["/login", "/", "/affiliate", "/thank-you"].includes(currentPath)) {
-        console.warn("[API] Session expired, redirecting to login");
-        window.location.href = "/login?session=expired";
-      }
+      console.warn("[API] Auth error (401) - session may be expired or impersonation invalid");
     }
     
     return Promise.reject(enhancedError);

@@ -101,6 +101,7 @@ export default function DashboardPage() {
   );
   const [loadError, setLoadError] = React.useState(null);
   const [webhooksConfigured, setWebhooksConfigured] = React.useState(false);
+  const [isImpersonating, setIsImpersonating] = React.useState(() => getImpersonation().active);
 
   // Live clock effect
   React.useEffect(() => {
@@ -111,7 +112,67 @@ export default function DashboardPage() {
   React.useEffect(() => {
     let mounted = true;
     let shouldStopInterval = false;
-    const load = async (isInitial = false) => {
+
+    // Fetch agent data directly from Supabase - runs independently of API calls
+    const fetchAgentData = async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const user = sessionData?.session?.user;
+        if (!user || !mounted) return;
+
+        // Get profile data
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("business_name, full_name, role, cal_com_url")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        
+        if (mounted && profile) {
+          setIsSeller(profile.role === "seller");
+          setIsAdmin(profile.role === "admin");
+          setCalComUrl(profile.cal_com_url || "");
+          setUserLabel(profile.full_name || profile.business_name || user.email || "Operator");
+        }
+
+        // Get agent data - fetch ALL agents sorted by newest
+        const { data: allAgents, error: agentError } = await supabase
+          .from("agents")
+          .select("phone_number, is_active, created_at, sms_approved")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false });
+
+        if (agentError) {
+          console.error("[Dashboard] Agent fetch error:", agentError);
+          return;
+        }
+
+        // Prefer agent with phone number, otherwise use newest
+        const agentWithNumber = (allAgents || []).find(a => a.phone_number);
+        const agent = agentWithNumber || (allAgents && allAgents[0]) || null;
+
+        if (mounted && agent) {
+          console.log("[Dashboard] Found agent:", { phone: agent.phone_number, active: agent.is_active });
+          setAgentProfile({
+            phone_number: agent.phone_number || "",
+            is_active: agent.is_active !== false,
+          });
+          if (agent.phone_number && !agent.sms_approved) {
+            const createdAt = agent.created_at ? new Date(agent.created_at) : null;
+            const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+            if (!createdAt || createdAt > twoWeeksAgo) {
+              setSmsApprovalPending(true);
+            }
+          }
+        } else {
+          console.log("[Dashboard] No agent found for user");
+        }
+      } catch (err) {
+        console.error("[Dashboard] Supabase fetch error:", err);
+      }
+    };
+
+    // Load API data (stats, leads, subscription, usage)
+    const loadApiData = async (isInitial = false) => {
       try {
         const [statsRes, enhancedRes, leadsRes, subRes, usageRes, webhooksRes] = await Promise.all([
           getStats(),
@@ -126,78 +187,19 @@ export default function DashboardPage() {
           if (enhancedRes.data) {
             setEnhancedStats(prev => ({ ...prev, ...enhancedRes.data }));
           }
-          // Check if user has any webhooks configured
           const webhooks = webhooksRes.data?.webhooks || [];
           setWebhooksConfigured(webhooks.length > 0);
           setLeads(leadsRes.data.leads || []);
           setSubscription(subRes.data || { status: "none", plan_type: null });
           setUsage(usageRes.data || null);
           setLastUpdated(new Date());
-        }
-
-        const { data: sessionData } = await supabase.auth.getSession();
-        const user = sessionData?.session?.user;
-        if (user) {
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("business_name, full_name, role, cal_com_url")
-            .eq("user_id", user.id)
-            .maybeSingle();
-          if (mounted && profile) {
-            setIsSeller(profile.role === "seller");
-            setIsAdmin(profile.role === "admin");
-            setCalComUrl(profile.cal_com_url || "");
-            const label =
-              profile.full_name ||
-              profile.business_name ||
-              user.email ||
-              "Operator";
-            setUserLabel(label);
-          }
-          const fetchAgent = async (retryCount = 0) => {
-            // Get ALL agents for this user, sorted by newest first
-            const { data: allAgents } = await supabase
-              .from("agents")
-              .select("phone_number, is_active, created_at, sms_approved")
-              .eq("user_id", user.id)
-              .order("created_at", { ascending: false });
-
-            // Prefer agent with phone number, otherwise use newest
-            const agentWithNumber = (allAgents || []).find(a => a.phone_number);
-            const agent = agentWithNumber || (allAgents && allAgents[0]) || null;
-
-            if (mounted && agent) {
-              setAgentProfile({
-                phone_number: agent.phone_number || "",
-                is_active: agent.is_active !== false,
-              });
-              // Show SMS pending banner if agent is new (within 2 weeks) and not yet approved
-              if (agent.phone_number && !agent.sms_approved) {
-                const createdAt = agent.created_at ? new Date(agent.created_at) : null;
-                const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-                if (!createdAt || createdAt > twoWeeksAgo) {
-                  setSmsApprovalPending(true);
-                }
-              }
-            } else if (mounted && !agent && retryCount < 3) {
-              // Retry a few times for freshly deployed agents
-              setTimeout(() => fetchAgent(retryCount + 1), 2000);
-            }
-          };
-          await fetchAgent();
+          setLoadError(null); // Clear any previous errors on success
         }
       } catch (err) {
         if (mounted) {
-          console.error("[Dashboard] Load error:", err);
+          console.error("[Dashboard] API load error:", err);
           setLoadError(err.userMessage || err.message || "Failed to load dashboard data");
-          // If auth error and impersonating, clear impersonation and stop retrying
           if (err.isAuthError || err.statusCode === 401) {
-            const imp = getImpersonation();
-            if (imp.active) {
-              console.warn("[Dashboard] Auth error during impersonation - clearing impersonation");
-              clearImpersonation();
-            }
-            // Don't retry on auth errors
             shouldStopInterval = true;
           }
         }
@@ -205,10 +207,18 @@ export default function DashboardPage() {
         if (mounted && isInitial) setLoading(false);
       }
     };
-    load(true);
+
+    // Run both in parallel - agent data loads even if API fails
+    fetchAgentData();
+    loadApiData(true);
+
     const interval = setInterval(() => {
-      if (!shouldStopInterval) load(false);
+      if (!shouldStopInterval) {
+        loadApiData(false);
+        fetchAgentData(); // Keep agent data fresh too
+      }
     }, 15000);
+    
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -405,7 +415,7 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto" }}>
-                {getImpersonation().active && (
+                {isImpersonating && (
                   <button
                     type="button"
                     className="button-secondary"
