@@ -2540,18 +2540,14 @@ export default function WizardPage({
                       <div className="flex flex-wrap items-center gap-4">
                         <TimeSelect
                           value={form.weekdayOpen}
-                          onChange={(e) =>
-                            updateField("weekdayOpen", e.target.value)
-                          }
+                          onChange={(val) => updateField("weekdayOpen", val)}
                         />
                         <span className="text-white/40 text-xs uppercase tracking-widest">
                           TO
                         </span>
                         <TimeSelect
                           value={form.weekdayClose}
-                          onChange={(e) =>
-                            updateField("weekdayClose", e.target.value)
-                          }
+                          onChange={(val) => updateField("weekdayClose", val)}
                         />
                       </div>
                     </div>
@@ -2613,18 +2609,14 @@ export default function WizardPage({
                         >
                           <TimeSelect
                             value={form.saturdayOpen}
-                            onChange={(e) =>
-                              updateField("saturdayOpen", e.target.value)
-                            }
+                            onChange={(val) => updateField("saturdayOpen", val)}
                           />
                           <span className="text-white/40 text-xs uppercase tracking-widest">
                             TO
                           </span>
                           <TimeSelect
                             value={form.saturdayClose}
-                            onChange={(e) =>
-                              updateField("saturdayClose", e.target.value)
-                            }
+                            onChange={(val) => updateField("saturdayClose", val)}
                           />
                         </motion.div>
                       )}
