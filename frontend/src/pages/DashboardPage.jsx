@@ -114,18 +114,31 @@ export default function DashboardPage() {
     let shouldStopInterval = false;
 
     // Fetch agent data directly from Supabase - runs independently of API calls
-    const fetchAgentData = async () => {
+    const fetchAgentData = async (retryCount = 0) => {
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          console.error("[Dashboard] Session error:", sessionError);
+          return;
+        }
         const user = sessionData?.session?.user;
-        if (!user || !mounted) return;
+        if (!user || !mounted) {
+          console.log("[Dashboard] No user session for agent fetch");
+          return;
+        }
+
+        console.log("[Dashboard] Fetching agent data for user:", user.id);
 
         // Get profile data
-        const { data: profile } = await supabase
+        const { data: profile, error: profileError } = await supabase
           .from("profiles")
           .select("business_name, full_name, role, cal_com_url")
           .eq("user_id", user.id)
           .maybeSingle();
+        
+        if (profileError) {
+          console.error("[Dashboard] Profile fetch error:", profileError);
+        }
         
         if (mounted && profile) {
           setIsSeller(profile.role === "seller");
@@ -141,8 +154,19 @@ export default function DashboardPage() {
           .eq("user_id", user.id)
           .order("created_at", { ascending: false });
 
+        console.log("[Dashboard] Agent query result:", {
+          agentCount: allAgents?.length || 0,
+          error: agentError?.message || null,
+          agents: allAgents?.map(a => ({ phone: a.phone_number, active: a.is_active })) || [],
+        });
+
         if (agentError) {
           console.error("[Dashboard] Agent fetch error:", agentError);
+          // Retry on error (up to 3 times)
+          if (retryCount < 3 && mounted) {
+            console.log("[Dashboard] Retrying agent fetch in 2s...", { attempt: retryCount + 1 });
+            setTimeout(() => fetchAgentData(retryCount + 1), 2000);
+          }
           return;
         }
 
@@ -151,7 +175,11 @@ export default function DashboardPage() {
         const agent = agentWithNumber || (allAgents && allAgents[0]) || null;
 
         if (mounted && agent) {
-          console.log("[Dashboard] Found agent:", { phone: agent.phone_number, active: agent.is_active });
+          console.log("[Dashboard] Setting agent profile:", { 
+            phone: agent.phone_number, 
+            active: agent.is_active,
+            selectedFrom: agentWithNumber ? "agent_with_number" : "newest_agent"
+          });
           setAgentProfile({
             phone_number: agent.phone_number || "",
             is_active: agent.is_active !== false,
@@ -163,11 +191,19 @@ export default function DashboardPage() {
               setSmsApprovalPending(true);
             }
           }
+        } else if (mounted && !agent && retryCount < 3) {
+          // No agent found - retry in case it's still being provisioned
+          console.log("[Dashboard] No agent found, retrying in 2s...", { attempt: retryCount + 1 });
+          setTimeout(() => fetchAgentData(retryCount + 1), 2000);
         } else {
-          console.log("[Dashboard] No agent found for user");
+          console.log("[Dashboard] No agent found for user after retries");
         }
       } catch (err) {
         console.error("[Dashboard] Supabase fetch error:", err);
+        // Retry on exception
+        if (retryCount < 3 && mounted) {
+          setTimeout(() => fetchAgentData(retryCount + 1), 2000);
+        }
       }
     };
 

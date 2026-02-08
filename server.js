@@ -1728,6 +1728,40 @@ const normalizePhoneForLookup = (phone) => {
   return String(phone).trim();
 };
 
+// Get all possible phone format variants for database lookup
+// Returns array of formats to try: E.164, with/without +, 10-digit, original
+const getPhoneVariantsForLookup = (phone) => {
+  if (!phone) return [];
+  const raw = String(phone).trim();
+  if (!raw) return [];
+  
+  const digits = raw.replace(/\D/g, "");
+  const variants = new Set();
+  
+  // Add original trimmed value
+  variants.add(raw);
+  
+  if (digits.length === 10) {
+    // US 10-digit: add all variants
+    variants.add(`+1${digits}`);      // E.164: +1XXXXXXXXXX
+    variants.add(`1${digits}`);        // 1XXXXXXXXXX
+    variants.add(digits);              // XXXXXXXXXX
+  } else if (digits.length === 11 && digits.startsWith("1")) {
+    // US 11-digit with country code
+    variants.add(`+${digits}`);        // E.164: +1XXXXXXXXXX
+    variants.add(digits);              // 1XXXXXXXXXX
+    variants.add(digits.slice(1));     // XXXXXXXXXX (strip leading 1)
+  } else if (digits.length > 0) {
+    // Other formats - add with and without + prefix
+    variants.add(digits);
+    if (!raw.startsWith("+")) {
+      variants.add(`+${digits}`);
+    }
+  }
+  
+  return Array.from(variants).filter(Boolean);
+};
+
 // Normalize phone to E.164 format (+1XXXXXXXXXX for US) - used for saving and API calls
 const normalizePhoneE164 = (phone) => {
   if (!phone) return null;
@@ -3960,7 +3994,7 @@ const getEnhancedDashboardStats = async (userId) => {
   const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
   const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - now.getUTCDay())).toISOString();
   
-  // Parallel queries for efficiency
+  // Parallel queries for efficiency - includes usage_calls as backup source
   const [
     allLeadsResult,
     todayLeadsResult,
@@ -3970,7 +4004,14 @@ const getEnhancedDashboardStats = async (userId) => {
     avgDurationResult,
     todayApptsResult,
     weekApptsResult,
-    allApptsResult
+    allApptsResult,
+    // BACKUP: usage_calls for call count (in case leads creation failed)
+    usageCallsAllResult,
+    usageCallsTodayResult,
+    usageCallsWeekResult,
+    lastUsageCallResult,
+    // BACKUP: usage_limits for duration/minutes
+    usageLimitsResult
   ] = await Promise.all([
     // All time leads count
     supabaseAdmin
@@ -4008,7 +4049,7 @@ const getEnhancedDashboardStats = async (userId) => {
       .limit(1)
       .maybeSingle(),
     
-    // Average call duration
+    // Average call duration from leads
     supabaseAdmin
       .from("leads")
       .select("call_duration_seconds")
@@ -4033,13 +4074,57 @@ const getEnhancedDashboardStats = async (userId) => {
     supabaseAdmin
       .from("appointments")
       .select("job_value")
+      .eq("user_id", userId),
+    
+    // BACKUP: All time usage_calls count (tracks calls even if lead creation failed)
+    supabaseAdmin
+      .from("usage_calls")
+      .select("id, seconds", { count: "exact", head: false })
+      .eq("user_id", userId),
+    
+    // BACKUP: Today's usage_calls
+    supabaseAdmin
+      .from("usage_calls")
+      .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
+      .gte("created_at", todayStart),
+    
+    // BACKUP: This week's usage_calls
+    supabaseAdmin
+      .from("usage_calls")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("created_at", weekStart),
+    
+    // BACKUP: Most recent usage_call for "last call" fallback
+    supabaseAdmin
+      .from("usage_calls")
+      .select("created_at, seconds")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    
+    // BACKUP: usage_limits for total seconds and duration
+    supabaseAdmin
+      .from("usage_limits")
+      .select("call_used_seconds, sms_used")
+      .eq("user_id", userId)
+      .maybeSingle()
   ]);
   
-  // Calculate stats
-  const callsAllTime = allLeadsResult.count || 0;
-  const callsToday = todayLeadsResult.count || 0;
-  const callsThisWeek = weekLeadsResult.count || 0;
+  // Calculate stats - use MAX of leads vs usage_calls for reliability
+  const leadsAllTime = allLeadsResult.count || 0;
+  const usageCallsAllTime = usageCallsAllResult.count || 0;
+  const callsAllTime = Math.max(leadsAllTime, usageCallsAllTime);
+  
+  const leadsToday = todayLeadsResult.count || 0;
+  const usageCallsToday = usageCallsTodayResult.count || 0;
+  const callsToday = Math.max(leadsToday, usageCallsToday);
+  
+  const leadsThisWeek = weekLeadsResult.count || 0;
+  const usageCallsThisWeek = usageCallsWeekResult.count || 0;
+  const callsThisWeek = Math.max(leadsThisWeek, usageCallsThisWeek);
   const bookedCount = bookedLeadsResult.count || 0;
   
   // Booking rate
@@ -4047,19 +4132,37 @@ const getEnhancedDashboardStats = async (userId) => {
     ? Math.round((bookedCount / callsAllTime) * 100) 
     : 0;
   
-  // Average call duration
-  const durations = (avgDurationResult.data || [])
+  // Average call duration - try leads first, then usage_calls, then usage_limits
+  const leadDurations = (avgDurationResult.data || [])
     .map(r => r.call_duration_seconds)
     .filter(d => d && d > 0);
-  const avgCallDurationSeconds = durations.length > 0
-    ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
-    : 0;
+  const usageCallDurations = (usageCallsAllResult.data || [])
+    .map(r => r.seconds)
+    .filter(d => d && d > 0);
   
-  // Last call info
+  let avgCallDurationSeconds = 0;
+  if (leadDurations.length > 0) {
+    avgCallDurationSeconds = Math.round(leadDurations.reduce((a, b) => a + b, 0) / leadDurations.length);
+  } else if (usageCallDurations.length > 0) {
+    avgCallDurationSeconds = Math.round(usageCallDurations.reduce((a, b) => a + b, 0) / usageCallDurations.length);
+  } else if (usageLimitsResult.data?.call_used_seconds > 0 && callsAllTime > 0) {
+    // Fallback: calculate avg from total usage
+    avgCallDurationSeconds = Math.round(usageLimitsResult.data.call_used_seconds / callsAllTime);
+  }
+  
+  // Last call info - try leads first, then usage_calls as backup
   const lastLead = lastLeadResult.data;
-  const lastCallAt = lastLead?.created_at || null;
-  const lastCallName = lastLead?.name || null;
-  const lastCallSummary = lastLead?.summary || null;
+  const lastUsageCall = lastUsageCallResult.data;
+  let lastCallAt = lastLead?.created_at || null;
+  let lastCallName = lastLead?.name || null;
+  let lastCallSummary = lastLead?.summary || null;
+  
+  // If no lead but we have usage_call, use that timestamp
+  if (!lastCallAt && lastUsageCall?.created_at) {
+    lastCallAt = lastUsageCall.created_at;
+    lastCallName = null; // No name in usage_calls
+    lastCallSummary = `Call duration: ${Math.round((lastUsageCall.seconds || 0) / 60)} min`;
+  }
   
   // Appointments
   const appointmentsToday = todayApptsResult.count || 0;
@@ -6565,16 +6668,9 @@ const retellWebhookHandler = async (req, res) => {
       const toNumber = call.to_number || payload.to_number || null;
       const fromNumber = call.from_number || payload.from_number || null;
       
-      // Normalize to_number to E.164 for consistent DB lookup
-      let normalizedToNumber = null;
-      if (toNumber) {
-        const digits = String(toNumber).replace(/\D/g, "");
-        normalizedToNumber = digits.length === 10
-          ? `+1${digits}`
-          : digits.length === 11 && digits.startsWith("1")
-            ? `+${digits}`
-            : String(toNumber).trim();
-      }
+      // Get all phone format variants to try for lookup (handles format mismatches)
+      const phoneVariants = getPhoneVariantsForLookup(toNumber);
+      const normalizedToNumber = normalizePhoneForLookup(toNumber);
 
       console.log("📞 [call_ended] parsed values:", {
         agentId,
@@ -6583,25 +6679,41 @@ const retellWebhookHandler = async (req, res) => {
         disposition,
         hasTranscript: transcript.length > 0,
         toNumber: normalizedToNumber,
+        phoneVariants,
         fromNumber,
       });
 
-      // PRIMARY: Look up by phone_number (most reliable)
+      // PRIMARY: Look up by phone_number using ALL format variants (most reliable)
       // FALLBACK: Look up by agent_id if phone lookup fails
       let agentRow = null;
       let lookupMethod = null;
 
-      // Try phone number first
-      if (normalizedToNumber) {
-        const { data: phoneRow } = await supabaseAdmin
+      // Try phone number first - use .in() with all variants for broader matching
+      if (phoneVariants.length > 0) {
+        const { data: phoneRow, error: phoneErr } = await supabaseAdmin
           .from("agents")
           .select("user_id, agent_id, phone_number, post_call_sms_enabled, post_call_sms_template, post_call_sms_delay_seconds")
-          .eq("phone_number", normalizedToNumber)
+          .in("phone_number", phoneVariants)
+          .limit(1)
           .maybeSingle();
+        
+        if (phoneErr) {
+          console.error("📞 [call_ended] Phone lookup error:", phoneErr.message);
+        }
         
         if (phoneRow?.user_id) {
           agentRow = phoneRow;
           lookupMethod = "phone_number";
+          console.log("📞 [call_ended] Phone lookup SUCCESS:", {
+            matchedPhone: phoneRow.phone_number,
+            triedVariants: phoneVariants,
+            user_id: phoneRow.user_id,
+          });
+        } else {
+          console.warn("📞 [call_ended] Phone lookup FAILED - no match for any variant:", {
+            triedVariants: phoneVariants,
+            rawToNumber: toNumber,
+          });
         }
       }
 
@@ -6619,6 +6731,7 @@ const retellWebhookHandler = async (req, res) => {
           console.warn("📞 [call_ended] Found user via agent_id fallback - phone_number mismatch:", {
             expectedPhone: agentIdRow.phone_number,
             receivedPhone: normalizedToNumber,
+            phoneVariantsTried: phoneVariants,
             agentId,
           });
         }
@@ -6626,6 +6739,7 @@ const retellWebhookHandler = async (req, res) => {
 
       console.log("📞 [call_ended] agent lookup result:", {
         toNumber: normalizedToNumber,
+        phoneVariantsTried: phoneVariants,
         agentId,
         found: !!agentRow,
         lookupMethod,
@@ -6728,8 +6842,22 @@ const retellWebhookHandler = async (req, res) => {
       }).select("id").single();
 
       if (leadError) {
+        console.error("📞 [call_ended] LEAD INSERT FAILED:", {
+          user_id: agentRow.user_id,
+          error: leadError.message,
+          leadData: { bestName, bestPhone, leadStatus, durationSeconds },
+        });
         return res.status(500).json({ error: leadError.message });
       }
+
+      console.log("📞 [call_ended] LEAD INSERT SUCCESS:", {
+        lead_id: newLead?.id,
+        user_id: agentRow.user_id,
+        name: bestName,
+        phone: bestPhone,
+        status: leadStatus,
+        duration_seconds: durationSeconds,
+      });
 
       // Send lead_created webhook
       if (newLead?.id) {
@@ -6965,13 +7093,28 @@ const retellWebhookHandler = async (req, res) => {
           nextState = "paused";
         }
 
-        await supabaseAdmin.from("usage_calls").insert({
+        const { error: usageCallsError } = await supabaseAdmin.from("usage_calls").insert({
           user_id: agentRow.user_id,
           agent_id: agentId,
           call_id: callId,
           seconds: durationSeconds,
           cost_cents: 0,
         });
+
+        if (usageCallsError) {
+          console.error("📞 [call_ended] USAGE_CALLS INSERT FAILED:", {
+            user_id: agentRow.user_id,
+            call_id: callId,
+            seconds: durationSeconds,
+            error: usageCallsError.message,
+          });
+        } else {
+          console.log("📞 [call_ended] USAGE_CALLS INSERT SUCCESS:", {
+            user_id: agentRow.user_id,
+            call_id: callId,
+            seconds: durationSeconds,
+          });
+        }
 
         const { error: updateError } = await supabaseAdmin
           .from("usage_limits")
