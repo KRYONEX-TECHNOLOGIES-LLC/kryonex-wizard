@@ -46,7 +46,7 @@ export const TIERS = [
     minutes: 800,
     sms: 3000,
     highlights: [
-      "All Pro features included",
+      "Everything in Pro, plus:",
       "Multi-location support",
       "VIP onboarding call",
       "Priority support",
@@ -64,7 +64,7 @@ export const TIERS = [
     minutes: 3000,
     sms: 5000,
     highlights: [
-      "All Elite features included",
+      "Everything in Elite, plus:",
       "Unlimited locations",
       "Dedicated account manager",
       "White-glove setup",
