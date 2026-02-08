@@ -5653,6 +5653,30 @@ const getCalcomAuthorizeUrl = (userId) => {
   return `https://app.cal.com/auth/oauth2/authorize?${params.toString()}`;
 };
 
+// Debug endpoint to check Cal.com configuration
+app.get("/api/calcom/debug", requireAuth, async (req, res) => {
+  const uid = req.user.id;
+  const { data: integration } = await supabaseAdmin
+    .from("integrations")
+    .select("is_active, booking_url, cal_username, cal_user_id, updated_at")
+    .eq("user_id", uid)
+    .eq("provider", "calcom")
+    .maybeSingle();
+  
+  return res.json({
+    configured: Boolean(CALCOM_CLIENT_ID && CALCOM_CLIENT_SECRET && CALCOM_ENCRYPTION_KEY),
+    redirectUri: calcomRedirectUri,
+    hasIntegration: !!integration,
+    integration: integration ? {
+      is_active: integration.is_active,
+      booking_url: integration.booking_url,
+      cal_username: integration.cal_username,
+      cal_user_id: integration.cal_user_id,
+      updated_at: integration.updated_at,
+    } : null,
+  });
+});
+
 app.get("/api/calcom/authorize", requireAuth, (req, res) => {
   try {
     const url = getCalcomAuthorizeUrl(req.user.id);
@@ -5674,19 +5698,39 @@ app.get("/api/calcom/authorize-url", requireAuth, (req, res) => {
 app.get("/api/calcom/callback", async (req, res) => {
   const code = req.query.code;
   const state = req.query.state;
+  const error = req.query.error;
+  
+  console.log("[calcom-callback] Received callback:", { 
+    hasCode: !!code, 
+    hasState: !!state, 
+    error,
+    redirectUri: calcomRedirectUri 
+  });
+  
+  if (error) {
+    console.error("[calcom-callback] OAuth error from Cal.com:", error);
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=${encodeURIComponent(error)}`);
+  }
   if (!code) {
-    return res.status(400).send("Missing code");
+    console.error("[calcom-callback] Missing code");
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=missing_code`);
   }
   if (!CALCOM_CLIENT_ID || !CALCOM_CLIENT_SECRET) {
-    return res.status(500).send("Missing Cal.com OAuth credentials");
+    console.error("[calcom-callback] Missing Cal.com OAuth credentials");
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=missing_credentials`);
   }
   if (!CALCOM_ENCRYPTION_KEY) {
-    return res.status(500).send("Missing CALCOM_ENCRYPTION_KEY");
+    console.error("[calcom-callback] Missing CALCOM_ENCRYPTION_KEY");
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=missing_encryption_key`);
   }
   const stateData = verifyCalcomState(state);
   if (!stateData?.userId) {
-    return res.status(400).send("Invalid state");
+    console.error("[calcom-callback] Invalid state:", state);
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=invalid_state`);
   }
+  
+  console.log("[calcom-callback] Valid state for user:", stateData.userId);
+  
   try {
     const tokenResponse = await axios.post(
       "https://app.cal.com/api/auth/oauth/token",
@@ -5698,6 +5742,8 @@ app.get("/api/calcom/callback", async (req, res) => {
         redirect_uri: calcomRedirectUri,
       }
     );
+    
+    console.log("[calcom-callback] Token exchange successful");
     const accessToken = tokenResponse.data?.access_token;
     const refreshToken = tokenResponse.data?.refresh_token;
     if (!accessToken) {
@@ -5771,37 +5817,48 @@ app.get("/api/calcom/callback", async (req, res) => {
       bookingUrl = null;
     }
 
-    await supabaseAdmin.from("integrations").upsert(
-      {
-        user_id: stateData.userId,
-        provider: "calcom",
-        access_token: encryptCalcomToken(accessToken),
-        refresh_token: refreshToken
-          ? encryptCalcomToken(refreshToken)
-          : null,
-        is_active: true,
-        booking_url: bookingUrl,
-        event_type_id: eventType?.id || null,
-        event_type_slug: eventType?.slug || null,
-        cal_username:
-          eventType?.profile?.username ||
-          eventType?.owner?.username ||
-          eventType?.users?.[0]?.username ||
-          null,
-        cal_team_slug: eventType?.team?.slug || null,
-        cal_organization_slug: eventType?.organization?.slug || null,
-        cal_time_zone: eventType?.timeZone || null,
-        // Store Cal.com user ID for better webhook resolution
-        cal_user_id: calUserId ? String(calUserId) : null,
-        updated_at: new Date().toISOString(),
-      },
+    const upsertData = {
+      user_id: stateData.userId,
+      provider: "calcom",
+      access_token: encryptCalcomToken(accessToken),
+      refresh_token: refreshToken
+        ? encryptCalcomToken(refreshToken)
+        : null,
+      is_active: true,
+      booking_url: bookingUrl,
+      event_type_id: eventType?.id || null,
+      event_type_slug: eventType?.slug || null,
+      cal_username:
+        eventType?.profile?.username ||
+        eventType?.owner?.username ||
+        eventType?.users?.[0]?.username ||
+        null,
+      cal_team_slug: eventType?.team?.slug || null,
+      cal_organization_slug: eventType?.organization?.slug || null,
+      cal_time_zone: eventType?.timeZone || null,
+      // Store Cal.com user ID for better webhook resolution
+      cal_user_id: calUserId ? String(calUserId) : null,
+      updated_at: new Date().toISOString(),
+    };
+    
+    const { error: upsertError } = await supabaseAdmin.from("integrations").upsert(
+      upsertData,
       { onConflict: "user_id,provider" }
     );
+    
+    if (upsertError) {
+      console.error("[calcom-callback] Upsert failed:", upsertError);
+      return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=db_error`);
+    }
+    
+    console.log("[calcom-callback] Successfully saved integration for user:", stateData.userId, { bookingUrl, calUserId });
+    
     return res.redirect(
       `${FRONTEND_URL}/dashboard?cal_status=success&status=success`
     );
   } catch (err) {
-    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&status=error`);
+    console.error("[calcom-callback] Error:", err.response?.data || err.message);
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=${encodeURIComponent(err.message)}`);
   }
 });
 
