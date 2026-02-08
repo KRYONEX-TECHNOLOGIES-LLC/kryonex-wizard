@@ -109,7 +109,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           return;
         }
         window.localStorage.setItem("kryonex_admin_mode", "user");
-        navigate("/wizard");
+        navigate("/dashboard");
       }
       if (mounted) setCheckingSession(false);
     };
@@ -262,7 +262,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
       return;
     }
     window.localStorage.setItem("kryonex_admin_mode", "user");
-    navigate("/wizard");
+    navigate("/dashboard");
   };
 
   const handleResendConfirmation = async () => {
@@ -330,7 +330,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
     setNotice("Password updated. Signing you in…");
     window.localStorage.setItem("kryonex_admin_mode", "user");
-    navigate("/wizard");
+    navigate("/dashboard");
   };
 
   return (
