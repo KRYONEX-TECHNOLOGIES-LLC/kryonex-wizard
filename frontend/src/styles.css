@@ -2269,6 +2269,8 @@ select option {
   grid-column: span 4;
   padding: 1.4rem;
   border-radius: 18px;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .calendar-connection-card {
@@ -2422,6 +2424,8 @@ select option {
   display: flex;
   gap: 0.8rem;
   font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
   color: rgba(255, 255, 255, 0.7);
   padding: 0.5rem 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -3870,6 +3874,8 @@ select option {
   font-size: 0.85rem;
   color: rgba(255, 255, 255, 0.8);
   margin-bottom: 0.25rem;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .feed-item-sentiment {

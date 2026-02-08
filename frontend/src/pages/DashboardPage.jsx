@@ -152,26 +152,33 @@ export default function DashboardPage() {
               "Operator";
             setUserLabel(label);
           }
-          const { data: agent } = await supabase
-            .from("agents")
-            .select("phone_number, is_active, created_at, sms_approved")
-            .eq("user_id", user.id)
-            .order("created_at", { ascending: false })
-            .maybeSingle();
-          if (mounted && agent) {
-            setAgentProfile({
-              phone_number: agent.phone_number || "",
-              is_active: agent.is_active !== false,
-            });
-            // Show SMS pending banner if agent is new (within 2 weeks) and not yet approved
-            if (agent.phone_number && !agent.sms_approved) {
-              const createdAt = agent.created_at ? new Date(agent.created_at) : null;
-              const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-              if (!createdAt || createdAt > twoWeeksAgo) {
-                setSmsApprovalPending(true);
+          const fetchAgent = async (retryCount = 0) => {
+            const { data: agent } = await supabase
+              .from("agents")
+              .select("phone_number, is_active, created_at, sms_approved")
+              .eq("user_id", user.id)
+              .order("created_at", { ascending: false })
+              .maybeSingle();
+            
+            if (mounted && agent) {
+              setAgentProfile({
+                phone_number: agent.phone_number || "",
+                is_active: agent.is_active !== false,
+              });
+              // Show SMS pending banner if agent is new (within 2 weeks) and not yet approved
+              if (agent.phone_number && !agent.sms_approved) {
+                const createdAt = agent.created_at ? new Date(agent.created_at) : null;
+                const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+                if (!createdAt || createdAt > twoWeeksAgo) {
+                  setSmsApprovalPending(true);
+                }
               }
+            } else if (mounted && !agent && retryCount < 3) {
+              // Retry a few times for freshly deployed agents
+              setTimeout(() => fetchAgent(retryCount + 1), 2000);
             }
-          }
+          };
+          await fetchAgent();
         }
       } catch (err) {
         if (mounted) {
