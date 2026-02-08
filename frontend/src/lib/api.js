@@ -106,6 +106,7 @@ function getUserFriendlyMessage(error) {
 
 export const deployAgent = (data) => api.post("/deploy-agent", data);
 export const getStats = () => api.get("/api/dashboard/stats");
+export const getPrimaryNumber = () => api.get("/api/primary-number");
 export const getEnhancedStats = () => api.get("/api/dashboard/stats-enhanced");
 export const getDashboardROI = () => api.get("/api/dashboard/roi");
 export const getHealthScore = () => api.get("/api/health-score");

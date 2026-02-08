@@ -11,6 +11,7 @@ import {
   disconnectCalcom,
   getEnhancedStats,
   getWebhooks,
+  getPrimaryNumber,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { getImpersonation, clearImpersonation } from "../lib/impersonation";
@@ -207,16 +208,17 @@ export default function DashboardPage() {
       }
     };
 
-    // Load API data (stats, leads, subscription, usage)
+    // Load API data (stats, leads, subscription, usage, primary number from backend)
     const loadApiData = async (isInitial = false) => {
       try {
-        const [statsRes, enhancedRes, leadsRes, subRes, usageRes, webhooksRes] = await Promise.all([
+        const [statsRes, enhancedRes, leadsRes, subRes, usageRes, webhooksRes, primaryRes] = await Promise.all([
           getStats(),
           getEnhancedStats().catch(() => ({ data: {} })),
           getLeads(),
           getSubscriptionStatus(),
           getUsageStatus(),
           getWebhooks().catch(() => ({ data: { webhooks: [] } })),
+          getPrimaryNumber().catch(() => ({ data: {} })),
         ]);
         if (mounted) {
           setStats(statsRes.data);
@@ -230,6 +232,14 @@ export default function DashboardPage() {
           setUsage(usageRes.data || null);
           setLastUpdated(new Date());
           setLoadError(null); // Clear any previous errors on success
+          // Primary line from backend (bypasses RLS) - so green box always shows number
+          if (primaryRes?.data?.phone_number) {
+            setAgentProfile(prev => ({
+              ...prev,
+              phone_number: primaryRes.data.phone_number,
+              is_active: primaryRes.data.is_active !== false,
+            }));
+          }
         }
       } catch (err) {
         if (mounted) {

@@ -7913,6 +7913,27 @@ app.get("/api/dashboard/stats-enhanced", requireAuth, resolveEffectiveUser, asyn
   }
 });
 
+// Primary line number - backend read (bypasses RLS); dashboard uses this so green box always shows
+app.get("/api/primary-number", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const { data: agents } = await supabaseAdmin
+      .from("agents")
+      .select("phone_number, is_active, created_at")
+      .eq("user_id", uid)
+      .order("created_at", { ascending: false });
+    const withNumber = (agents || []).find((a) => a.phone_number);
+    const agent = withNumber || (agents && agents[0]) || null;
+    return res.json({
+      phone_number: agent?.phone_number || null,
+      is_active: agent?.is_active !== false,
+    });
+  } catch (err) {
+    console.error("[primary-number] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ROI Dashboard - calculate value generated for customer
 app.get(
   "/api/dashboard/roi",
@@ -14616,7 +14637,8 @@ Business Variables:
     });
     throw phoneErr;
   }
-  const phoneNumber = phoneResponse.data.phone_number || phoneResponse.data.number;
+  const rawPhone = phoneResponse.data.phone_number || phoneResponse.data.number;
+  const phoneNumber = normalizePhoneE164(rawPhone) || normalizePhoneForLookup(rawPhone) || String(rawPhone || "").trim();
 
   // CRITICAL: Validate required fields before insert to prevent attribution issues
   if (!agentId) {
@@ -14628,7 +14650,7 @@ Business Variables:
     throw new Error("Agent creation failed: missing phone_number");
   }
 
-  // Use upsert on user_id to handle re-deploys gracefully
+  // Use upsert on user_id to handle re-deploys gracefully (phone_number in E.164 for call_ended lookup)
   const { error: upsertError } = await supabaseAdmin.from("agents").upsert({
     user_id: userId,
     agent_id: agentId,
@@ -14776,14 +14798,17 @@ const provisionPhoneNumberOnly = async ({
     throw err;
   }
   
-  const phoneNumber = phoneResponse.data?.phone_number || phoneResponse.data?.number;
-  if (!phoneNumber) {
+  const rawPhone = phoneResponse.data?.phone_number || phoneResponse.data?.number;
+  if (!rawPhone) {
     throw new Error("Retell create-phone-number did not return phone_number");
   }
+  // Normalize to E.164 so call_ended lookup always matches
+  const phoneNumber = normalizePhoneE164(rawPhone) || normalizePhoneForLookup(rawPhone) || String(rawPhone).trim();
   
   console.info("[provisionAgent] phone number created and linked to master", {
     deployRequestId: reqId,
     phone_number: phoneNumber,
+    raw_from_retell: rawPhone,
     masterAgentId,
     industry,
   });
@@ -14805,7 +14830,7 @@ const provisionPhoneNumberOnly = async ({
   
   const agentRow = {
     agent_id: masterAgentId,  // Reference to master (tracking uses phone_number)
-    phone_number: phoneNumber,  // THIS IS THE GOLDEN KEY FOR TRACKING
+    phone_number: phoneNumber,  // E.164 so call_ended lookup matches
     voice_id: null,
     llm_id: null,
     prompt: null,
