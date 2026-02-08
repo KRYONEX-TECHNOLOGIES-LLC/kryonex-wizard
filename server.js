@@ -2506,36 +2506,54 @@ app.post(
               usageRow = created || null;
             }
             if (usageRow) {
+              // TOP-UP FIX: Add to credit fields, NOT cap fields
+              // Credit fields persist across billing resets and ADD to existing balance
               const addedCallSeconds = Math.max(0, extraMinutes) * 60;
               const addedSms = Math.max(0, extraSms);
-              const nextCallCap =
-                (usageRow.call_cap_seconds || 0) + addedCallSeconds;
-              const nextSmsCap = (usageRow.sms_cap || 0) + addedSms;
-              const graceSeconds = usageRow.grace_seconds ?? 600;
-              const underCapPlusGrace =
-                (usageRow.call_used_seconds || 0) <=
-                  nextCallCap + graceSeconds &&
-                (usageRow.sms_used || 0) <= nextSmsCap;
+              
+              // Add to existing credits (stacks with any previous top-ups)
+              const newCallCredit = (usageRow.call_credit_seconds || 0) + addedCallSeconds;
+              const newSmsCredit = (usageRow.sms_credit || 0) + addedSms;
+              
+              // Calculate new total available for hard_stop check
+              const totalAvailable = 
+                (usageRow.call_cap_seconds || 0) + 
+                newCallCredit + 
+                (usageRow.rollover_seconds || 0) +
+                (usageRow.grace_seconds ?? 600);
+              const totalSmsAvailable = (usageRow.sms_cap || 0) + newSmsCredit;
+              
+              const underLimit =
+                (usageRow.call_used_seconds || 0) <= totalAvailable &&
+                (usageRow.sms_used || 0) <= totalSmsAvailable;
+              
               await supabaseAdmin
                 .from("usage_limits")
                 .update({
-                  call_cap_seconds: nextCallCap,
-                  sms_cap: nextSmsCap,
+                  // ADD to credit fields (persists across resets, stacks with existing)
+                  call_credit_seconds: newCallCredit,
+                  sms_credit: newSmsCredit,
+                  // Unlock the account if they were paused
                   limit_state: "ok",
                   force_pause: false,
-                  hard_stop_active: usageRow.hard_stop_active
-                    ? !underCapPlusGrace
-                    : usageRow.hard_stop_active,
+                  force_resume: true,
+                  // Clear hard stop if they're now under limit
+                  hard_stop_active: underLimit ? false : (usageRow.hard_stop_active ?? false),
                   updated_at: new Date().toISOString(),
                 })
                 .eq("user_id", userId);
-              console.info("[stripe-webhook] topup applied", {
+              
+              console.info("[stripe-webhook] topup applied (CREDIT)", {
                 user_id: userId,
                 topup_type: session.metadata?.topup_type || null,
                 extra_minutes: extraMinutes,
                 extra_sms: extraSms,
-                new_call_cap_seconds: nextCallCap,
-                new_sms_cap: nextSmsCap,
+                previous_call_credit: usageRow.call_credit_seconds || 0,
+                new_call_credit: newCallCredit,
+                previous_sms_credit: usageRow.sms_credit || 0,
+                new_sms_credit: newSmsCredit,
+                total_minutes_now: Math.ceil(((usageRow.call_cap_seconds || 0) + newCallCredit + (usageRow.rollover_seconds || 0)) / 60),
+                total_sms_now: (usageRow.sms_cap || 0) + newSmsCredit,
               });
             }
             await auditLog({
