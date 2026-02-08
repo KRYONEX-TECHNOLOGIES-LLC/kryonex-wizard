@@ -28,11 +28,11 @@ export const TIERS = [
     sms: 1000,
     popular: true,
     highlights: [
-      "Everything in Core, plus:",
+      "Instant call answering (0 rings)",
       "After-hours emergency triage",
       "Call recordings + transcripts",
       "Emergency call transfers",
-      "Lead qualification",
+      "Lead qualification + booking",
     ],
   },
   {
@@ -46,7 +46,7 @@ export const TIERS = [
     minutes: 800,
     sms: 3000,
     highlights: [
-      "Everything in Pro, plus:",
+      "All Pro features included",
       "Multi-location support",
       "VIP onboarding call",
       "Priority support",
@@ -64,7 +64,7 @@ export const TIERS = [
     minutes: 3000,
     sms: 5000,
     highlights: [
-      "Everything in Elite, plus:",
+      "All Elite features included",
       "Unlimited locations",
       "Dedicated account manager",
       "White-glove setup",
