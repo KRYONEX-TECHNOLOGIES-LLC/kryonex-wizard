@@ -9,12 +9,34 @@ export default function ProtectedRoute({ children }) {
 
   React.useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (mounted) {
-        setSession(data.session || null);
+    
+    // Timeout to prevent infinite loading
+    const timeout = setTimeout(() => {
+      if (mounted && checking) {
+        console.warn("[ProtectedRoute] Session check timed out");
         setChecking(false);
+        setSession(null);
+      }
+    }, 5000);
+    
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        console.error("[ProtectedRoute] Session error:", error);
+      }
+      if (mounted) {
+        setSession(data?.session || null);
+        setChecking(false);
+        clearTimeout(timeout);
+      }
+    }).catch((err) => {
+      console.error("[ProtectedRoute] getSession failed:", err);
+      if (mounted) {
+        setSession(null);
+        setChecking(false);
+        clearTimeout(timeout);
       }
     });
+    
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, newSession) => {
         if (mounted) {
@@ -24,6 +46,7 @@ export default function ProtectedRoute({ children }) {
     );
     return () => {
       mounted = false;
+      clearTimeout(timeout);
       listener?.subscription?.unsubscribe();
     };
   }, []);

@@ -77,45 +77,82 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
   React.useEffect(() => {
     if (embeddedMode) return;
     let mounted = true;
+    
+    // Timeout to prevent infinite AUTHORIZING... screen
+    const timeout = setTimeout(() => {
+      if (mounted) {
+        console.warn("[Login] Bootstrap timed out after 8s");
+        setCheckingSession(false);
+      }
+    }, 8000);
+
     const bootstrap = async () => {
-      const isRecovery = window.location.hash.includes("type=recovery");
-      if (isRecovery) setRecoveryMode(true);
-      const { data } = await supabase.auth.getSession();
-      if (mounted && data?.session && !isRecovery) {
-        if (adminCode) {
+      try {
+        const isRecovery = window.location.hash.includes("type=recovery");
+        if (isRecovery) {
+          setRecoveryMode(true);
+          if (mounted) setCheckingSession(false);
+          clearTimeout(timeout);
+          return;
+        }
+        
+        const { data, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          console.error("[Login] Session error:", sessionError);
+          if (mounted) setCheckingSession(false);
+          clearTimeout(timeout);
+          return;
+        }
+        
+        if (mounted && data?.session) {
+          if (adminCode) {
+            try {
+              const response = await autoGrantAdmin(adminCode);
+              if (response.data?.ok) {
+                window.localStorage.setItem("kryonex_admin_mode", "admin");
+                navigate("/admin");
+                clearTimeout(timeout);
+                return;
+              }
+            } catch (err) {
+              // not admin
+            }
+          }
           try {
-            const response = await autoGrantAdmin(adminCode);
-            if (response.data?.ok) {
+            const { data: profile } = await supabase
+              .from("profiles")
+              .select("role")
+              .eq("user_id", data.session.user.id)
+              .maybeSingle();
+            if (profile?.role === "admin") {
               window.localStorage.setItem("kryonex_admin_mode", "admin");
               navigate("/admin");
+              clearTimeout(timeout);
               return;
             }
-          } catch (err) {
-            // not admin
+            if (profile?.role === "seller") {
+              navigate("/console/dialer");
+              clearTimeout(timeout);
+              return;
+            }
+          } catch (profileErr) {
+            console.error("[Login] Profile fetch error:", profileErr);
           }
-        }
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", data.session.user.id)
-          .maybeSingle();
-        if (profile?.role === "admin") {
-          window.localStorage.setItem("kryonex_admin_mode", "admin");
-          navigate("/admin");
+          window.localStorage.setItem("kryonex_admin_mode", "user");
+          navigate("/dashboard");
+          clearTimeout(timeout);
           return;
         }
-        if (profile?.role === "seller") {
-          navigate("/console/dialer");
-          return;
-        }
-        window.localStorage.setItem("kryonex_admin_mode", "user");
-        navigate("/dashboard");
+      } catch (err) {
+        console.error("[Login] Bootstrap error:", err);
       }
       if (mounted) setCheckingSession(false);
+      clearTimeout(timeout);
     };
     bootstrap();
     return () => {
       mounted = false;
+      clearTimeout(timeout);
     };
   }, [navigate, embeddedMode]);
 
