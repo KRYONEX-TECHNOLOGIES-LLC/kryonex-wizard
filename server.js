@@ -11883,7 +11883,7 @@ app.post(
       };
 
       const retellResponse = await retellClient.post(
-        "/create-phone-call",
+        "/v2/create-phone-call",
         payload
       );
 
