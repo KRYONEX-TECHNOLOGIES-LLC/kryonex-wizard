@@ -4259,6 +4259,14 @@ const requireAuth = async (req, res, next) => {
 
     const { data, error } = await supabaseAdmin.auth.getUser(token);
     if (error || !data || !data.user) {
+      console.warn("[requireAuth] Token validation failed:", {
+        hasError: !!error,
+        errorMessage: error?.message,
+        errorStatus: error?.status,
+        hasData: !!data,
+        hasUser: !!data?.user,
+        tokenPreview: token ? `${token.substring(0, 20)}...` : "none",
+      });
       return res.status(401).json({ error: "Invalid auth token" });
     }
 

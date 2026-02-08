@@ -34,7 +34,28 @@ api.interceptors.request.use(async (config) => {
 // Response interceptor for consistent error handling
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const originalRequest = error.config;
+    
+    // On 401, try refreshing the session once
+    if (error.response?.status === 401 && !originalRequest._retry && typeof window !== "undefined") {
+      originalRequest._retry = true;
+      console.warn("[API] Auth error (401) - attempting session refresh");
+      
+      try {
+        // Try to refresh the session
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+        if (!refreshError && refreshData?.session) {
+          console.log("[API] Session refreshed successfully, retrying request");
+          // Update the Authorization header with the new token
+          originalRequest.headers.Authorization = `Bearer ${refreshData.session.access_token}`;
+          return api(originalRequest);
+        }
+      } catch (refreshErr) {
+        console.warn("[API] Session refresh failed:", refreshErr.message);
+      }
+    }
+    
     // Transform error for consistent handling across the app
     const enhancedError = {
       ...error,
@@ -52,12 +73,6 @@ api.interceptors.response.use(
         status: error.response?.status,
         message: error.response?.data?.error || error.message,
       });
-    }
-    
-    // Log auth errors but DON'T auto-redirect - let the page handle it
-    // Auto-redirect was causing infinite loops with impersonation
-    if (error.response?.status === 401 && typeof window !== "undefined") {
-      console.warn("[API] Auth error (401) - session may be expired or impersonation invalid");
     }
     
     return Promise.reject(enhancedError);
