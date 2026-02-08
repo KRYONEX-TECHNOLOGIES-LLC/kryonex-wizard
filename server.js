@@ -2749,15 +2749,65 @@ app.post(
 
         if (event.type === "customer.subscription.updated") {
           const subscription = event.data.object;
-          await supabaseAdmin
+          const priceId = subscription.items.data?.[0]?.price?.id;
+          const newTier = resolvePlanTierFromPriceId(priceId);
+          const caps = newTier ? getPlanCaps(newTier) : null;
+
+          console.log("[stripe-webhook] subscription.updated:", {
+            customer_id: subscription.customer,
+            price_id: priceId,
+            resolved_tier: newTier,
+            caps: caps,
+            status: subscription.status,
+          });
+
+          // Update subscription with plan_type if we can resolve it
+          const { data: subRow } = await supabaseAdmin
             .from("subscriptions")
             .update({
               status: subscription.status,
+              plan_type: newTier || undefined,
               current_period_end: new Date(
                 subscription.current_period_end * 1000
               ).toISOString(),
             })
-            .eq("customer_id", subscription.customer);
+            .eq("customer_id", subscription.customer)
+            .select("user_id")
+            .maybeSingle();
+
+          // CRITICAL: Sync usage caps when plan changes
+          if (caps && subRow?.user_id) {
+            const { error: capsError } = await supabaseAdmin
+              .from("usage_limits")
+              .update({
+                call_cap_seconds: caps.minutesCap * 60,
+                sms_cap: caps.smsCap,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("user_id", subRow.user_id);
+
+            console.log("[stripe-webhook] Synced usage caps for plan change:", {
+              user_id: subRow.user_id,
+              new_tier: newTier,
+              new_cap_minutes: caps.minutesCap,
+              new_sms_cap: caps.smsCap,
+              error: capsError?.message || null,
+            });
+
+            await auditLog({
+              userId: subRow.user_id,
+              action: "usage_caps_synced",
+              entity: "usage_limits",
+              entityId: subRow.user_id,
+              req,
+              metadata: {
+                new_tier: newTier,
+                new_cap_minutes: caps.minutesCap,
+                new_sms_cap: caps.smsCap,
+                trigger: "subscription.updated",
+              },
+            });
+          }
         }
 
         if (event.type === "customer.subscription.deleted") {
@@ -6288,17 +6338,22 @@ const retellWebhookHandler = async (req, res) => {
       payload.event_type || payload.event || payload.type || "unknown";
     const call = payload.call || payload.data || {};
 
-    // Debug logging - see exactly what Retell sends
-    console.log("📞 [retell-webhook] received:", {
-      eventType,
+    // COMPREHENSIVE RAW LOGGING - Log EVERY webhook with full details for debugging
+    console.log("📞 [RETELL RAW] Event received:", {
+      timestamp: new Date().toISOString(),
+      event_type: eventType,
       call_id: call.call_id || payload.call_id,
       agent_id: call.agent_id || payload.agent_id,
-      duration_ms: call.duration_ms || payload.duration_ms,
-      duration_seconds: call.duration_seconds || payload.duration_seconds,
       from_number: call.from_number || payload.from_number,
       to_number: call.to_number || payload.to_number,
+      duration_ms: call.duration_ms || payload.duration_ms,
+      duration_seconds: call.duration_seconds || payload.duration_seconds,
+      direction: call.direction || payload.direction,
+      disconnection_reason: call.disconnection_reason || payload.disconnection_reason,
+      call_status: call.call_status || payload.call_status || call.status || payload.status,
       payload_keys: Object.keys(payload),
       call_keys: Object.keys(call),
+      raw_payload_preview: JSON.stringify(payload).substring(0, 800),
     });
 
     if (eventType === "call_started" || eventType === "call_initiated") {
@@ -6338,6 +6393,20 @@ const retellWebhookHandler = async (req, res) => {
           agentRow = agentIdRow;
           console.warn("📞 [call_started] Found user via agent_id fallback");
         }
+      }
+
+      // LOG ERROR if we couldn't map the call to a user
+      if (!agentRow?.user_id) {
+        console.error("📞 [RETELL MAPPING ERROR] Could not find user for call_started:", {
+          normalized_to_number: normalizedToNumber,
+          raw_to_number: toNumber,
+          agent_id: agentId,
+          event_type: eventType,
+          call_id: callId,
+          timestamp: new Date().toISOString(),
+        });
+        // Return 200 to avoid Retell retries, but call won't be tracked
+        return res.status(200).json({ warning: "User not found for phone/agent" });
       }
 
       if (agentRow?.user_id) {
@@ -6916,11 +6985,23 @@ const retellWebhookHandler = async (req, res) => {
           })
           .eq("user_id", agentRow.user_id);
 
-        console.log("📞 [call_ended] usage_limits updated:", {
+        // ENHANCED USAGE LOGGING - Track every usage update for debugging
+        console.log("📞 [USAGE UPDATE SUCCESS]", {
           user_id: agentRow.user_id,
-          newCallUsedSeconds: updatedUsed,
-          newCallUsedMinutes: Math.ceil(updatedUsed / 60),
-          error: updateError?.message || null,
+          call_id: callId,
+          previous_seconds: usage.call_used_seconds || 0,
+          previous_minutes: Math.ceil((usage.call_used_seconds || 0) / 60),
+          added_seconds: durationSeconds,
+          added_minutes: Math.ceil(durationSeconds / 60),
+          new_total_seconds: updatedUsed,
+          new_total_minutes: Math.ceil(updatedUsed / 60),
+          cap_seconds: usage.call_cap_seconds || 0,
+          cap_minutes: Math.ceil((usage.call_cap_seconds || 0) / 60),
+          remaining_seconds: remaining,
+          remaining_minutes: Math.ceil(remaining / 60),
+          limit_state: nextState,
+          update_error: updateError?.message || null,
+          timestamp: new Date().toISOString(),
         });
 
         await supabaseAdmin.from("usage_snapshots").insert({
@@ -6987,10 +7068,54 @@ const retellWebhookHandler = async (req, res) => {
       });
     }
 
+    // Handle call.transferred events for tracking
+    if (eventType === "call_transferred" || eventType === "call.transferred") {
+      const agentId = call.agent_id || payload.agent_id;
+      const callId = call.call_id || payload.call_id;
+      const transferTarget = call.transfer_to || payload.transfer_to || call.forwarded_to || payload.forwarded_to;
+      
+      console.log("📞 [call_transferred] Transfer event:", {
+        agent_id: agentId,
+        call_id: callId,
+        transfer_target: transferTarget,
+        timestamp: new Date().toISOString(),
+      });
+      
+      // Log the transfer in audit log if we can find the user
+      if (agentId) {
+        const { data: agentRow } = await supabaseAdmin
+          .from("agents")
+          .select("user_id")
+          .eq("agent_id", agentId)
+          .maybeSingle();
+        
+        if (agentRow?.user_id) {
+          await logEvent({
+            userId: agentRow.user_id,
+            actionType: "CALL_TRANSFERRED",
+            req,
+            metaData: {
+              call_id: callId,
+              agent_id: agentId,
+              transfer_target: transferTarget,
+            },
+          });
+        }
+      }
+      return res.json({ received: true, event: "call_transferred" });
+    }
+
     if (eventType === "sms_received") {
       const agentId = payload.agent_id || call.agent_id;
       const body = payload.body || call.body || payload.message || "";
       const fromNumber = payload.from || call.from || payload.from_number;
+
+      console.log("📱 [sms_received] Inbound SMS:", {
+        agent_id: agentId,
+        from_number: fromNumber,
+        body_preview: body?.substring(0, 100),
+        timestamp: new Date().toISOString(),
+      });
 
       const { data: agentRow, error: agentError } = await supabaseAdmin
         .from("agents")
@@ -16214,6 +16339,294 @@ app.post(
     return res.json({ ok: true });
   }
 );
+
+// ============================================
+// DEBUG ENDPOINTS - For troubleshooting usage tracking
+// ============================================
+
+// GET /debug/user-state - Full user diagnostics (works for any authenticated user)
+app.get(
+  "/debug/user-state",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "debug-user", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const uid = req.effectiveUserId ?? req.user.id;
+
+      const [subResult, usageResult, agentsResult, leadsResult, callsResult, smsResult] = await Promise.all([
+        supabaseAdmin.from("subscriptions").select("*").eq("user_id", uid).maybeSingle(),
+        supabaseAdmin.from("usage_limits").select("*").eq("user_id", uid).maybeSingle(),
+        supabaseAdmin.from("agents").select("agent_id, phone_number, is_active, created_at").eq("user_id", uid).order("created_at", { ascending: false }).limit(5),
+        supabaseAdmin.from("leads").select("id, name, phone, status, call_duration_seconds, created_at").eq("user_id", uid).order("created_at", { ascending: false }).limit(10),
+        supabaseAdmin.from("usage_calls").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(10),
+        supabaseAdmin.from("sms_messages").select("id, direction, to_number, from_number, created_at").eq("user_id", uid).order("created_at", { ascending: false }).limit(10),
+      ]);
+
+      const usage = usageResult.data;
+      
+      return res.json({
+        user_id: uid,
+        subscription: subResult.data,
+        usage_limits: usage ? {
+          ...usage,
+          cap_minutes: Math.floor((usage.call_cap_seconds || 0) / 60),
+          used_minutes: Math.floor((usage.call_used_seconds || 0) / 60),
+          remaining_minutes: Math.floor(Math.max(0, (usage.call_cap_seconds || 0) - (usage.call_used_seconds || 0)) / 60),
+        } : null,
+        agents: agentsResult.data || [],
+        recent_leads: leadsResult.data || [],
+        recent_usage_calls: callsResult.data || [],
+        recent_sms: smsResult.data || [],
+        system: {
+          last_retell_webhook: lastRetellWebhookAt || "never",
+          last_stripe_webhook: lastStripeWebhookAt || "never",
+          server_time: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      console.error("[debug/user-state] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// POST /admin/sync-user-caps - Manually sync a user's usage caps based on their subscription tier
+app.post(
+  "/admin/sync-user-caps",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-sync-caps", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { user_id } = req.body || {};
+      if (!user_id) {
+        return res.status(400).json({ error: "user_id is required" });
+      }
+
+      // Get the user's subscription
+      const { data: sub } = await supabaseAdmin
+        .from("subscriptions")
+        .select("plan_type")
+        .eq("user_id", user_id)
+        .maybeSingle();
+
+      const tier = sub?.plan_type || "core";
+      const caps = getPlanCaps(tier);
+
+      // Check if usage_limits row exists
+      const { data: existingUsage } = await supabaseAdmin
+        .from("usage_limits")
+        .select("id")
+        .eq("user_id", user_id)
+        .maybeSingle();
+
+      if (existingUsage) {
+        // Update existing row
+        const { error } = await supabaseAdmin
+          .from("usage_limits")
+          .update({
+            call_cap_seconds: caps.minutesCap * 60,
+            sms_cap: caps.smsCap,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", user_id);
+
+        if (error) {
+          return res.status(500).json({ error: error.message });
+        }
+      } else {
+        // Create new row
+        const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        const { error } = await supabaseAdmin
+          .from("usage_limits")
+          .insert({
+            user_id,
+            call_cap_seconds: caps.minutesCap * 60,
+            sms_cap: caps.smsCap,
+            grace_seconds: 600,
+            call_used_seconds: 0,
+            sms_used: 0,
+            period_start: new Date().toISOString(),
+            period_end: periodEnd,
+          });
+
+        if (error) {
+          return res.status(500).json({ error: error.message });
+        }
+      }
+
+      await auditLog({
+        userId: req.user.id,
+        action: "admin_sync_caps",
+        entity: "usage_limits",
+        entityId: user_id,
+        req,
+        metadata: {
+          tier,
+          new_cap_minutes: caps.minutesCap,
+          new_sms_cap: caps.smsCap,
+        },
+      });
+
+      console.log("[admin/sync-user-caps] Synced caps:", {
+        admin_id: req.user.id,
+        target_user_id: user_id,
+        tier,
+        new_cap_minutes: caps.minutesCap,
+        new_sms_cap: caps.smsCap,
+      });
+
+      return res.json({
+        success: true,
+        user_id,
+        tier,
+        new_cap_minutes: caps.minutesCap,
+        new_sms_cap: caps.smsCap,
+        action: existingUsage ? "updated" : "created",
+      });
+    } catch (err) {
+      console.error("[admin/sync-user-caps] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// GET /admin/test-retell-webhook - Check Retell webhook health
+app.get(
+  "/admin/test-retell-webhook",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-retell-test", limit: 30, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      // Check if any leads created in last 24 hours (indicates webhooks working)
+      const { count: recentLeadsCount } = await supabaseAdmin
+        .from("leads")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+
+      // Check recent usage_calls
+      const { count: recentCallsCount } = await supabaseAdmin
+        .from("usage_calls")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+
+      // Get the Railway public domain for expected URL
+      const expectedWebhookUrl = process.env.RAILWAY_PUBLIC_DOMAIN
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/retell-webhook`
+        : `https://kryonex-wizard-production.up.railway.app/retell-webhook`;
+
+      return res.json({
+        retell_configured: Boolean(RETELL_API_KEY),
+        webhook_secret_set: Boolean(RETELL_WEBHOOK_SECRET),
+        last_webhook_received: lastRetellWebhookAt || "never",
+        expected_webhook_url: expectedWebhookUrl,
+        leads_created_last_24h: recentLeadsCount || 0,
+        usage_calls_last_24h: recentCallsCount || 0,
+        status: lastRetellWebhookAt ? "RECEIVING" : "NOT_RECEIVING",
+        recommendation: !lastRetellWebhookAt
+          ? "Check that the webhook URL in Retell dashboard matches: " + expectedWebhookUrl
+          : "Webhooks appear to be working",
+        server_time: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("[admin/test-retell-webhook] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// GET /admin/sync-all-caps - Sync ALL users' caps based on their subscription tier
+app.post(
+  "/admin/sync-all-caps",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-sync-all", limit: 5, windowMs: 300_000 }),
+  async (req, res) => {
+    try {
+      // Get all subscriptions
+      const { data: subs, error: subsError } = await supabaseAdmin
+        .from("subscriptions")
+        .select("user_id, plan_type");
+
+      if (subsError) {
+        return res.status(500).json({ error: subsError.message });
+      }
+
+      const results = { updated: 0, created: 0, errors: [] };
+
+      for (const sub of subs || []) {
+        const tier = sub.plan_type || "core";
+        const caps = getPlanCaps(tier);
+
+        const { data: existing } = await supabaseAdmin
+          .from("usage_limits")
+          .select("id, call_cap_seconds")
+          .eq("user_id", sub.user_id)
+          .maybeSingle();
+
+        if (existing) {
+          // Only update if caps are different
+          if (existing.call_cap_seconds !== caps.minutesCap * 60) {
+            const { error } = await supabaseAdmin
+              .from("usage_limits")
+              .update({
+                call_cap_seconds: caps.minutesCap * 60,
+                sms_cap: caps.smsCap,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("user_id", sub.user_id);
+
+            if (error) {
+              results.errors.push({ user_id: sub.user_id, error: error.message });
+            } else {
+              results.updated++;
+            }
+          }
+        } else {
+          // Create new usage_limits row
+          const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+          const { error } = await supabaseAdmin
+            .from("usage_limits")
+            .insert({
+              user_id: sub.user_id,
+              call_cap_seconds: caps.minutesCap * 60,
+              sms_cap: caps.smsCap,
+              grace_seconds: 600,
+              call_used_seconds: 0,
+              sms_used: 0,
+              period_start: new Date().toISOString(),
+              period_end: periodEnd,
+            });
+
+          if (error) {
+            results.errors.push({ user_id: sub.user_id, error: error.message });
+          } else {
+            results.created++;
+          }
+        }
+      }
+
+      console.log("[admin/sync-all-caps] Completed:", results);
+
+      return res.json({
+        success: true,
+        total_subscriptions: (subs || []).length,
+        updated: results.updated,
+        created: results.created,
+        errors: results.errors,
+      });
+    } catch (err) {
+      console.error("[admin/sync-all-caps] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// ============================================
+// END DEBUG ENDPOINTS
+// ============================================
 
 app.get(
   "/usage/status",

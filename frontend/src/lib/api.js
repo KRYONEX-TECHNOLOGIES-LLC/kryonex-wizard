@@ -23,6 +23,11 @@ api.interceptors.request.use(async (config) => {
       config.headers["X-Impersonated-User-ID"] = userId;
     }
   }
+  // Add cache-busting headers for GET requests to prevent stale data
+  if (config.method === "get" || !config.method) {
+    config.headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+    config.headers["Pragma"] = "no-cache";
+  }
   return config;
 });
 
