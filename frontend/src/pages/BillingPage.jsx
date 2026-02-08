@@ -120,7 +120,7 @@ export default function BillingPage() {
           style={{ textAlign: "center", marginBottom: "2rem" }}
         >
           <p className="mono" style={{ letterSpacing: "0.2rem", color: "#22d3ee", marginBottom: "0.5rem" }}>
-            TIERS & TOP-UPS
+            PRICING & PLANS
           </p>
           <h2 style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>
             Billing Control
