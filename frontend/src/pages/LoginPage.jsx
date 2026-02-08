@@ -109,6 +109,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
             try {
               const response = await autoGrantAdmin(adminCode);
               if (response.data?.ok) {
+                window.localStorage.setItem("kryonex_session_ok", "1");
                 window.localStorage.setItem("kryonex_admin_mode", "admin");
                 navigate("/admin");
                 clearTimeout(timeout);
@@ -125,12 +126,14 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
               .eq("user_id", data.session.user.id)
               .maybeSingle();
             if (profile?.role === "admin") {
+              window.localStorage.setItem("kryonex_session_ok", "1");
               window.localStorage.setItem("kryonex_admin_mode", "admin");
               navigate("/admin");
               clearTimeout(timeout);
               return;
             }
             if (profile?.role === "seller") {
+              window.localStorage.setItem("kryonex_session_ok", "1");
               navigate("/console/dialer");
               clearTimeout(timeout);
               return;
@@ -138,6 +141,8 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           } catch (profileErr) {
             console.error("[Login] Profile fetch error:", profileErr);
           }
+          // Set session_ok flag so ProtectedRoute doesn't sign out
+          window.localStorage.setItem("kryonex_session_ok", "1");
           window.localStorage.setItem("kryonex_admin_mode", "user");
           navigate("/dashboard");
           clearTimeout(timeout);
