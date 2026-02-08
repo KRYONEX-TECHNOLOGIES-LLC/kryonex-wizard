@@ -39,7 +39,6 @@ const {
   FRONTEND_URL,
   APP_URL,
   SERVER_URL,
-  RETELL_WEBHOOK_SECRET,
   RETELL_DEMO_AGENT_ID,
   RETELL_DEMO_FROM_NUMBER,
   RETELL_SMS_SANDBOX,
@@ -6403,10 +6402,13 @@ app.post("/webhooks/calcom", async (req, res) => {
 });
 
 // Helper: Verify Retell webhook signature (HMAC-SHA256)
-const verifyRetellSignature = (rawBody, signature, secret) => {
-  if (!secret) {
-    // If no secret configured, skip verification (development mode)
-    console.warn("[retell-webhook] RETELL_WEBHOOK_SECRET not configured, skipping signature verification");
+// Retell signature format: v=<timestamp>,d=<hmac_hex>
+// Uses the Retell API Key (not a separate webhook secret)
+// Message = body + timestamp
+const verifyRetellSignature = (body, signature, apiKey) => {
+  if (!apiKey) {
+    // If no API key configured, skip verification (should never happen in prod)
+    console.warn("[retell-webhook] RETELL_API_KEY not configured, skipping signature verification");
     return true;
   }
   if (!signature) {
@@ -6415,21 +6417,35 @@ const verifyRetellSignature = (rawBody, signature, secret) => {
   }
   
   try {
-    // Retell uses HMAC-SHA256 with the raw body
-    const expectedSignature = crypto
-      .createHmac("sha256", secret)
-      .update(rawBody, "utf8")
-      .digest("hex");
-    
-    // Use timing-safe comparison to prevent timing attacks
-    const signatureBuffer = Buffer.from(signature, "hex");
-    const expectedBuffer = Buffer.from(expectedSignature, "hex");
-    
-    if (signatureBuffer.length !== expectedBuffer.length) {
+    // Retell signature format: v=<timestamp>,d=<hmac_hex>
+    const match = /v=(\d+),d=(.*)/.exec(signature);
+    if (!match) {
+      console.error("[retell-webhook] Invalid signature format - expected v=timestamp,d=digest, got:", signature?.substring(0, 50));
       return false;
     }
     
-    return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
+    const timestamp = Number(match[1]);
+    const digest = match[2];
+    
+    // Check timestamp is within 5 minutes to prevent replay attacks
+    const FIVE_MINUTES = 5 * 60 * 1000;
+    const now = Date.now();
+    if (Math.abs(now - timestamp) > FIVE_MINUTES) {
+      console.error("[retell-webhook] Signature expired - timestamp:", timestamp, "now:", now, "diff:", Math.abs(now - timestamp));
+      return false;
+    }
+    
+    // Compute expected HMAC: sha256(body + timestamp)
+    const expectedDigest = crypto
+      .createHmac("sha256", apiKey)
+      .update(body + timestamp)
+      .digest("hex");
+    
+    const isValid = digest === expectedDigest;
+    if (!isValid) {
+      console.error("[retell-webhook] Signature mismatch");
+    }
+    return isValid;
   } catch (err) {
     console.error("[retell-webhook] Signature verification error:", err.message);
     trackError({
@@ -6448,8 +6464,9 @@ const retellWebhookHandler = async (req, res) => {
     lastRetellWebhookAt = new Date().toISOString();
     
     // Verify Retell webhook signature for security
+    // Retell uses the API key for signature verification, NOT a separate webhook secret
     const signature = req.headers["x-retell-signature"];
-    if (RETELL_WEBHOOK_SECRET && !verifyRetellSignature(req.rawBody || JSON.stringify(req.body), signature, RETELL_WEBHOOK_SECRET)) {
+    if (RETELL_API_KEY && !verifyRetellSignature(JSON.stringify(req.body), signature, RETELL_API_KEY)) {
       console.error("[retell-webhook] Invalid signature - rejecting request");
       return res.status(401).json({ error: "Invalid webhook signature" });
     }
@@ -10740,6 +10757,11 @@ app.get("/api/webhooks", requireAuth, resolveEffectiveUser, async (req, res) => 
     return res.json({ webhooks: webhooksWithStats });
   } catch (err) {
     console.error("[webhooks GET] error:", err.message);
+    // Graceful fallback if webhook_configs table doesn't exist yet
+    if (err.message?.includes("webhook_configs") || err.message?.includes("does not exist")) {
+      console.warn("[webhooks GET] webhook_configs table not found - returning empty array");
+      return res.json({ webhooks: [] });
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -10791,6 +10813,10 @@ app.post("/api/webhooks", requireAuth, resolveEffectiveUser, async (req, res) =>
     });
   } catch (err) {
     console.error("[webhooks POST] error:", err.message);
+    // Graceful fallback if webhook_configs table doesn't exist yet
+    if (err.message?.includes("webhook_configs") || err.message?.includes("does not exist")) {
+      return res.status(503).json({ error: "Webhook feature not available - database migration required" });
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -10833,6 +10859,10 @@ app.put("/api/webhooks/:id", requireAuth, resolveEffectiveUser, async (req, res)
     });
   } catch (err) {
     console.error("[webhooks PUT] error:", err.message);
+    // Graceful fallback if webhook_configs table doesn't exist yet
+    if (err.message?.includes("webhook_configs") || err.message?.includes("does not exist")) {
+      return res.status(503).json({ error: "Webhook feature not available - database migration required" });
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -10854,6 +10884,10 @@ app.delete("/api/webhooks/:id", requireAuth, resolveEffectiveUser, async (req, r
     return res.json({ ok: true });
   } catch (err) {
     console.error("[webhooks DELETE] error:", err.message);
+    // Graceful fallback if webhook_configs table doesn't exist yet
+    if (err.message?.includes("webhook_configs") || err.message?.includes("does not exist")) {
+      return res.status(503).json({ error: "Webhook feature not available - database migration required" });
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -10947,6 +10981,10 @@ app.post("/api/webhooks/:id/test", requireAuth, resolveEffectiveUser, async (req
     }
   } catch (err) {
     console.error("[webhooks test] error:", err.message);
+    // Graceful fallback if webhook_configs table doesn't exist yet
+    if (err.message?.includes("webhook_configs") || err.message?.includes("does not exist")) {
+      return res.status(503).json({ error: "Webhook feature not available - database migration required" });
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -10982,6 +11020,10 @@ app.get("/api/webhooks/:id/deliveries", requireAuth, resolveEffectiveUser, async
     return res.json({ deliveries: deliveries || [] });
   } catch (err) {
     console.error("[webhook deliveries] error:", err.message);
+    // Graceful fallback if tables don't exist yet
+    if (err.message?.includes("webhook_configs") || err.message?.includes("webhook_deliveries") || err.message?.includes("does not exist")) {
+      return res.json({ deliveries: [] });
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -11095,6 +11137,10 @@ app.post(
       }
     } catch (err) {
       console.error("[webhook manual retry] error:", err.message);
+      // Graceful fallback if tables don't exist yet
+      if (err.message?.includes("webhook_configs") || err.message?.includes("webhook_deliveries") || err.message?.includes("does not exist")) {
+        return res.status(503).json({ error: "Webhook feature not available - database migration required" });
+      }
       return res.status(500).json({ error: err.message });
     }
   }
@@ -12210,7 +12256,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
 });
 
 // Note: Retell webhooks should NOT use IP allowlist - they come from Retell's servers
-// Security is handled via RETELL_WEBHOOK_SECRET signature verification in retellWebhookHandler
+// Security is handled via RETELL_API_KEY signature verification in retellWebhookHandler
 app.post("/retell-webhook", retellWebhookHandler);
 app.post("/api/retell/webhook", retellWebhookHandler);
 
@@ -16705,7 +16751,7 @@ app.get(
 
       return res.json({
         retell_configured: Boolean(RETELL_API_KEY),
-        webhook_secret_set: Boolean(RETELL_WEBHOOK_SECRET),
+        webhook_signature_enabled: Boolean(RETELL_API_KEY),
         last_webhook_received: lastRetellWebhookAt || "never",
         expected_webhook_url: expectedWebhookUrl,
         leads_created_last_24h: recentLeadsCount || 0,
