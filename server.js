@@ -12006,7 +12006,7 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       ...(sendOverride && { override_agent_id: overrideId, override_agent_version: 1 }),
       agent_override: {
         retell_llm: {
-          begin_message: `Thanks for calling {{business_name}}, this is Grace. How can I help you?`,
+          begin_message: `Hi, thanks for calling {{business_name}} — this is Grace. Quick question so I can route you correctly: Are you calling to (1) book new service, (2) reschedule an existing appointment, or (3) cancel an existing appointment?`,
         },
       },
       dynamic_variables: dynamicVariables,
