@@ -13,6 +13,7 @@ import {
   getWebhooks,
 } from "../lib/api";
 import { supabase } from "../lib/supabase";
+import { getImpersonation, clearImpersonation } from "../lib/impersonation";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
 import UpsellModal from "../components/UpsellModal.jsx";
@@ -109,6 +110,7 @@ export default function DashboardPage() {
 
   React.useEffect(() => {
     let mounted = true;
+    let shouldStopInterval = false;
     const load = async (isInitial = false) => {
       try {
         const [statsRes, enhancedRes, leadsRes, subRes, usageRes, webhooksRes] = await Promise.all([
@@ -153,38 +155,31 @@ export default function DashboardPage() {
             setUserLabel(label);
           }
           const fetchAgent = async (retryCount = 0) => {
-            // Prefer the newest agent that actually has a phone number
-            const { data: agentWithNumber } = await supabase
+            // Get ALL agents for this user, sorted by newest first
+            const { data: allAgents } = await supabase
               .from("agents")
               .select("phone_number, is_active, created_at, sms_approved")
               .eq("user_id", user.id)
-              .not("phone_number", "is", null)
-              .order("created_at", { ascending: false })
-              .maybeSingle();
+              .order("created_at", { ascending: false });
 
-            const { data: latestAgent } = agentWithNumber
-              ? { data: agentWithNumber }
-              : await supabase
-                  .from("agents")
-                  .select("phone_number, is_active, created_at, sms_approved")
-                  .eq("user_id", user.id)
-                  .order("created_at", { ascending: false })
-                  .maybeSingle();
+            // Prefer agent with phone number, otherwise use newest
+            const agentWithNumber = (allAgents || []).find(a => a.phone_number);
+            const agent = agentWithNumber || (allAgents && allAgents[0]) || null;
 
-            if (mounted && latestAgent) {
+            if (mounted && agent) {
               setAgentProfile({
-                phone_number: latestAgent.phone_number || "",
-                is_active: latestAgent.is_active !== false,
+                phone_number: agent.phone_number || "",
+                is_active: agent.is_active !== false,
               });
               // Show SMS pending banner if agent is new (within 2 weeks) and not yet approved
-              if (latestAgent.phone_number && !latestAgent.sms_approved) {
-                const createdAt = latestAgent.created_at ? new Date(latestAgent.created_at) : null;
+              if (agent.phone_number && !agent.sms_approved) {
+                const createdAt = agent.created_at ? new Date(agent.created_at) : null;
                 const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
                 if (!createdAt || createdAt > twoWeeksAgo) {
                   setSmsApprovalPending(true);
                 }
               }
-            } else if (mounted && !latestAgent && retryCount < 3) {
+            } else if (mounted && !agent && retryCount < 3) {
               // Retry a few times for freshly deployed agents
               setTimeout(() => fetchAgent(retryCount + 1), 2000);
             }
@@ -195,13 +190,25 @@ export default function DashboardPage() {
         if (mounted) {
           console.error("[Dashboard] Load error:", err);
           setLoadError(err.userMessage || err.message || "Failed to load dashboard data");
+          // If auth error and impersonating, clear impersonation and stop retrying
+          if (err.isAuthError || err.statusCode === 401) {
+            const imp = getImpersonation();
+            if (imp.active) {
+              console.warn("[Dashboard] Auth error during impersonation - clearing impersonation");
+              clearImpersonation();
+            }
+            // Don't retry on auth errors
+            shouldStopInterval = true;
+          }
         }
       } finally {
         if (mounted && isInitial) setLoading(false);
       }
     };
     load(true);
-    const interval = setInterval(() => load(false), 15000);
+    const interval = setInterval(() => {
+      if (!shouldStopInterval) load(false);
+    }, 15000);
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -397,14 +404,25 @@ export default function DashboardPage() {
                   <p style={{ margin: 0, opacity: 0.8 }}>{loadError}</p>
                 </div>
               </div>
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={() => { setLoadError(null); window.location.reload(); }}
-                style={{ marginLeft: "auto" }}
-              >
-                Retry
-              </button>
+              <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto" }}>
+                {getImpersonation().active && (
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => { clearImpersonation(); window.location.href = "/admin/users"; }}
+                    style={{ background: "rgba(239, 68, 68, 0.3)" }}
+                  >
+                    Exit Impersonation
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => { setLoadError(null); window.location.reload(); }}
+                >
+                  Retry
+                </button>
+              </div>
             </div>
           )}
           {isLowUsage && !lowUsageDismissed ? (
