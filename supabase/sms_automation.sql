@@ -211,6 +211,115 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_usage_calls_call_id ON public.usage_calls(call_id) WHERE call_id IS NOT NULL;
 
 -- ============================================
+-- 9. SMS TRACKING IDEMPOTENCY (Prevent duplicate SMS counting)
+-- ============================================
+
+-- ============================================
+-- 10. ATOMIC USAGE INCREMENT FUNCTIONS (Prevent race conditions)
+-- ============================================
+
+-- Function to atomically increment call_used_seconds and return new values
+CREATE OR REPLACE FUNCTION increment_call_usage(
+  p_user_id uuid,
+  p_seconds integer,
+  p_hard_stop_active boolean DEFAULT false,
+  p_limit_state text DEFAULT NULL
+)
+RETURNS TABLE(
+  new_call_used_seconds integer,
+  call_cap_seconds integer,
+  call_credit_seconds integer,
+  rollover_seconds integer,
+  grace_seconds integer,
+  limit_state text,
+  hard_stop_active boolean
+) AS $$
+DECLARE
+  v_result RECORD;
+BEGIN
+  -- Atomic update with RETURNING
+  UPDATE public.usage_limits
+  SET 
+    call_used_seconds = COALESCE(call_used_seconds, 0) + p_seconds,
+    hard_stop_active = CASE WHEN p_hard_stop_active THEN true ELSE hard_stop_active END,
+    limit_state = COALESCE(p_limit_state, limit_state),
+    updated_at = now()
+  WHERE user_id = p_user_id
+  RETURNING 
+    usage_limits.call_used_seconds,
+    usage_limits.call_cap_seconds,
+    usage_limits.call_credit_seconds,
+    usage_limits.rollover_seconds,
+    usage_limits.grace_seconds,
+    usage_limits.limit_state,
+    usage_limits.hard_stop_active
+  INTO v_result;
+  
+  -- Return the updated values
+  RETURN QUERY SELECT 
+    v_result.call_used_seconds,
+    v_result.call_cap_seconds,
+    v_result.call_credit_seconds,
+    v_result.rollover_seconds,
+    v_result.grace_seconds,
+    v_result.limit_state,
+    v_result.hard_stop_active;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to atomically increment sms_used
+CREATE OR REPLACE FUNCTION increment_sms_usage(
+  p_user_id uuid,
+  p_count integer DEFAULT 1,
+  p_limit_state text DEFAULT NULL
+)
+RETURNS TABLE(
+  new_sms_used integer,
+  sms_cap integer,
+  sms_credit integer,
+  limit_state text
+) AS $$
+DECLARE
+  v_result RECORD;
+BEGIN
+  UPDATE public.usage_limits
+  SET 
+    sms_used = COALESCE(sms_used, 0) + p_count,
+    limit_state = COALESCE(p_limit_state, limit_state),
+    updated_at = now()
+  WHERE user_id = p_user_id
+  RETURNING 
+    usage_limits.sms_used,
+    usage_limits.sms_cap,
+    usage_limits.sms_credit,
+    usage_limits.limit_state
+  INTO v_result;
+  
+  RETURN QUERY SELECT 
+    v_result.sms_used,
+    v_result.sms_cap,
+    v_result.sms_credit,
+    v_result.limit_state;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Add unique constraint on usage_sms.message_id to prevent duplicate webhooks from double-counting
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'usage_sms_message_id_unique'
+  ) THEN
+    ALTER TABLE public.usage_sms ADD CONSTRAINT usage_sms_message_id_unique UNIQUE (message_id);
+  END IF;
+EXCEPTION
+  WHEN duplicate_table THEN
+    NULL;
+END $$;
+
+-- Index for faster message_id lookups
+CREATE INDEX IF NOT EXISTS idx_usage_sms_message_id ON public.usage_sms(message_id) WHERE message_id IS NOT NULL;
+
+-- ============================================
 -- DONE! Verify by running:
 -- SELECT column_name FROM information_schema.columns WHERE table_name = 'agents' AND column_name LIKE '%sms%';
 -- SELECT column_name FROM information_schema.columns WHERE table_name = 'profiles' AND column_name LIKE '%review%';

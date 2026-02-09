@@ -2041,20 +2041,46 @@ const sendSmsInternal = async ({
     to_number: to,
   });
 
-  const nextSmsUsed = (usage.sms_used || 0) + 1;
+  // Insert SMS record (with message_id for idempotency if unique constraint exists)
+  const messageId = retellResponse.data?.id || null;
   await supabaseAdmin.from("usage_sms").insert({
     user_id: userId,
-    message_id: retellResponse.data?.id || null,
+    message_id: messageId,
     segments: 1,
     cost_cents: 0,
   });
-  await supabaseAdmin
-    .from("usage_limits")
-    .update({
-      sms_used: nextSmsUsed,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId);
+  
+  // ATOMIC UPDATE: Use RPC function to prevent race conditions
+  let atomicSmsSuccess = false;
+  try {
+    const { data: atomicResult, error: rpcError } = await supabaseAdmin
+      .rpc("increment_sms_usage", {
+        p_user_id: userId,
+        p_count: 1,
+      });
+    
+    if (!rpcError && atomicResult && atomicResult.length > 0) {
+      atomicSmsSuccess = true;
+      console.log("[sendSms] ATOMIC SMS INCREMENT SUCCESS:", {
+        user_id: userId,
+        new_sms_used: atomicResult[0].new_sms_used,
+      });
+    }
+  } catch (rpcErr) {
+    console.warn("[sendSms] ATOMIC SMS INCREMENT FAILED, using fallback:", rpcErr.message);
+  }
+  
+  // Fallback if RPC not available
+  if (!atomicSmsSuccess) {
+    const nextSmsUsed = (usage.sms_used || 0) + 1;
+    await supabaseAdmin
+      .from("usage_limits")
+      .update({
+        sms_used: nextSmsUsed,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId);
+  }
 
   await auditLog({
     userId,
@@ -6932,27 +6958,61 @@ const retellWebhookHandler = async (req, res) => {
           });
         }
 
-        // Update usage_limits with new call seconds
-        const { error: updateError } = await supabaseAdmin
-          .from("usage_limits")
-          .update({
-            call_used_seconds: updatedUsed,
-            limit_state: nextState,
-            force_pause: shouldForcePause ? true : usage.force_pause,
-            force_resume: shouldForcePause ? false : usage.force_resume,
-            hard_stop_active: overCapPlusGrace ? true : (usage.hard_stop_active ?? false),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("user_id", agentRow.user_id);
+        // ATOMIC UPDATE: Use RPC function to prevent race conditions
+        // This ensures concurrent webhooks don't lose usage data
+        let atomicUpdateSuccess = false;
+        let actualNewTotal = updatedUsed;
+        
+        try {
+          const { data: atomicResult, error: rpcError } = await supabaseAdmin
+            .rpc("increment_call_usage", {
+              p_user_id: agentRow.user_id,
+              p_seconds: durationSeconds,
+              p_hard_stop_active: overCapPlusGrace,
+              p_limit_state: nextState,
+            });
+          
+          if (rpcError) {
+            console.warn("📞 [call_ended] ATOMIC INCREMENT RPC FAILED, falling back:", rpcError.message);
+          } else if (atomicResult && atomicResult.length > 0) {
+            atomicUpdateSuccess = true;
+            actualNewTotal = atomicResult[0].new_call_used_seconds;
+            console.log("📞 [call_ended] ATOMIC INCREMENT SUCCESS:", {
+              user_id: agentRow.user_id,
+              added_seconds: durationSeconds,
+              new_total_seconds: actualNewTotal,
+            });
+          }
+        } catch (rpcErr) {
+          console.warn("📞 [call_ended] ATOMIC INCREMENT EXCEPTION, falling back:", rpcErr.message);
+        }
+
+        // Fallback to regular update if RPC not available (e.g., function not created yet)
+        let updateError = null;
+        if (!atomicUpdateSuccess) {
+          const { error: fallbackError } = await supabaseAdmin
+            .from("usage_limits")
+            .update({
+              call_used_seconds: updatedUsed,
+              limit_state: nextState,
+              force_pause: shouldForcePause ? true : usage.force_pause,
+              force_resume: shouldForcePause ? false : usage.force_resume,
+              hard_stop_active: overCapPlusGrace ? true : (usage.hard_stop_active ?? false),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("user_id", agentRow.user_id);
+          updateError = fallbackError;
+        }
 
         // Store result for logging
         usageUpdateResult = {
           previous_seconds: usage.call_used_seconds || 0,
           added_seconds: durationSeconds,
-          new_total_seconds: updatedUsed,
+          new_total_seconds: atomicUpdateSuccess ? actualNewTotal : updatedUsed,
           remaining_seconds: remaining,
           limit_state: nextState,
           update_error: updateError?.message || null,
+          atomic_update: atomicUpdateSuccess,
         };
 
         console.log("📞 [USAGE UPDATE - PRIORITY PATH]", {
