@@ -10312,15 +10312,16 @@ app.get("/referral/stats", requireAuth, async (req, res) => {
       r.status === "rejected" || r.status === "clawed_back"
     ).length;
     
-    // Get commissions
+    // Get commissions with referral eligible_at for 30-day hold check
     const { data: commissions, error: commissionsError } = await supabaseAdmin
       .from("referral_commissions")
-      .select("amount_cents, status")
+      .select("amount_cents, status, referral_id, referrals(eligible_at)")
       .eq("referrer_id", userId);
     
     if (commissionsError) throw commissionsError;
     
     const allCommissions = commissions || [];
+    const now = new Date();
     
     const totalEarnedCents = allCommissions
       .filter(c => c.status === "paid" || c.status === "approved")
@@ -10330,8 +10331,13 @@ app.get("/referral/stats", requireAuth, async (req, res) => {
       .filter(c => c.status === "pending")
       .reduce((sum, c) => sum + (c.amount_cents || 0), 0);
     
+    // CRITICAL: Only show as "available" if approved AND past 30-day hold
     const availablePayoutCents = allCommissions
-      .filter(c => c.status === "approved")
+      .filter(c => {
+        if (c.status !== "approved") return false;
+        const eligibleAt = c.referrals?.eligible_at ? new Date(c.referrals.eligible_at) : null;
+        return eligibleAt && eligibleAt <= now;
+      })
       .reduce((sum, c) => sum + (c.amount_cents || 0), 0);
     
     // Get settings for min payout
@@ -10458,12 +10464,14 @@ app.post("/referral/request-payout", requireAuth, async (req, res) => {
     
     const minPayoutCents = settings?.min_payout_cents || 5000;
     
-    // Get available balance (approved commissions not yet paid)
+    // Get available balance (approved commissions from referrals that passed 30-day hold)
+    // CRITICAL: Only include commissions where referral.eligible_at has passed
     const { data: commissions } = await supabaseAdmin
       .from("referral_commissions")
-      .select("id, amount_cents")
+      .select("id, amount_cents, referral_id, referrals!inner(eligible_at)")
       .eq("referrer_id", userId)
-      .eq("status", "approved");
+      .eq("status", "approved")
+      .lte("referrals.eligible_at", new Date().toISOString());
     
     const availableCents = (commissions || []).reduce((sum, c) => sum + (c.amount_cents || 0), 0);
     
