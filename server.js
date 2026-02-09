@@ -4534,18 +4534,34 @@ const getEnhancedDashboardStats = async (userId) => {
     avgCallDurationSeconds = Math.round(usageLimitsResult.data.call_used_seconds / callsAllTime);
   }
   
-  // Last call info - try leads first, then usage_calls as backup
+  // Last call info - use whichever is MORE RECENT between leads and usage_calls
   const lastLead = lastLeadResult.data;
   const lastUsageCall = lastUsageCallResult.data;
-  let lastCallAt = lastLead?.created_at || null;
-  let lastCallName = lastLead?.name || null;
-  let lastCallSummary = lastLead?.summary || null;
   
-  // If no lead but we have usage_call, use that timestamp
-  if (!lastCallAt && lastUsageCall?.created_at) {
+  const leadTime = lastLead?.created_at ? new Date(lastLead.created_at).getTime() : 0;
+  const usageTime = lastUsageCall?.created_at ? new Date(lastUsageCall.created_at).getTime() : 0;
+  
+  let lastCallAt = null;
+  let lastCallName = null;
+  let lastCallSummary = null;
+  
+  // Pick the most recent call
+  if (usageTime >= leadTime && usageTime > 0) {
+    // Usage call is more recent (or equal) - use it
     lastCallAt = lastUsageCall.created_at;
-    lastCallName = null; // No name in usage_calls
-    lastCallSummary = `Call duration: ${Math.round((lastUsageCall.seconds || 0) / 60)} min`;
+    // Try to get name from lead if it matches this call
+    if (leadTime > 0 && Math.abs(usageTime - leadTime) < 60000) { // Within 1 minute
+      lastCallName = lastLead?.name || null;
+      lastCallSummary = lastLead?.summary || `Call duration: ${Math.round((lastUsageCall.seconds || 0) / 60)} min`;
+    } else {
+      lastCallName = null;
+      lastCallSummary = `Call duration: ${Math.round((lastUsageCall.seconds || 0) / 60)} min`;
+    }
+  } else if (leadTime > 0) {
+    // Lead is more recent
+    lastCallAt = lastLead.created_at;
+    lastCallName = lastLead.name;
+    lastCallSummary = lastLead.summary;
   }
   
   // Appointments
@@ -7564,17 +7580,28 @@ const retellWebhookHandler = async (req, res) => {
         },
       });
       
-      // BULLETPROOF: Use upsert with onConflict to handle duplicates at database level
-      // Even if app-level idempotency check somehow misses, this prevents duplicate leads
+      // BULLETPROOF: Check for existing lead first, then insert
+      // This approach works even without a unique constraint on call_id
       let newLead = null;
       let leadError = null;
       
       if (callId) {
-        // If we have call_id, use upsert to prevent duplicates
-        const { data, error } = await supabaseAdmin
+        // Check if lead already exists for this call_id
+        const { data: existingLead } = await supabaseAdmin
           .from("leads")
-          .upsert(
-            {
+          .select("id")
+          .eq("call_id", callId)
+          .maybeSingle();
+        
+        if (existingLead) {
+          console.log("📞 [call_ended] Lead already exists for call_id, skipping:", callId);
+          newLead = existingLead;
+          leadError = null;
+        } else {
+          // Insert new lead
+          const { data, error } = await supabaseAdmin
+            .from("leads")
+            .insert({
               user_id: agentRow.user_id,
               owner_id: agentRow.user_id,
               agent_id: agentId,
@@ -7598,17 +7625,13 @@ const retellWebhookHandler = async (req, res) => {
                 from_number: fromNumber || null,
                 to_number: normalizedToNumber || null,
               },
-            },
-            { 
-              onConflict: "call_id",
-              ignoreDuplicates: true  // Skip if call_id already exists - NO duplicate counting
-            }
-          )
-          .select("id")
-          .maybeSingle();
-        
-        newLead = data;
-        leadError = error;
+            })
+            .select("id")
+            .single();
+          
+          newLead = data;
+          leadError = error;
+        }
       } else {
         // No call_id - use regular insert (rare edge case)
         console.warn("📞 [call_ended] WARNING: No call_id provided, using regular insert");
@@ -13018,9 +13041,10 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
         .maybeSingle(),
       supabaseAdmin
         .from("integrations")
-        .select("booking_url")
+        .select("booking_url, is_active")
         .eq("user_id", agentRow.user_id)
         .eq("provider", "calcom")
+        .eq("is_active", true)
         .maybeSingle(),
     ]);
 
@@ -13037,6 +13061,16 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     // Determine if calendar booking is available
     const calendarLink = profile?.cal_com_url || integration?.booking_url || "";
     const calendarEnabled = Boolean(calendarLink);
+    
+    // Log calendar status for debugging
+    console.log("[retell-inbound] Calendar check:", {
+      user_id: agentRow.user_id,
+      profile_cal_com_url: profile?.cal_com_url || null,
+      integration_booking_url: integration?.booking_url || null,
+      integration_is_active: integration?.is_active || false,
+      calendarLink,
+      calendarEnabled,
+    });
     
     // Get current date/time for agent context (prevents booking in wrong month/year)
     const dateTimeVars = getCurrentDateTimeVars("America/New_York");
