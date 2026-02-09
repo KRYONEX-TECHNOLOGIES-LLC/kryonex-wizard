@@ -21,7 +21,7 @@ export default function RequireOnboarding({ children }) {
 
       const { data: profile, error } = await supabase
         .from("profiles")
-        .select("business_name, area_code, role, onboarding_step")
+        .select("business_name, area_code, role, onboarding_step, account_type")
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -44,6 +44,13 @@ export default function RequireOnboarding({ children }) {
           // No profile: still allow bypass if admin-by-email so they can reach dashboard
           setIsComplete(isAdminByEmail);
         } else {
+          // Affiliate-only accounts should not access business routes - redirect to affiliate dashboard
+          if (profile.account_type === "affiliate") {
+            // Redirect affiliate users to their dashboard instead of wizard
+            window.location.href = "/affiliate/dashboard";
+            return;
+          }
+          
           // Admins (by role or env email) bypass wizard gating and can use user dashboard without an agent
           if (canAccessAdmin && (adminMode === "admin" || adminMode === "user")) {
             setIsComplete(true);

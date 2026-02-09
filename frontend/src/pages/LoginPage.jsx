@@ -122,7 +122,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
           try {
             const { data: profile } = await supabase
               .from("profiles")
-              .select("role")
+              .select("role, account_type")
               .eq("user_id", data.session.user.id)
               .maybeSingle();
             if (profile?.role === "admin") {
@@ -135,6 +135,14 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
             if (profile?.role === "seller") {
               window.localStorage.setItem("kryonex_session_ok", "1");
               navigate("/console/dialer");
+              clearTimeout(timeout);
+              return;
+            }
+            // Affiliate-only accounts skip wizard and go to affiliate dashboard
+            if (profile?.account_type === "affiliate") {
+              window.localStorage.setItem("kryonex_session_ok", "1");
+              window.localStorage.setItem("kryonex_admin_mode", "user");
+              navigate("/affiliate/dashboard");
               clearTimeout(timeout);
               return;
             }
@@ -291,7 +299,7 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
     const { data: sessionData } = await supabase.auth.getSession();
     const { data: profile } = await supabase
       .from("profiles")
-      .select("role")
+      .select("role, account_type")
       .eq("user_id", sessionData?.session?.user?.id)
       .maybeSingle();
     if (profile?.role === "admin") {
@@ -301,6 +309,12 @@ export default function LoginPage({ embeddedMode, onEmbeddedSubmit }) {
     }
     if (profile?.role === "seller") {
       navigate("/console/dialer");
+      return;
+    }
+    // Affiliate-only accounts go to affiliate dashboard (skip wizard)
+    if (profile?.account_type === "affiliate") {
+      window.localStorage.setItem("kryonex_admin_mode", "user");
+      navigate("/affiliate/dashboard");
       return;
     }
     window.localStorage.setItem("kryonex_admin_mode", "user");

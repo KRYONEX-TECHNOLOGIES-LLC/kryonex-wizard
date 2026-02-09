@@ -785,9 +785,16 @@ export default function WizardPage({
         if (!user) return;
         const { data: profile } = await supabase
           .from("profiles")
-          .select("business_name, area_code, role")
+          .select("business_name, area_code, role, account_type")
           .eq("user_id", user.id)
           .maybeSingle();
+        
+        // Affiliate-only users should not access the wizard - redirect to affiliate dashboard
+        if (profile?.account_type === "affiliate") {
+          window.location.href = "/affiliate/dashboard";
+          return;
+        }
+        
         const isOnboarded =
           Boolean(profile?.business_name) && Boolean(profile?.area_code);
         if (wizardMaintenance && profile?.role !== "admin") {

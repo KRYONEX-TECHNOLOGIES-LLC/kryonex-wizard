@@ -392,6 +392,164 @@ const getCurrentDateTimeVars = (timezone = "America/New_York") => {
 };
 
 /**
+ * Calculate fraud score for a referral.
+ * Score determines commission processing:
+ * - 0-20: Auto-approve
+ * - 21-40: Normal processing (30-day hold)
+ * - 41-60: Extended 45-day hold
+ * - 61-80: Manual review required
+ * - 81+: Auto-reject
+ * 
+ * @param {Object} referral - The referral record
+ * @param {Object} referrerProfile - The referrer's profile
+ * @param {Object} referredProfile - The referred user's profile
+ * @param {Object} [options] - Additional options
+ * @returns {Promise<{score: number, reasons: string[]}>}
+ */
+const calculateFraudScore = async (referral, referrerProfile, referredProfile, options = {}) => {
+  let score = 0;
+  const reasons = [];
+
+  try {
+    // 1. Check same IP (10 points)
+    if (referral.signup_ip && referrerProfile?.signup_ip) {
+      if (referral.signup_ip === referrerProfile.signup_ip) {
+        score += 10;
+        reasons.push("Same IP address as affiliate");
+      }
+    }
+
+    // 2. Check same email domain (15 points) - skip common domains
+    if (referrerProfile?.user_id && referredProfile?.user_id) {
+      const { data: referrerUser } = await supabaseAdmin.auth.admin.getUserById(referrerProfile.user_id);
+      const { data: referredUser } = await supabaseAdmin.auth.admin.getUserById(referredProfile.user_id);
+      
+      const referrerEmail = referrerUser?.user?.email || "";
+      const referredEmail = referredUser?.user?.email || "";
+      
+      const getDomain = (email) => email.split("@")[1]?.toLowerCase() || "";
+      const commonDomains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"];
+      
+      const referrerDomain = getDomain(referrerEmail);
+      const referredDomain = getDomain(referredEmail);
+      
+      if (referrerDomain && referredDomain && 
+          referrerDomain === referredDomain && 
+          !commonDomains.includes(referrerDomain)) {
+        score += 15;
+        reasons.push(`Same email domain: ${referrerDomain}`);
+      }
+    }
+
+    // 3. Check rapid cancellation (20 points) - cancelled within 7 days
+    if (referral.status === "cancelled") {
+      const signupDate = new Date(referral.signup_at || referral.created_at);
+      const daysSinceSignup = (Date.now() - signupDate.getTime()) / (1000 * 60 * 60 * 24);
+      
+      if (daysSinceSignup < 7) {
+        score += 20;
+        reasons.push("Cancelled within 7 days of signup");
+      }
+    }
+
+    // 4. Check refund status (25 points)
+    if (referral.status === "clawed_back" || referral.status === "refunded") {
+      score += 25;
+      reasons.push("Refund or clawback occurred");
+    }
+
+    // 5. Check for existing fraud flags (variable)
+    if (referral.fraud_flags && referral.fraud_flags.length > 0) {
+      for (const flag of referral.fraud_flags) {
+        if (flag.type === "self_referral") {
+          score += 30;
+          reasons.push("Self-referral detected");
+        } else if (flag.type === "same_payment_method") {
+          score += 25;
+          reasons.push("Same payment method as affiliate");
+        } else if (flag.type === "same_device") {
+          score += 15;
+          reasons.push("Same device fingerprint");
+        }
+      }
+    }
+
+    // 6. Check multiple referrals same day (15 points)
+    const { data: sameDayReferrals } = await supabaseAdmin
+      .from("referrals")
+      .select("id")
+      .eq("referrer_id", referral.referrer_id)
+      .gte("signup_at", new Date(new Date(referral.signup_at).setHours(0, 0, 0, 0)).toISOString())
+      .lte("signup_at", new Date(new Date(referral.signup_at).setHours(23, 59, 59, 999)).toISOString())
+      .neq("id", referral.id);
+    
+    if (sameDayReferrals && sameDayReferrals.length >= 3) {
+      score += 15;
+      reasons.push(`Multiple referrals same day (${sameDayReferrals.length + 1} total)`);
+    }
+
+    // 7. Check for no activity after 14 days (10 points)
+    if (referredProfile) {
+      const signupDate = new Date(referral.signup_at || referral.created_at);
+      const daysSinceSignup = (Date.now() - signupDate.getTime()) / (1000 * 60 * 60 * 24);
+      
+      // Check if user has created an agent (indicator of activity)
+      if (daysSinceSignup > 14) {
+        const { data: agents } = await supabaseAdmin
+          .from("agents")
+          .select("id")
+          .eq("user_id", referredProfile.user_id)
+          .limit(1);
+        
+        if (!agents || agents.length === 0) {
+          score += 10;
+          reasons.push("No activity after 14 days");
+        }
+      }
+    }
+
+    // Update the referral with the calculated score
+    await supabaseAdmin
+      .from("referrals")
+      .update({ 
+        fraud_score: score,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", referral.id);
+
+    console.info("[fraud-score] Calculated", {
+      referral_id: referral.id,
+      score,
+      reasons,
+    });
+
+  } catch (err) {
+    console.error("[fraud-score] Error calculating score:", err.message);
+  }
+
+  return { score, reasons };
+};
+
+/**
+ * Get fraud score thresholds from settings or use defaults
+ */
+const getFraudThresholds = async () => {
+  const { data: settings } = await supabaseAdmin
+    .from("referral_settings")
+    .select("fraud_auto_approve_max, fraud_extended_hold_min, fraud_manual_review_min, fraud_auto_reject_min, extended_hold_days")
+    .eq("id", 1)
+    .maybeSingle();
+  
+  return {
+    autoApproveMax: settings?.fraud_auto_approve_max ?? 20,
+    extendedHoldMin: settings?.fraud_extended_hold_min ?? 41,
+    manualReviewMin: settings?.fraud_manual_review_min ?? 61,
+    autoRejectMin: settings?.fraud_auto_reject_min ?? 81,
+    extendedHoldDays: settings?.extended_hold_days ?? 45,
+  };
+};
+
+/**
  * Builds a human-readable schedule summary from wizard inputs.
  * Used in AI prompts so the agent knows business hours.
  * @param {Object} params - Schedule parameters
@@ -2979,6 +3137,70 @@ app.post(
               req,
               metadata: { status: subscription.status },
             });
+            
+            // REFERRAL SYSTEM: Void pending commissions when subscription is cancelled
+            try {
+              const { data: referral } = await supabaseAdmin
+                .from("referrals")
+                .select("*")
+                .eq("referred_id", subRow.user_id)
+                .maybeSingle();
+              
+              if (referral) {
+                // Void pending commissions (not yet cleared/paid)
+                const { data: voidedCommissions, error: voidError } = await supabaseAdmin
+                  .from("referral_commissions")
+                  .update({ 
+                    status: "clawed_back", 
+                    notes: "Customer cancelled subscription",
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("referral_id", referral.id)
+                  .in("status", ["pending", "approved"])
+                  .select();
+                
+                // Update referral status to cancelled
+                await supabaseAdmin
+                  .from("referrals")
+                  .update({ 
+                    status: "cancelled",
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("id", referral.id);
+                
+                const voidedCount = voidedCommissions?.length || 0;
+                const voidedAmount = voidedCommissions?.reduce((sum, c) => sum + (c.amount_cents || 0), 0) || 0;
+                
+                console.info("[stripe-webhook] Referral commissions voided due to subscription cancellation", {
+                  referral_id: referral.id,
+                  referred_user_id: subRow.user_id,
+                  voided_count: voidedCount,
+                  voided_amount_cents: voidedAmount,
+                });
+                
+                await auditLog({
+                  userId: referral.referrer_id,
+                  action: "referral_commissions_voided",
+                  entity: "referral",
+                  entityId: referral.id,
+                  req,
+                  metadata: { 
+                    reason: "subscription_cancelled",
+                    voided_count: voidedCount,
+                    voided_amount_cents: voidedAmount,
+                  },
+                });
+              }
+            } catch (refErr) {
+              console.error("[stripe-webhook] Error voiding referral commissions:", refErr.message);
+              trackError({
+                error: refErr,
+                context: { source: "stripe-webhook", action: "void_referral_commissions" },
+                severity: "medium",
+                endpoint: "/stripe-webhook",
+                method: "POST",
+              });
+            }
           }
         }
 
@@ -3052,51 +3274,135 @@ app.post(
                 const now = new Date();
                 const eligibleAt = referral.eligible_at ? new Date(referral.eligible_at) : null;
                 
-                // Check if past hold period (30 days)
-                if (eligibleAt && now >= eligibleAt) {
-                  // Check for fraud flags
-                  const hasSeriousFraud = (referral.fraud_flags || []).some(f => 
-                    f.type === "same_payment_method" || f.type === "self_referral"
-                  );
+                // Get profiles for fraud scoring
+                const { data: referrerProfile } = await supabaseAdmin
+                  .from("profiles")
+                  .select("*")
+                  .eq("user_id", referral.referrer_id)
+                  .maybeSingle();
+                
+                const { data: referredProfile } = await supabaseAdmin
+                  .from("profiles")
+                  .select("*")
+                  .eq("user_id", referral.referred_id)
+                  .maybeSingle();
+                
+                // Calculate comprehensive fraud score
+                const { score: fraudScore, reasons: fraudReasons } = await calculateFraudScore(
+                  referral, 
+                  referrerProfile, 
+                  referredProfile
+                );
+                
+                // Get fraud thresholds
+                const thresholds = await getFraudThresholds();
+                
+                // Check if past hold period (30 days standard, 45 days for high fraud score)
+                const standardHoldPassed = eligibleAt && now >= eligibleAt;
+                const extendedHoldRequired = fraudScore >= thresholds.extendedHoldMin && fraudScore < thresholds.autoRejectMin;
+                const extendedHoldDate = eligibleAt ? new Date(eligibleAt.getTime() + (thresholds.extendedHoldDays - 30) * 24 * 60 * 60 * 1000) : null;
+                const extendedHoldPassed = extendedHoldDate ? now >= extendedHoldDate : true;
+                
+                // Determine if we should process based on fraud score
+                const shouldAutoReject = fraudScore >= thresholds.autoRejectMin;
+                const needsManualReview = fraudScore >= thresholds.manualReviewMin && fraudScore < thresholds.autoRejectMin;
+                const holdPassed = extendedHoldRequired ? (standardHoldPassed && extendedHoldPassed) : standardHoldPassed;
+                
+                if (shouldAutoReject) {
+                  // Auto-reject high fraud score referrals
+                  await supabaseAdmin
+                    .from("referrals")
+                    .update({
+                      status: "rejected",
+                      rejection_reason: `Fraud score too high (${fraudScore}): ${fraudReasons.join(", ")}`,
+                      fraud_score: fraudScore,
+                      updated_at: now.toISOString(),
+                    })
+                    .eq("id", referral.id);
+                  console.warn("[stripe-webhook] Referral auto-rejected due to high fraud score", { 
+                    referral_id: referral.id, 
+                    fraud_score: fraudScore,
+                    reasons: fraudReasons,
+                  });
+                } else if (needsManualReview && !referral.fraud_reviewed) {
+                  // Flag for manual review
+                  await supabaseAdmin
+                    .from("referrals")
+                    .update({
+                      fraud_score: fraudScore,
+                      updated_at: now.toISOString(),
+                    })
+                    .eq("id", referral.id);
+                  console.info("[stripe-webhook] Referral flagged for manual review", { 
+                    referral_id: referral.id, 
+                    fraud_score: fraudScore,
+                    reasons: fraudReasons,
+                  });
+                  // Skip commission processing until manually reviewed
+                } else if (holdPassed || referral.fraud_reviewed) {
+                  // Process commission - either hold passed or admin approved after review
+                  const maxMonths = settings?.max_months || 12;
+                  const monthlyPercent = settings?.monthly_percent || 10;
+                  const upfrontCents = settings?.upfront_amount_cents || 2500;
+                  const autoApproveCents = settings?.auto_approve_under_cents || 10000;
                   
-                  if (hasSeriousFraud) {
-                    // Reject the referral
+                  // Mark as eligible if not already
+                  if (referral.status === "pending") {
                     await supabaseAdmin
                       .from("referrals")
                       .update({
-                        status: "rejected",
-                        rejection_reason: "Fraud detected",
+                        status: "eligible",
                         updated_at: now.toISOString(),
                       })
                       .eq("id", referral.id);
-                    console.warn("[stripe-webhook] Referral rejected due to fraud flags", { referral_id: referral.id });
-                  } else {
-                    const maxMonths = settings?.max_months || 12;
-                    const monthlyPercent = settings?.monthly_percent || 10;
-                    const upfrontCents = settings?.upfront_amount_cents || 2500;
-                    const autoApproveCents = settings?.auto_approve_under_cents || 10000;
+                  }
+                  
+                  // Process upfront bonus (once)
+                  if (!referral.upfront_paid) {
+                    const upfrontStatus = upfrontCents <= autoApproveCents ? "approved" : "pending";
+                    await supabaseAdmin.from("referral_commissions").insert({
+                      referral_id: referral.id,
+                      referrer_id: referral.referrer_id,
+                      amount_cents: upfrontCents,
+                      commission_type: "upfront",
+                      month_number: null,
+                      status: upfrontStatus,
+                      stripe_invoice_id: invoice.id,
+                      stripe_subscription_id: invoice.subscription || null,
+                    });
                     
-                    // Mark as eligible if not already
-                    if (referral.status === "pending") {
-                      await supabaseAdmin
-                        .from("referrals")
-                        .update({
-                          status: "eligible",
-                          updated_at: now.toISOString(),
-                        })
-                        .eq("id", referral.id);
-                    }
+                    await supabaseAdmin
+                      .from("referrals")
+                      .update({
+                        upfront_paid: true,
+                        upfront_paid_at: now.toISOString(),
+                        total_commission_cents: (referral.total_commission_cents || 0) + upfrontCents,
+                        updated_at: now.toISOString(),
+                      })
+                      .eq("id", referral.id);
                     
-                    // Process upfront bonus (once)
-                    if (!referral.upfront_paid) {
-                      const upfrontStatus = upfrontCents <= autoApproveCents ? "approved" : "pending";
+                    console.info("[stripe-webhook] Referral upfront commission created", {
+                      referral_id: referral.id,
+                      amount_cents: upfrontCents,
+                      status: upfrontStatus,
+                    });
+                  }
+                  
+                  // Process monthly commission (up to 12 months)
+                  const monthsPaid = referral.months_paid || 0;
+                  if (monthsPaid < maxMonths) {
+                    const invoiceAmountCents = invoice.amount_paid || 0;
+                    const commissionCents = Math.floor(invoiceAmountCents * (monthlyPercent / 100));
+                    
+                    if (commissionCents > 0) {
+                      const monthlyStatus = commissionCents <= autoApproveCents ? "approved" : "pending";
                       await supabaseAdmin.from("referral_commissions").insert({
                         referral_id: referral.id,
                         referrer_id: referral.referrer_id,
-                        amount_cents: upfrontCents,
-                        commission_type: "upfront",
-                        month_number: null,
-                        status: upfrontStatus,
+                        amount_cents: commissionCents,
+                        commission_type: "monthly",
+                        month_number: monthsPaid + 1,
+                        status: monthlyStatus,
                         stripe_invoice_id: invoice.id,
                         stripe_subscription_id: invoice.subscription || null,
                       });
@@ -3104,55 +3410,18 @@ app.post(
                       await supabaseAdmin
                         .from("referrals")
                         .update({
-                          upfront_paid: true,
-                          upfront_paid_at: now.toISOString(),
-                          total_commission_cents: (referral.total_commission_cents || 0) + upfrontCents,
+                          months_paid: monthsPaid + 1,
+                          total_commission_cents: (referral.total_commission_cents || 0) + commissionCents,
                           updated_at: now.toISOString(),
                         })
                         .eq("id", referral.id);
                       
-                      console.info("[stripe-webhook] Referral upfront commission created", {
+                      console.info("[stripe-webhook] Referral monthly commission created", {
                         referral_id: referral.id,
-                        amount_cents: upfrontCents,
-                        status: upfrontStatus,
+                        month: monthsPaid + 1,
+                        amount_cents: commissionCents,
+                        status: monthlyStatus,
                       });
-                    }
-                    
-                    // Process monthly commission (up to 12 months)
-                    const monthsPaid = referral.months_paid || 0;
-                    if (monthsPaid < maxMonths) {
-                      const invoiceAmountCents = invoice.amount_paid || 0;
-                      const commissionCents = Math.floor(invoiceAmountCents * (monthlyPercent / 100));
-                      
-                      if (commissionCents > 0) {
-                        const monthlyStatus = commissionCents <= autoApproveCents ? "approved" : "pending";
-                        await supabaseAdmin.from("referral_commissions").insert({
-                          referral_id: referral.id,
-                          referrer_id: referral.referrer_id,
-                          amount_cents: commissionCents,
-                          commission_type: "monthly",
-                          month_number: monthsPaid + 1,
-                          status: monthlyStatus,
-                          stripe_invoice_id: invoice.id,
-                          stripe_subscription_id: invoice.subscription || null,
-                        });
-                        
-                        await supabaseAdmin
-                          .from("referrals")
-                          .update({
-                            months_paid: monthsPaid + 1,
-                            total_commission_cents: (referral.total_commission_cents || 0) + commissionCents,
-                            updated_at: now.toISOString(),
-                          })
-                          .eq("id", referral.id);
-                        
-                        console.info("[stripe-webhook] Referral monthly commission created", {
-                          referral_id: referral.id,
-                          month: monthsPaid + 1,
-                          amount_cents: commissionCents,
-                          status: monthlyStatus,
-                        });
-                      }
                     }
                   }
                 }

@@ -9309,6 +9309,12 @@ input:checked + .toggle-slider.small:before {
   margin-bottom: 2rem;
 }
 
+.cta-subtext {
+  margin-top: 1rem !important;
+  font-size: 0.9rem !important;
+  color: #6b7280 !important;
+}
+
 /* Footer */
 .affiliate-footer {
   padding: 2rem;

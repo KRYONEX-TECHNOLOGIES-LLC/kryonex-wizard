@@ -26,7 +26,7 @@ export default function AffiliatePage() {
     },
     {
       q: "How do I get my referral link?",
-      a: "Sign up or log in to your account, then visit the Referrals page from your dashboard. Your unique referral link will be generated automatically."
+      a: "Click 'Get Your Referral Link' to create a free affiliate account. You'll get your unique referral link instantly in your affiliate dashboard. No business setup required!"
     },
     {
       q: "When do I get paid?",
@@ -66,7 +66,7 @@ export default function AffiliatePage() {
             Earn recurring commissions for every HVAC or plumbing business you refer to Kryonex.
           </p>
           <div className="affiliate-hero-cta">
-            <Link to="/login" className="btn-primary-glow">
+            <Link to="/affiliate/signup" className="btn-primary-glow">
               Get Your Referral Link
             </Link>
             <a href="#how-it-works" className="btn-secondary">
@@ -303,9 +303,10 @@ export default function AffiliatePage() {
         >
           <h2>Ready to Start Earning?</h2>
           <p>Join thousands of affiliates making passive income with Kryonex.</p>
-          <Link to="/login" className="btn-primary-glow large">
-            Get Your Referral Link Now
+          <Link to="/affiliate/signup" className="btn-primary-glow large">
+            Start Earning Now
           </Link>
+          <p className="cta-subtext">Free signup, instant referral link, no business setup required</p>
         </motion.div>
       </section>
 
@@ -313,6 +314,8 @@ export default function AffiliatePage() {
       <footer className="affiliate-footer">
         <p>&copy; {new Date().getFullYear()} Kryonex Tech. All rights reserved.</p>
         <div className="footer-links">
+          <Link to="/affiliate/signup">Become an Affiliate</Link>
+          <span>|</span>
           <Link to="/login">Sign In</Link>
           <span>|</span>
           <a href="mailto:support@kryonextech.com">Support</a>

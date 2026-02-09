@@ -29,6 +29,8 @@ import AnalyticsPage from "./pages/AnalyticsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import ReferralPage from "./pages/ReferralPage.jsx";
 import AffiliatePage from "./pages/AffiliatePage.jsx";
+import AffiliateSignupPage from "./pages/AffiliateSignupPage.jsx";
+import AffiliateDashboardPage from "./pages/AffiliateDashboardPage.jsx";
 import CustomersPage from "./pages/CustomersPage.jsx";
 import IntegrationsPage from "./pages/IntegrationsPage.jsx";
 import ThankYouPage from "./pages/ThankYouPage.jsx";
@@ -41,6 +43,7 @@ import RequireOnboarding from "./components/RequireOnboarding.jsx";
 import { supabaseReady } from "./lib/supabase";
 import RequireAdmin from "./components/RequireAdmin.jsx";
 import RequireRole from "./components/RequireRole.jsx";
+import RequireAccountType from "./components/RequireAccountType.jsx";
 
 export default function App() {
   if (!supabaseReady) {
@@ -76,6 +79,17 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/thank-you" element={<ThankYouPage />} />
       <Route path="/affiliate" element={<AffiliatePage />} />
+      <Route path="/affiliate/signup" element={<AffiliateSignupPage />} />
+      <Route
+        path="/affiliate/dashboard"
+        element={
+          <ProtectedRoute>
+            <RequireAccountType types={["affiliate", "both"]}>
+              <AffiliateDashboardPage />
+            </RequireAccountType>
+          </ProtectedRoute>
+        }
+      />
       <Route path="/admin/stripe-success" element={<AdminStripeSuccessPage />} />
       <Route
         path="/wizard"
