@@ -3962,12 +3962,15 @@ const findAuthUserByEmail = async (email) => {
 };
 
 const getUsageRemaining = (usage) => {
+  // Include grace_seconds in total for accurate remaining calculation
+  const graceSeconds = usage.grace_seconds ?? 600; // Default 10 minutes grace
   const total =
-    usage.call_cap_seconds +
-    usage.call_credit_seconds +
-    usage.rollover_seconds;
-  const remaining = Math.max(0, total - usage.call_used_seconds);
-  return { total, remaining };
+    (usage.call_cap_seconds || 0) +
+    (usage.call_credit_seconds || 0) +
+    (usage.rollover_seconds || 0) +
+    graceSeconds; // Users can use up to cap + credits + rollover + grace
+  const remaining = Math.max(0, total - (usage.call_used_seconds || 0));
+  return { total, remaining, graceSeconds };
 };
 
 const getDashboardStats = async (userId) => {
@@ -12390,11 +12393,32 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       subscription?.current_period_end
     );
     const { remaining } = getUsageRemaining(usage);
+    
+    // Check ALL usage limit conditions including hard_stop_active
+    const usedSeconds = usage.call_used_seconds || 0;
+    const capSeconds = usage.call_cap_seconds || 0;
+    const graceSeconds = usage.grace_seconds ?? 600;
+    const overCapPlusGrace = usedSeconds >= capSeconds + graceSeconds;
+    const hardStop = usage.hard_stop_active === true || overCapPlusGrace;
+    
     if (
+      hardStop ||
       (usage.force_pause && !usage.force_resume) ||
       usage.limit_state === "paused" ||
       remaining <= 0
     ) {
+      console.warn("[retell-inbound] Call blocked due to usage limits:", {
+        user_id: agentRow.user_id,
+        hardStop,
+        hard_stop_active: usage.hard_stop_active,
+        overCapPlusGrace,
+        usedSeconds,
+        capSeconds,
+        graceSeconds,
+        remaining,
+        limit_state: usage.limit_state,
+        force_pause: usage.force_pause,
+      });
       return res.status(402).json({ error: "Usage limit reached" });
     }
 
