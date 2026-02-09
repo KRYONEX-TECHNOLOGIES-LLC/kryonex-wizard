@@ -87,6 +87,7 @@ export default function DashboardPage() {
   const [userLabel, setUserLabel] = React.useState("Operator");
   const [calConnected, setCalConnected] = React.useState(false);
   const [calComUrl, setCalComUrl] = React.useState("");
+  const [calEventType, setCalEventType] = React.useState("");
   const [calStatusLoading, setCalStatusLoading] = React.useState(true);
   const [calStatusError, setCalStatusError] = React.useState("");
   const [lowUsageDismissed, setLowUsageDismissed] = React.useState(() =>
@@ -305,11 +306,13 @@ export default function DashboardPage() {
         const url = res.data?.cal_com_url || "";
         setCalConnected(Boolean(res.data?.connected));
         setCalComUrl(url);
+        setCalEventType(res.data?.event_type_slug || "");
       } catch (err) {
         if (!active) return;
         setCalStatusError("Calendar connection status unavailable.");
         setCalConnected(false);
         setCalComUrl("");
+        setCalEventType("");
       } finally {
         if (active) setCalStatusLoading(false);
       }
@@ -440,6 +443,7 @@ export default function DashboardPage() {
       await disconnectCalcom();
       setCalConnected(false);
       setCalComUrl("");
+      setCalEventType("");
     } catch (err) {
       setCalStatusError("Unable to disconnect calendar.");
     }
@@ -723,10 +727,15 @@ export default function DashboardPage() {
                     Connect a calendar so the AI can check availability and book.
                   </span>
                 )}
-                {subscriptionActive && calConnected && calComUrl ? (
-                  <div className="text-xs text-white/50 mt-2">
-                    {calComUrl}
-                  </div>
+                {subscriptionActive && calConnected ? (
+                  <>
+                    {calEventType ? (
+                      <div className="text-xs text-white/60 mt-1">Event type: {calEventType}</div>
+                    ) : null}
+                    {calComUrl ? (
+                      <div className="text-xs text-white/50 mt-2">{calComUrl}</div>
+                    ) : null}
+                  </>
                 ) : null}
                 <div className="calendar-connection-actions">
                   {!subscriptionActive ? (

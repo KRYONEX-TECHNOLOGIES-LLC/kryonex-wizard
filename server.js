@@ -5664,21 +5664,52 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       
       // Also insert into appointments table so it appears in calendar UI
       const normalizedCustomerPhone = normalizePhoneE164(args.customer_phone || booking?.attendee?.phoneNumber);
-      const { data: appointmentData, error: appointmentError } = await supabaseAdmin
-        .from("appointments")
-        .insert({
-          user_id: userId,
-          customer_name: args.customer_name || booking?.attendee?.name || "Customer",
-          customer_phone: normalizedCustomerPhone,
-          start_time: booking?.start || start.toISOString(),
-          end_time: booking?.end || end.toISOString(),
-          location: args.service_address || args.location || null,
-          notes: args.service_issue || args.notes || `Booked via Cal.com`,
-          status: "booked",
-          cal_booking_uid: booking?.uid || booking?.id || null,
-        })
-        .select("*")
-        .single();
+      const calBookingUid = booking?.uid || booking?.id || null;
+      
+      // Use upsert on cal_booking_uid to prevent duplicates if webhook arrives first
+      const appointmentPayload = {
+        user_id: userId,
+        customer_name: args.customer_name || booking?.attendee?.name || "Customer",
+        customer_phone: normalizedCustomerPhone,
+        customer_email: args.customer_email || args.email || booking?.attendee?.email || null,
+        start_time: booking?.start || start.toISOString(),
+        end_time: booking?.end || end.toISOString(),
+        location: args.service_address || args.location || null,
+        notes: args.service_issue || args.notes || `Booked via Cal.com`,
+        status: "scheduled",
+        cal_booking_uid: calBookingUid,
+      };
+      
+      let appointmentData, appointmentError;
+      if (calBookingUid) {
+        // Check if webhook already created this appointment
+        const { data: existing } = await supabaseAdmin
+          .from("appointments")
+          .select("id")
+          .eq("cal_booking_uid", calBookingUid)
+          .maybeSingle();
+        if (existing) {
+          // Webhook beat us; just use the existing record
+          appointmentData = existing;
+          appointmentError = null;
+        } else {
+          const result = await supabaseAdmin
+            .from("appointments")
+            .insert(appointmentPayload)
+            .select("*")
+            .single();
+          appointmentData = result.data;
+          appointmentError = result.error;
+        }
+      } else {
+        const result = await supabaseAdmin
+          .from("appointments")
+          .insert(appointmentPayload)
+          .select("*")
+          .single();
+        appointmentData = result.data;
+        appointmentError = result.error;
+      }
       
       if (appointmentError) {
         console.warn("[book_appointment] Cal.com booking succeeded but DB insert failed", {
@@ -6413,6 +6444,49 @@ app.get("/api/calcom/callback", async (req, res) => {
     
     console.log("[calcom-callback] Successfully saved integration for user:", stateData.userId, { bookingUrl, calUserId });
     
+    // =========================================================================
+    // REGISTER WEBHOOK with Cal.com so it sends booking events to our server
+    // =========================================================================
+    const webhookUrl = `${serverBaseUrl}/webhooks/calcom`;
+    try {
+      // First, check if we already have a webhook registered for this event type
+      if (eventType?.id) {
+        // Try event-type-level webhook first (more specific)
+        const existingWH = await calClient.get(`/event-types/${eventType.id}/webhooks`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "cal-api-version": "2024-08-13",
+          },
+        }).catch(() => null);
+        
+        const existingWebhooks = existingWH?.data?.data || existingWH?.data || [];
+        const alreadyRegistered = Array.isArray(existingWebhooks) && existingWebhooks.some(
+          (wh) => wh.subscriberUrl === webhookUrl || wh.url === webhookUrl
+        );
+        
+        if (!alreadyRegistered) {
+          const whResult = await calClient.post(`/event-types/${eventType.id}/webhooks`, {
+            subscriberUrl: webhookUrl,
+            triggers: ["BOOKING_CREATED", "BOOKING_RESCHEDULED", "BOOKING_CANCELLED"],
+            active: true,
+          }, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "cal-api-version": "2024-08-13",
+              "Content-Type": "application/json",
+            },
+          });
+          console.log("[calcom-callback] Webhook registered on event type:", eventType.id, whResult.data?.data?.id || whResult.data?.id || "ok");
+        } else {
+          console.log("[calcom-callback] Webhook already registered for event type:", eventType.id);
+        }
+      }
+    } catch (whErr) {
+      // Webhook registration is best-effort; log but don't fail the OAuth flow
+      console.warn("[calcom-callback] Webhook registration failed (non-blocking):", whErr.response?.data || whErr.message);
+      console.warn("[calcom-callback] Webhook URL attempted:", webhookUrl);
+    }
+    
     return res.redirect(
       `${FRONTEND_URL}/dashboard?cal_status=success&status=success`
     );
@@ -6432,21 +6506,26 @@ app.get("/api/calcom/status", requireAuth, resolveEffectiveUser, async (req, res
   const [{ data: profile }, { data: integration }] = await Promise.all([
     supabaseAdmin
       .from("profiles")
-      .select("cal_com_url")
+      .select("cal_com_url, cal_event_type_slug")
       .eq("user_id", uid)
       .maybeSingle(),
     supabaseAdmin
       .from("integrations")
-      .select("is_active, access_token, booking_url")
+      .select("is_active, access_token, booking_url, event_type_id, event_type_slug")
       .eq("user_id", uid)
       .eq("provider", "calcom")
       .maybeSingle(),
   ]);
-  // Check if integration exists with active token, regardless of booking URL
   const hasActiveIntegration = integration?.is_active && integration?.access_token;
   const calUrl = profile?.cal_com_url || integration?.booking_url || null;
   const connected = Boolean(hasActiveIntegration || calUrl);
-  return res.json({ connected, cal_com_url: calUrl });
+  const eventType = integration?.event_type_slug || profile?.cal_event_type_slug || null;
+  return res.json({
+    connected,
+    cal_com_url: calUrl,
+    event_type_id: integration?.event_type_id || null,
+    event_type_slug: eventType,
+  });
 });
 
 app.post("/api/calcom/disconnect", requireAuth, resolveEffectiveUser, async (req, res) => {

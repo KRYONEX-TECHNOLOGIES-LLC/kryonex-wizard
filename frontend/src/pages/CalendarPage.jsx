@@ -105,6 +105,8 @@ export default function CalendarPage() {
   const [calStatusError, setCalStatusError] = React.useState("");
   const [loadError, setLoadError] = React.useState(null);
   const [actionError, setActionError] = React.useState(null);
+  const currentMonthRef = React.useRef(currentMonth);
+  currentMonthRef.current = currentMonth;
 
   const updateCurrentMonth = (updater) => {
     setCurrentMonth((prev) => {
@@ -171,6 +173,40 @@ export default function CalendarPage() {
   React.useEffect(() => {
     loadAppointments(currentMonth);
   }, [currentMonth]);
+
+  // Realtime: when webhooks or AI add/update/cancel appointments, refresh calendar instantly
+  React.useEffect(() => {
+    const impersonation = getImpersonation();
+    if (impersonation.active && impersonation.userId) return; // no realtime when impersonating
+
+    let channel;
+    const setupRealtime = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user?.id) return;
+
+      channel = supabase
+        .channel(`calendar-appointments-${user.id}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "appointments",
+            filter: `user_id=eq.${user.id}`,
+          },
+          () => {
+            // Refetch current month so new/updated/cancelled appointments show immediately
+            loadAppointments(currentMonthRef.current);
+          }
+        )
+        .subscribe();
+    };
+    setupRealtime();
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, []);
 
   React.useEffect(() => {
     const dateParam = searchParams.get("date");
