@@ -6807,6 +6807,180 @@ const retellWebhookHandler = async (req, res) => {
         return res.json({ received: true, warning: "Could not attribute call to user" });
       }
 
+      // ========================================
+      // IDEMPOTENCY CHECK: Skip if already processed this call_id
+      // This prevents duplicate counting when Retell retries webhooks
+      // ========================================
+      if (callId) {
+        // Check leads table for existing call_id
+        const { data: existingLead } = await supabaseAdmin
+          .from("leads")
+          .select("id")
+          .eq("user_id", agentRow.user_id)
+          .eq("call_id", callId)
+          .maybeSingle();
+        
+        if (existingLead) {
+          console.log("📞 [call_ended] DUPLICATE WEBHOOK - already processed call_id:", {
+            call_id: callId,
+            existing_lead_id: existingLead.id,
+            user_id: agentRow.user_id,
+          });
+          // Return 200 so Retell doesn't retry
+          return res.json({ received: true, duplicate: true, existing_lead_id: existingLead.id });
+        }
+        
+        // Also check usage_calls as backup
+        const { data: existingUsageCall } = await supabaseAdmin
+          .from("usage_calls")
+          .select("id")
+          .eq("call_id", callId)
+          .maybeSingle();
+        
+        if (existingUsageCall) {
+          console.log("📞 [call_ended] DUPLICATE WEBHOOK (usage_calls) - already processed call_id:", {
+            call_id: callId,
+            existing_usage_call_id: existingUsageCall.id,
+          });
+          return res.json({ received: true, duplicate: true, existing_usage_call_id: existingUsageCall.id });
+        }
+      }
+
+      // ========================================
+      // CRITICAL: Update usage FIRST before any other operations
+      // This ensures minutes are tracked even if later steps fail/timeout
+      // ========================================
+      let usageUpdateResult = null;
+      if (durationSeconds > 0) {
+        console.log("📞 [call_ended] UPDATING USAGE FIRST for user:", agentRow.user_id);
+        
+        const { data: subscription } = await supabaseAdmin
+          .from("subscriptions")
+          .select("plan_type, current_period_end")
+          .eq("user_id", agentRow.user_id)
+          .maybeSingle();
+        
+        let usage = await ensureUsageLimits({
+          userId: agentRow.user_id,
+          planType: subscription?.plan_type,
+          periodEnd: subscription?.current_period_end,
+        });
+        usage = await refreshUsagePeriod(
+          usage,
+          subscription?.plan_type,
+          subscription?.current_period_end
+        );
+
+        const updatedUsed = (usage.call_used_seconds || 0) + durationSeconds;
+        const capSeconds = usage.call_cap_seconds || 0;
+        const graceSeconds = usage.grace_seconds ?? 600;
+        const hardStopThreshold = capSeconds + graceSeconds;
+        const overCapPlusGrace = updatedUsed > hardStopThreshold;
+        
+        if (overCapPlusGrace) {
+          console.warn("[call_ended] user over cap+grace, setting hard_stop_active", {
+            user_id: agentRow.user_id,
+            newCallUsed: updatedUsed,
+            call_cap_seconds: capSeconds,
+            grace_seconds: graceSeconds,
+          });
+        }
+        
+        const graceLimit = capSeconds + graceSeconds + (usage.call_credit_seconds || 0) + (usage.rollover_seconds || 0);
+        let nextState = usage.limit_state;
+        if (updatedUsed >= graceLimit) {
+          nextState = "paused";
+        } else if (updatedUsed >= capSeconds) {
+          nextState = "pending";
+        }
+        
+        const { total, remaining } = getUsageRemaining({
+          ...usage,
+          call_used_seconds: updatedUsed,
+        });
+        const shouldForcePause = remaining <= 0;
+        if (shouldForcePause) {
+          nextState = "paused";
+        }
+
+        // UPSERT usage_calls with ignoreDuplicates to prevent double-counting
+        const { error: usageCallsError } = await supabaseAdmin
+          .from("usage_calls")
+          .upsert(
+            {
+              user_id: agentRow.user_id,
+              agent_id: agentId,
+              call_id: callId,
+              seconds: durationSeconds,
+              cost_cents: 0,
+            },
+            { onConflict: "call_id", ignoreDuplicates: true }
+          );
+
+        if (usageCallsError) {
+          console.error("📞 [call_ended] USAGE_CALLS UPSERT FAILED:", {
+            user_id: agentRow.user_id,
+            call_id: callId,
+            seconds: durationSeconds,
+            error: usageCallsError.message,
+          });
+        } else {
+          console.log("📞 [call_ended] USAGE_CALLS UPSERT SUCCESS:", {
+            user_id: agentRow.user_id,
+            call_id: callId,
+            seconds: durationSeconds,
+          });
+        }
+
+        // Update usage_limits with new call seconds
+        const { error: updateError } = await supabaseAdmin
+          .from("usage_limits")
+          .update({
+            call_used_seconds: updatedUsed,
+            limit_state: nextState,
+            force_pause: shouldForcePause ? true : usage.force_pause,
+            force_resume: shouldForcePause ? false : usage.force_resume,
+            hard_stop_active: overCapPlusGrace ? true : (usage.hard_stop_active ?? false),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", agentRow.user_id);
+
+        // Store result for logging
+        usageUpdateResult = {
+          previous_seconds: usage.call_used_seconds || 0,
+          added_seconds: durationSeconds,
+          new_total_seconds: updatedUsed,
+          remaining_seconds: remaining,
+          limit_state: nextState,
+          update_error: updateError?.message || null,
+        };
+
+        console.log("📞 [USAGE UPDATE - PRIORITY PATH]", {
+          user_id: agentRow.user_id,
+          call_id: callId,
+          ...usageUpdateResult,
+          previous_minutes: Math.ceil((usage.call_used_seconds || 0) / 60),
+          added_minutes: Math.ceil(durationSeconds / 60),
+          new_total_minutes: Math.ceil(updatedUsed / 60),
+          timestamp: new Date().toISOString(),
+        });
+
+        // Insert usage snapshot
+        await supabaseAdmin.from("usage_snapshots").insert({
+          user_id: agentRow.user_id,
+          source: "call_ended",
+          minutes_used: Math.ceil(updatedUsed / 60),
+          cap_minutes: Math.ceil(total / 60),
+          remaining_minutes: Math.ceil(remaining / 60),
+        });
+
+        // Evaluate usage thresholds
+        await evaluateUsageThresholds(agentRow.user_id, {
+          ...usage,
+          call_used_seconds: updatedUsed,
+        });
+      }
+
       // Extract data with priority: post-call analysis > extracted vars > regex fallback
       const regexExtracted = extractLead(transcript);
       
@@ -6861,6 +7035,7 @@ const retellWebhookHandler = async (req, res) => {
         user_id: agentRow.user_id,
         owner_id: agentRow.user_id,
         agent_id: agentId,
+        call_id: callId, // For idempotency - prevents duplicate leads from webhook retries
         name: bestName,
         phone: bestPhone,
         status: leadStatus,
@@ -7074,136 +7249,14 @@ const retellWebhookHandler = async (req, res) => {
         console.error("📱 [post_call_sms] Error setting up post-call SMS:", postCallSmsErr.message);
       }
 
-      console.log("📞 [call_ended] checking durationSeconds:", { durationSeconds, willUpdateUsage: durationSeconds > 0 });
-
-      if (durationSeconds > 0) {
-        console.log("📞 [call_ended] updating usage for user:", agentRow.user_id);
-        const { data: subscription } = await supabaseAdmin
-          .from("subscriptions")
-          .select("plan_type, current_period_end")
-          .eq("user_id", agentRow.user_id)
-          .maybeSingle();
-        let usage = await ensureUsageLimits({
-          userId: agentRow.user_id,
-          planType: subscription?.plan_type,
-          periodEnd: subscription?.current_period_end,
-        });
-        usage = await refreshUsagePeriod(
-          usage,
-          subscription?.plan_type,
-          subscription?.current_period_end
-        );
-
-        console.log("📞 [call_ended] current usage:", {
-          call_used_seconds: usage.call_used_seconds,
-          call_cap_seconds: usage.call_cap_seconds,
-          addingSeconds: durationSeconds,
-        });
-
-        const updatedUsed = (usage.call_used_seconds || 0) + durationSeconds;
-        const capSeconds = usage.call_cap_seconds || 0;
-        const graceSeconds = usage.grace_seconds ?? 600;
-        const hardStopThreshold = capSeconds + graceSeconds;
-        const overCapPlusGrace = updatedUsed > hardStopThreshold;
-        if (overCapPlusGrace) {
-          console.warn(
-            "[retell call_ended] user over cap+grace, setting hard_stop_active",
-            {
-              user_id: agentRow.user_id,
-              newCallUsed: updatedUsed,
-              call_cap_seconds: capSeconds,
-              grace_seconds: graceSeconds,
-            }
-          );
-        }
-        const graceLimit =
-          capSeconds +
-          graceSeconds +
-          (usage.call_credit_seconds || 0) +
-          (usage.rollover_seconds || 0);
-        let nextState = usage.limit_state;
-        if (updatedUsed >= graceLimit) {
-          nextState = "paused";
-        } else if (updatedUsed >= capSeconds) {
-          nextState = "pending";
-        }
-        const { total, remaining } = getUsageRemaining({
-          ...usage,
-          call_used_seconds: updatedUsed,
-        });
-        const shouldForcePause = remaining <= 0;
-        if (shouldForcePause) {
-          nextState = "paused";
-        }
-
-        const { error: usageCallsError } = await supabaseAdmin.from("usage_calls").insert({
-          user_id: agentRow.user_id,
-          agent_id: agentId,
-          call_id: callId,
-          seconds: durationSeconds,
-          cost_cents: 0,
-        });
-
-        if (usageCallsError) {
-          console.error("📞 [call_ended] USAGE_CALLS INSERT FAILED:", {
-            user_id: agentRow.user_id,
-            call_id: callId,
-            seconds: durationSeconds,
-            error: usageCallsError.message,
-          });
-        } else {
-          console.log("📞 [call_ended] USAGE_CALLS INSERT SUCCESS:", {
-            user_id: agentRow.user_id,
-            call_id: callId,
-            seconds: durationSeconds,
-          });
-        }
-
-        const { error: updateError } = await supabaseAdmin
-          .from("usage_limits")
-          .update({
-            call_used_seconds: updatedUsed,
-            limit_state: nextState,
-            force_pause: shouldForcePause ? true : usage.force_pause,
-            force_resume: shouldForcePause ? false : usage.force_resume,
-            hard_stop_active: overCapPlusGrace ? true : (usage.hard_stop_active ?? false),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("user_id", agentRow.user_id);
-
-        // ENHANCED USAGE LOGGING - Track every usage update for debugging
-        console.log("📞 [USAGE UPDATE SUCCESS]", {
-          user_id: agentRow.user_id,
-          call_id: callId,
-          previous_seconds: usage.call_used_seconds || 0,
-          previous_minutes: Math.ceil((usage.call_used_seconds || 0) / 60),
-          added_seconds: durationSeconds,
-          added_minutes: Math.ceil(durationSeconds / 60),
-          new_total_seconds: updatedUsed,
-          new_total_minutes: Math.ceil(updatedUsed / 60),
-          cap_seconds: usage.call_cap_seconds || 0,
-          cap_minutes: Math.ceil((usage.call_cap_seconds || 0) / 60),
-          remaining_seconds: remaining,
-          remaining_minutes: Math.ceil(remaining / 60),
-          limit_state: nextState,
-          update_error: updateError?.message || null,
-          timestamp: new Date().toISOString(),
-        });
-
-        await supabaseAdmin.from("usage_snapshots").insert({
-          user_id: agentRow.user_id,
-          source: "call_ended",
-          minutes_used: Math.ceil(updatedUsed / 60),
-          cap_minutes: Math.ceil(total / 60),
-          remaining_minutes: Math.ceil(remaining / 60),
-        });
-
-        // Evaluate usage thresholds and trigger alerts/emails if needed
-        await evaluateUsageThresholds(agentRow.user_id, {
-          ...usage,
-          call_used_seconds: updatedUsed,
-        });
-
+      // NOTE: Usage tracking (usage_limits, usage_calls) was MOVED to earlier in this handler
+      // to ensure minutes are recorded FIRST before any other operations that might fail/timeout.
+      // See "CRITICAL: Update usage FIRST" section above the lead extraction code.
+      
+      // Usage 80% threshold alert (check only, usage already updated)
+      if (durationSeconds > 0 && usageUpdateResult) {
+        const remaining = usageUpdateResult.remaining_seconds;
+        const total = usageUpdateResult.new_total_seconds + remaining;
         if (total > 0 && remaining / total <= 0.2) {
           const { data: alert } = await supabaseAdmin
             .from("usage_alerts")

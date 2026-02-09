@@ -181,8 +181,39 @@ USING (
 );
 
 -- ============================================
+-- 8. CALL TRACKING IDEMPOTENCY (Prevent duplicate counting)
+-- ============================================
+
+-- Add call_id column to leads table for idempotency checks
+ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS call_id text;
+
+-- Create unique index on call_id to prevent duplicate leads from webhook retries
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_call_id ON public.leads(call_id) WHERE call_id IS NOT NULL;
+
+-- Create unique constraint on usage_calls.call_id for upsert operations
+-- First check if column exists, then add unique constraint
+DO $$
+BEGIN
+  -- Check if the unique constraint already exists
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'usage_calls_call_id_unique'
+  ) THEN
+    -- Add unique constraint
+    ALTER TABLE public.usage_calls ADD CONSTRAINT usage_calls_call_id_unique UNIQUE (call_id);
+  END IF;
+EXCEPTION
+  WHEN duplicate_table THEN
+    -- Constraint already exists, ignore
+    NULL;
+END $$;
+
+-- Also create an index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_usage_calls_call_id ON public.usage_calls(call_id) WHERE call_id IS NOT NULL;
+
+-- ============================================
 -- DONE! Verify by running:
 -- SELECT column_name FROM information_schema.columns WHERE table_name = 'agents' AND column_name LIKE '%sms%';
 -- SELECT column_name FROM information_schema.columns WHERE table_name = 'profiles' AND column_name LIKE '%review%';
 -- SELECT * FROM public.webhook_configs LIMIT 1;
+-- SELECT column_name FROM information_schema.columns WHERE table_name = 'leads' AND column_name = 'call_id';
 -- ============================================
