@@ -5956,12 +5956,13 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
           await calApiWithRetry(userId, async () => {
             const freshConfig = await getCalConfig(userId);
             const token = freshConfig?.cal_access_token || calConfig.cal_access_token;
-            await calClient.delete(`/bookings/${appointment.cal_booking_uid}`, {
+            await calClient.post(`/bookings/${appointment.cal_booking_uid}/cancel`, {
+              cancellationReason: reason,
+            }, {
               headers: {
                 Authorization: `Bearer ${token}`,
                 "cal-api-version": CAL_API_VERSION_BOOKINGS,
               },
-              data: { cancellationReason: reason },
             });
           });
           calCancelled = true;
@@ -13481,12 +13482,13 @@ app.delete(
             await calApiWithRetry(uid, async () => {
               const freshConfig = await getCalConfig(uid);
               const token = freshConfig?.cal_access_token || calConfig.cal_access_token;
-              await calClient.delete(`/bookings/${appointment.cal_booking_uid}`, {
+              await calClient.post(`/bookings/${appointment.cal_booking_uid}/cancel`, {
+                cancellationReason: reason || "Cancelled by business",
+              }, {
                 headers: {
                   Authorization: `Bearer ${token}`,
                   "cal-api-version": CAL_API_VERSION_BOOKINGS,
                 },
-                data: { cancellationReason: reason || "Cancelled by business" },
               });
             });
             calCancelled = true;
