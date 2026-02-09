@@ -327,6 +327,71 @@ const formatPrimaryService = (industry) => {
 };
 
 /**
+ * Generates current date/time variables for AI agent context.
+ * This ensures the agent knows the current date/time for booking appointments.
+ * @param {string} [timezone] - Optional timezone (defaults to America/New_York)
+ * @returns {Object} - Date/time variables for Retell dynamic_variables
+ */
+const getCurrentDateTimeVars = (timezone = "America/New_York") => {
+  const now = new Date();
+  // Format in the target timezone
+  const options = { timeZone: timezone };
+  const dateFormatter = new Intl.DateTimeFormat("en-US", {
+    ...options,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const timeFormatter = new Intl.DateTimeFormat("en-US", {
+    ...options,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const shortDateFormatter = new Intl.DateTimeFormat("en-US", {
+    ...options,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  
+  // Get day of week
+  const dayOfWeek = new Intl.DateTimeFormat("en-US", {
+    ...options,
+    weekday: "long",
+  }).format(now);
+  
+  // Get month name
+  const monthName = new Intl.DateTimeFormat("en-US", {
+    ...options,
+    month: "long",
+  }).format(now);
+  
+  // Get year
+  const year = new Intl.DateTimeFormat("en-US", {
+    ...options,
+    year: "numeric",
+  }).format(now);
+
+  // Build a comprehensive date context for the AI
+  const fullDate = dateFormatter.format(now);
+  const fullTime = timeFormatter.format(now);
+  const dateContext = `IMPORTANT: Today is ${fullDate}. The current time is ${fullTime} (${timezone}). When scheduling appointments, use this as the reference date. Do not schedule appointments for past dates or incorrect months.`;
+
+  return {
+    current_date: fullDate, // "Friday, February 6, 2026"
+    current_time: fullTime, // "3:45 PM"
+    current_date_short: shortDateFormatter.format(now), // "02/06/2026"
+    current_day: dayOfWeek, // "Friday"
+    current_month: monthName, // "February"
+    current_year: year, // "2026"
+    timezone: timezone,
+    date_context: dateContext, // Full instruction for AI
+  };
+};
+
+/**
  * Builds a human-readable schedule summary from wizard inputs.
  * Used in AI prompts so the agent knows business hours.
  * @param {Object} params - Schedule parameters
@@ -7767,6 +7832,9 @@ app.post(
           : ""
       } ${travelInstruction}`.trim();
 
+      // Get current date/time for agent context
+      const dateTimeVars = getCurrentDateTimeVars("America/New_York");
+      
       const dynamicVars = {
         business_name: String(businessName || ""),
         industry: String(industry || ""),
@@ -7786,6 +7854,8 @@ app.post(
         urgency_level: "",
         vulnerable_flag: "",
         issue_type: "",
+        // Date/time awareness
+        ...dateTimeVars,
       };
       const greeting = interpolateTemplate(
         "Thank you for calling {{business_name}}. I'm Grace, the automated {{industry}} dispatch. Briefly, how may I help you today?",
@@ -12450,6 +12520,9 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     const calendarLink = profile?.cal_com_url || integration?.booking_url || "";
     const calendarEnabled = Boolean(calendarLink);
     
+    // Get current date/time for agent context (prevents booking in wrong month/year)
+    const dateTimeVars = getCurrentDateTimeVars("America/New_York");
+    
     const dynamicVariables = {
       business_name: businessName,
       primary_service: String(formatPrimaryService(profile?.industry) || ""),
@@ -12460,6 +12533,8 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
       schedule_summary: String(agentRow.schedule_summary || ""),
       standard_fee: String(agentRow.standard_fee != null ? agentRow.standard_fee : ""),
       emergency_fee: String(agentRow.emergency_fee != null ? agentRow.emergency_fee : ""),
+      // Date/time awareness - critical for accurate appointment booking
+      ...dateTimeVars,
     };
 
     const isPendingAgent = String(agentRow.agent_id || "").startsWith("pending-");
@@ -12519,11 +12594,17 @@ app.post(
           .json({ error: "Retell demo call is not configured" });
       }
 
+      // Include date/time variables for accurate booking
+      const dateTimeVars = getCurrentDateTimeVars("America/New_York");
+      
       const payload = {
         from_number: RETELL_DEMO_FROM_NUMBER,
         to_number: normalizedTo,
         override_agent_id: RETELL_DEMO_AGENT_ID,
-        retell_llm_dynamic_variables: name ? { customer_name: name } : undefined,
+        retell_llm_dynamic_variables: {
+          ...(name ? { customer_name: name } : {}),
+          ...dateTimeVars,
+        },
         metadata: {
           source: "admin_sniper_kit",
           lead_id: leadId || null,
@@ -14729,6 +14810,10 @@ const createAdminAgent = async ({ userId, businessName, areaCode, industry: indu
   const llmId = pickLlmId(industry);
   const llmVersion = pickLlmVersion(industry);
   const llmVersionNumber = parseRetellVersionNumber(llmVersion);
+  
+  // Get current date/time for agent context
+  const dateTimeVars = getCurrentDateTimeVars("America/New_York");
+  
   const dynamicVars = {
     business_name: String(businessName || ""),
     industry: String(industry || ""),
@@ -14748,6 +14833,8 @@ const createAdminAgent = async ({ userId, businessName, areaCode, industry: indu
     urgency_level: "",
     vulnerable_flag: "",
     issue_type: "",
+    // Date/time awareness
+    ...dateTimeVars,
   };
   const greeting = interpolateTemplate(
     "Thank you for calling {{business_name}}. I'm Grace, the automated {{industry}} dispatch. Briefly, how may I help you today?",
