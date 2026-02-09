@@ -6283,6 +6283,7 @@ app.get("/api/calcom/callback", async (req, res) => {
   console.log("[calcom-callback] Valid state for user:", stateData.userId);
   
   try {
+    console.log("[calcom-callback] Attempting token exchange with redirect_uri:", calcomRedirectUri);
     const tokenResponse = await axios.post(
       "https://app.cal.com/api/auth/oauth/token",
       {
@@ -6294,7 +6295,7 @@ app.get("/api/calcom/callback", async (req, res) => {
       }
     );
     
-    console.log("[calcom-callback] Token exchange successful");
+    console.log("[calcom-callback] Token exchange successful, response keys:", Object.keys(tokenResponse.data || {}));
     const accessToken = tokenResponse.data?.access_token;
     const refreshToken = tokenResponse.data?.refresh_token;
     if (!accessToken) {
@@ -6408,8 +6409,13 @@ app.get("/api/calcom/callback", async (req, res) => {
       `${FRONTEND_URL}/dashboard?cal_status=success&status=success`
     );
   } catch (err) {
-    console.error("[calcom-callback] Error:", err.response?.data || err.message);
-    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=${encodeURIComponent(err.message)}`);
+    const errorDetail = err.response?.data 
+      ? JSON.stringify(err.response.data) 
+      : err.message;
+    console.error("[calcom-callback] Error:", errorDetail);
+    console.error("[calcom-callback] Status:", err.response?.status);
+    console.error("[calcom-callback] redirect_uri used:", calcomRedirectUri);
+    return res.redirect(`${FRONTEND_URL}/dashboard?cal_status=error&cal_error=${encodeURIComponent(err.response?.data?.error || err.message)}`);
   }
 });
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   getLeads,
   getStats,
@@ -47,6 +47,7 @@ const formatRelativeTime = (dateStr) => {
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [stats, setStats] = React.useState({
     total_leads: 0,
     new_leads: 0,
@@ -270,6 +271,30 @@ export default function DashboardPage() {
       clearInterval(interval);
     };
   }, []);
+
+  // Handle Cal.com OAuth callback results from URL params
+  React.useEffect(() => {
+    const calStatus = searchParams.get("cal_status");
+    const calError = searchParams.get("cal_error");
+    if (calStatus === "success") {
+      setCalConnected(true);
+      setCalStatusError("");
+      // Clean URL params
+      searchParams.delete("cal_status");
+      searchParams.delete("status");
+      setSearchParams(searchParams, { replace: true });
+    } else if (calStatus === "error") {
+      const msg = calError
+        ? `Calendar connection failed: ${decodeURIComponent(calError)}`
+        : "Calendar connection failed. Please try again.";
+      setCalStatusError(msg);
+      setCalConnected(false);
+      // Clean URL params
+      searchParams.delete("cal_status");
+      searchParams.delete("cal_error");
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   React.useEffect(() => {
     let active = true;
