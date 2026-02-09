@@ -4156,18 +4156,22 @@ const getEnhancedDashboardStats = async (userId) => {
       .maybeSingle()
   ]);
   
-  // Calculate stats - use MAX of leads vs usage_calls for reliability
-  const leadsAllTime = allLeadsResult.count || 0;
+  // Calculate stats - use usage_calls as the SOURCE OF TRUTH for call counts
+  // Leads are a DIFFERENT concept (potential customers extracted from calls)
+  // Not every call creates a lead, so we track calls separately
   const usageCallsAllTime = usageCallsAllResult.count || 0;
-  const callsAllTime = Math.max(leadsAllTime, usageCallsAllTime);
+  const callsAllTime = usageCallsAllTime;
   
-  const leadsToday = todayLeadsResult.count || 0;
   const usageCallsToday = usageCallsTodayResult.count || 0;
-  const callsToday = Math.max(leadsToday, usageCallsToday);
+  const callsToday = usageCallsToday;
   
-  const leadsThisWeek = weekLeadsResult.count || 0;
   const usageCallsThisWeek = usageCallsWeekResult.count || 0;
-  const callsThisWeek = Math.max(leadsThisWeek, usageCallsThisWeek);
+  const callsThisWeek = usageCallsThisWeek;
+  
+  // Keep leads count separate for reference
+  const leadsAllTime = allLeadsResult.count || 0;
+  const leadsToday = todayLeadsResult.count || 0;
+  const leadsThisWeek = weekLeadsResult.count || 0;
   const bookedCount = bookedLeadsResult.count || 0;
   
   // Booking rate
@@ -4221,9 +4225,15 @@ const getEnhancedDashboardStats = async (userId) => {
     : bookedCount * avgJobValue;
   
   return {
+    // CALLS = actual phone calls received (from usage_calls table)
     calls_today: callsToday,
     calls_this_week: callsThisWeek,
     calls_all_time: callsAllTime,
+    // LEADS = potential customers extracted from calls (separate metric)
+    leads_today: leadsToday,
+    leads_this_week: leadsThisWeek,
+    leads_all_time: leadsAllTime,
+    // Other metrics
     appointments_today: appointmentsToday,
     appointments_this_week: appointmentsThisWeek,
     appointments_all_time: appointmentsAllTime,
