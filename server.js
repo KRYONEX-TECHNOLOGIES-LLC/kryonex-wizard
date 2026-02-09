@@ -7715,7 +7715,129 @@ const retellWebhookHandler = async (req, res) => {
       } catch (recErr) {
         console.warn("📞 [call_ended] call_recordings insert failed (non-fatal):", recErr.message);
       }
-      
+
+      // =====================================================================
+      // CREATE APPOINTMENT from call_ended when booking was made
+      // Retell's built-in Book Calendar and custom tool calls don't send
+      // a separate "tool_call" webhook event. The booking happens during the
+      // call, and we only learn about it here via post_call_analysis fields
+      // or the transcript_with_tool_calls data. Create the appointment row
+      // so it shows up on our /calendar page.
+      // =====================================================================
+      if (analysisData.appointment_booked === true) {
+        try {
+          // Extract booking details from post-call analysis and tool calls
+          const toolCalls = call.transcript_with_tool_calls || payload.transcript_with_tool_calls || [];
+          let bookingTime = postCallAnalysis.appointment_time || postCallAnalysis.booked_time || postCallAnalysis.scheduled_time || null;
+          let bookingUid = null;
+          
+          // Try to extract booking details from Retell's tool call results
+          for (const entry of (Array.isArray(toolCalls) ? toolCalls : [])) {
+            if (entry.tool_call_result || entry.function_call_result) {
+              const result = entry.tool_call_result || entry.function_call_result;
+              const resultStr = typeof result === "string" ? result : JSON.stringify(result || "");
+              // Look for Cal.com booking UID in tool call results
+              const uidMatch = resultStr.match(/"uid"\s*:\s*"([^"]+)"/);
+              if (uidMatch) bookingUid = uidMatch[1];
+              // Look for start time in tool call results
+              const startMatch = resultStr.match(/"start(?:Time)?"\s*:\s*"([^"]+)"/);
+              if (startMatch && !bookingTime) bookingTime = startMatch[1];
+            }
+          }
+          
+          // Build appointment start/end times
+          let appointmentStart = null;
+          let appointmentEnd = null;
+          if (bookingTime) {
+            appointmentStart = new Date(bookingTime).toISOString();
+            appointmentEnd = new Date(new Date(bookingTime).getTime() + 60 * 60 * 1000).toISOString(); // default 1hr
+          } else {
+            // No specific time found - use tomorrow 9am in user's timezone as placeholder
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            tomorrow.setHours(9, 0, 0, 0);
+            appointmentStart = tomorrow.toISOString();
+            appointmentEnd = new Date(tomorrow.getTime() + 60 * 60 * 1000).toISOString();
+          }
+          
+          const customerName = analysisData.customer_name || regexExtracted?.callerName || "Customer";
+          const customerPhone = normalizePhoneE164(analysisData.customer_phone || fromNumber || "");
+          
+          // Check if this appointment already exists (Cal.com webhook may have beaten us)
+          let appointmentExists = false;
+          if (bookingUid) {
+            const { data: existing } = await supabaseAdmin
+              .from("appointments")
+              .select("id")
+              .eq("cal_booking_uid", bookingUid)
+              .maybeSingle();
+            if (existing) appointmentExists = true;
+          }
+          
+          if (!appointmentExists) {
+            const { data: newAppointment, error: apptError } = await supabaseAdmin
+              .from("appointments")
+              .insert({
+                user_id: agentRow.user_id,
+                customer_name: customerName,
+                customer_phone: customerPhone,
+                customer_email: null,
+                start_time: appointmentStart,
+                end_time: appointmentEnd,
+                location: analysisData.service_address || null,
+                notes: `Booked via AI call. ${analysisData.issue_type ? "Service: " + analysisData.issue_type + ". " : ""}${analysisData.call_summary || ""}`.trim(),
+                status: "scheduled",
+                cal_booking_uid: bookingUid,
+              })
+              .select("id")
+              .single();
+            
+            if (apptError) {
+              console.warn("📞 [call_ended] appointment insert failed:", apptError.message);
+            } else {
+              console.log("📞 [call_ended] ✅ Appointment created from booked call:", {
+                appointment_id: newAppointment?.id,
+                customer_name: customerName,
+                start_time: appointmentStart,
+                booking_uid: bookingUid,
+                lead_id: newLead?.id,
+              });
+              
+              // Log event
+              await logEvent({
+                userId: agentRow.user_id,
+                actionType: "APPOINTMENT_BOOKED",
+                metaData: {
+                  appointment_id: newAppointment?.id,
+                  lead_id: newLead?.id,
+                  call_id: callId,
+                  source: "retell_call_ended",
+                  booking_uid: bookingUid,
+                },
+              });
+              
+              // Send outbound webhook
+              sendOutboundWebhook(agentRow.user_id, "appointment_booked", {
+                appointment_id: newAppointment?.id,
+                user_id: agentRow.user_id,
+                customer_name: customerName,
+                customer_phone: customerPhone,
+                start_time: appointmentStart,
+                end_time: appointmentEnd,
+                location: analysisData.service_address || null,
+                source: "retell_call_ended",
+                cal_booking_uid: bookingUid,
+                call_id: callId,
+              }).catch(err => console.error("[call_ended] appointment webhook error:", err.message));
+            }
+          } else {
+            console.log("📞 [call_ended] Appointment already exists for booking_uid:", bookingUid);
+          }
+        } catch (apptErr) {
+          console.warn("📞 [call_ended] appointment creation from call failed (non-fatal):", apptErr.message);
+        }
+      }
+
       // Store call event (completed)
       const idempotencyKey = callId || generateIdempotencyKey(payload);
       await storeCallEvent({
