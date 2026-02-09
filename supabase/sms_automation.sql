@@ -225,6 +225,14 @@ CREATE INDEX IF NOT EXISTS idx_usage_calls_call_id ON public.usage_calls(call_id
 -- ============================================
 
 -- ============================================
+-- 9.5 CALL RECORDINGS - Add call_id for backfilling recording URLs
+-- ============================================
+
+-- Add call_id column to call_recordings for Retell API lookups
+ALTER TABLE public.call_recordings ADD COLUMN IF NOT EXISTS call_id text;
+CREATE INDEX IF NOT EXISTS idx_call_recordings_call_id ON public.call_recordings(call_id) WHERE call_id IS NOT NULL;
+
+-- ============================================
 -- 10. ATOMIC USAGE INCREMENT FUNCTIONS (Prevent race conditions)
 -- ============================================
 

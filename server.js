@@ -7276,11 +7276,12 @@ const retellWebhookHandler = async (req, res) => {
         await supabaseAdmin.from("call_recordings").insert({
           seller_id: agentRow.user_id,
           lead_id: newLead?.id || null,
+          call_id: callId, // Store call_id for backfilling recording URLs later
           duration: durationSeconds || 0,
           recording_url: recordingUrl,
           outcome: callOutcome,
         });
-        console.log("📞 [call_ended] call_recording inserted for Black Box:", { callOutcome, leadStatus });
+        console.log("📞 [call_ended] call_recording inserted for Black Box:", { callOutcome, leadStatus, hasRecordingUrl: !!recordingUrl });
       } catch (recErr) {
         console.warn("📞 [call_ended] call_recordings insert failed (non-fatal):", recErr.message);
       }
@@ -14183,6 +14184,111 @@ app.post(
       }
       return res.json({ call: data });
     } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Backfill recording URLs for call_recordings and leads that are missing them
+app.post(
+  "/admin/backfill-recordings",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-backfill-recordings", limit: 5, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { limit = 50 } = req.body || {};
+      
+      // Find leads with call_id but no recording_url
+      const { data: leadsToFix, error: leadsError } = await supabaseAdmin
+        .from("leads")
+        .select("id, call_id")
+        .not("call_id", "is", null)
+        .or("recording_url.is.null,recording_url.eq.")
+        .limit(limit);
+      
+      if (leadsError) {
+        return res.status(500).json({ error: leadsError.message });
+      }
+      
+      // Also find call_recordings missing recording_url (check call_id column or lead's call_id)
+      const { data: recordingsToFix, error: recordingsError } = await supabaseAdmin
+        .from("call_recordings")
+        .select("id, call_id, lead_id, leads(call_id)")
+        .or("recording_url.is.null,recording_url.eq.")
+        .limit(limit);
+      
+      let updated = 0;
+      let failed = 0;
+      const results = [];
+      
+      // Process leads
+      for (const lead of (leadsToFix || [])) {
+        if (!lead.call_id) continue;
+        try {
+          const callResponse = await retellClient.get(`/v2/get-call/${lead.call_id}`);
+          const recordingUrl = callResponse?.data?.recording_url;
+          
+          if (recordingUrl) {
+            await supabaseAdmin
+              .from("leads")
+              .update({ recording_url: recordingUrl })
+              .eq("id", lead.id);
+            
+            // Also update call_recordings if linked
+            await supabaseAdmin
+              .from("call_recordings")
+              .update({ recording_url: recordingUrl })
+              .eq("lead_id", lead.id);
+            
+            updated++;
+            results.push({ lead_id: lead.id, call_id: lead.call_id, status: "updated", recording_url: recordingUrl });
+          } else {
+            results.push({ lead_id: lead.id, call_id: lead.call_id, status: "no_recording" });
+          }
+        } catch (fetchErr) {
+          failed++;
+          results.push({ lead_id: lead.id, call_id: lead.call_id, status: "error", error: fetchErr.message });
+        }
+        
+        // Rate limit - don't hammer Retell API
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      
+      // Process call_recordings that have call_id (direct or via lead)
+      for (const rec of (recordingsToFix || [])) {
+        const callId = rec.call_id || rec.leads?.call_id;
+        if (!callId) continue;
+        try {
+          const callResponse = await retellClient.get(`/v2/get-call/${callId}`);
+          const recordingUrl = callResponse?.data?.recording_url;
+          
+          if (recordingUrl) {
+            await supabaseAdmin
+              .from("call_recordings")
+              .update({ recording_url: recordingUrl })
+              .eq("id", rec.id);
+            
+            updated++;
+            results.push({ recording_id: rec.id, call_id: callId, status: "updated", recording_url: recordingUrl });
+          }
+        } catch (fetchErr) {
+          failed++;
+          results.push({ recording_id: rec.id, call_id: callId, status: "error", error: fetchErr.message });
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      
+      return res.json({
+        success: true,
+        updated,
+        failed,
+        total_processed: (leadsToFix?.length || 0) + (recordingsToFix?.length || 0),
+        results,
+      });
+    } catch (err) {
+      console.error("[admin/backfill-recordings] Error:", err);
       return res.status(500).json({ error: err.message });
     }
   }
