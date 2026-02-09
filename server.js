@@ -16732,6 +16732,116 @@ app.post(
   }
 );
 
+// POST /admin/sync-usage-from-calls - Recalculate usage_limits from actual usage_calls records
+// Use this to backfill/fix usage_limits.call_used_seconds if webhooks failed to update it
+app.post(
+  "/admin/sync-usage-from-calls",
+  requireAuth,
+  requireAdmin,
+  rateLimit({ keyPrefix: "admin-sync-usage", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const { user_id } = req.body || {};
+      if (!user_id) {
+        return res.status(400).json({ error: "user_id is required" });
+      }
+
+      // Sum all call seconds from usage_calls for this user
+      const { data: callRecords, error: callsError } = await supabaseAdmin
+        .from("usage_calls")
+        .select("seconds")
+        .eq("user_id", user_id);
+
+      if (callsError) {
+        console.error("[admin/sync-usage-from-calls] Failed to fetch usage_calls:", callsError.message);
+        return res.status(500).json({ error: callsError.message });
+      }
+
+      const totalCallSeconds = (callRecords || []).reduce((sum, row) => sum + (row.seconds || 0), 0);
+
+      // Sum all SMS from usage_sms for this user (if table exists)
+      let totalSmsUsed = 0;
+      try {
+        const { data: smsRecords, error: smsError } = await supabaseAdmin
+          .from("usage_sms")
+          .select("count")
+          .eq("user_id", user_id);
+        
+        if (!smsError && smsRecords) {
+          totalSmsUsed = smsRecords.reduce((sum, row) => sum + (row.count || 1), 0);
+        }
+      } catch (smsErr) {
+        // usage_sms table might not exist, that's ok
+        console.log("[admin/sync-usage-from-calls] No usage_sms table or error:", smsErr.message);
+      }
+
+      // Get current usage_limits
+      const { data: currentUsage } = await supabaseAdmin
+        .from("usage_limits")
+        .select("call_used_seconds, sms_used")
+        .eq("user_id", user_id)
+        .maybeSingle();
+
+      const previousCallSeconds = currentUsage?.call_used_seconds || 0;
+      const previousSmsUsed = currentUsage?.sms_used || 0;
+
+      // Update usage_limits with the calculated totals
+      const { error: updateError } = await supabaseAdmin
+        .from("usage_limits")
+        .update({
+          call_used_seconds: totalCallSeconds,
+          sms_used: totalSmsUsed > 0 ? totalSmsUsed : previousSmsUsed, // Only update SMS if we found records
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", user_id);
+
+      if (updateError) {
+        console.error("[admin/sync-usage-from-calls] Failed to update usage_limits:", updateError.message);
+        return res.status(500).json({ error: updateError.message });
+      }
+
+      await auditLog({
+        userId: req.user.id,
+        action: "admin_sync_usage_from_calls",
+        entity: "usage_limits",
+        entityId: user_id,
+        req,
+        metadata: {
+          previous_call_seconds: previousCallSeconds,
+          new_call_seconds: totalCallSeconds,
+          call_records_count: (callRecords || []).length,
+          previous_sms_used: previousSmsUsed,
+          new_sms_used: totalSmsUsed > 0 ? totalSmsUsed : previousSmsUsed,
+        },
+      });
+
+      console.log("[admin/sync-usage-from-calls] Synced usage:", {
+        admin_id: req.user.id,
+        target_user_id: user_id,
+        previous_call_seconds: previousCallSeconds,
+        new_call_seconds: totalCallSeconds,
+        call_records_count: (callRecords || []).length,
+        previous_minutes: Math.floor(previousCallSeconds / 60),
+        new_minutes: Math.floor(totalCallSeconds / 60),
+      });
+
+      return res.json({
+        success: true,
+        user_id,
+        previous_call_seconds: previousCallSeconds,
+        new_call_seconds: totalCallSeconds,
+        call_records_count: (callRecords || []).length,
+        previous_minutes: Math.floor(previousCallSeconds / 60),
+        new_minutes: Math.floor(totalCallSeconds / 60),
+        sms_synced: totalSmsUsed > 0,
+      });
+    } catch (err) {
+      console.error("[admin/sync-usage-from-calls] error:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
 // GET /admin/test-retell-webhook - Check Retell webhook health
 app.get(
   "/admin/test-retell-webhook",
@@ -16892,7 +17002,8 @@ app.get(
         subscription?.current_period_end
       );
       const { total, remaining } = getUsageRemaining(usage);
-      return res.json({
+      
+      const response = {
         call_minutes_remaining: Math.floor(remaining / 60),
         call_minutes_total: Math.floor(total / 60),
         call_used_minutes: Math.floor((usage.call_used_seconds || 0) / 60),
@@ -16906,7 +17017,22 @@ app.get(
         limit_state: usage.limit_state || "active",
         period_start: usage.period_start,
         period_end: usage.period_end,
+      };
+      
+      // Debug logging for usage tracking verification
+      console.log("[usage/status] returning:", {
+        user_id: uid,
+        call_used_seconds: usage.call_used_seconds || 0,
+        call_cap_seconds: usage.call_cap_seconds || 0,
+        call_credit_seconds: usage.call_credit_seconds || 0,
+        call_minutes_used: response.call_used_minutes,
+        call_minutes_total: response.call_minutes_total,
+        call_minutes_remaining: response.call_minutes_remaining,
+        sms_used: response.sms_used,
+        sms_total: response.sms_total,
       });
+      
+      return res.json(response);
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }

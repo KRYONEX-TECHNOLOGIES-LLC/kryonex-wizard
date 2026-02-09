@@ -648,6 +648,27 @@ export default function DashboardPage() {
               </div>
             </div>
 
+            {/* SMS Counter - Communication Credits */}
+            <div className="usage-card glass-panel">
+              <div className="usage-header">Communication Credits (SMS)</div>
+              <div className="progress-track">
+                <div
+                  className={`progress-fill ${smsPercent >= 75 ? "critical" : ""}`}
+                  style={{ width: `${smsPercent}%` }}
+                />
+              </div>
+              <div className="usage-footer">
+                <span>
+                  {smsUsed} / {smsTotal} Texts Used
+                </span>
+                {smsPercent >= 75 ? (
+                  <button className="btn-glow-red" onClick={handleTopup}>
+                    ⚡ LOW SMS: TOP UP
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
             <div className="calendar-connection-card glass-panel">
               <div className="calendar-connection-header">
                 <div className="calendar-connection-title">Calendar Sync</div>
