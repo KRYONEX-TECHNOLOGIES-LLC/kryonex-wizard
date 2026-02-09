@@ -5453,7 +5453,7 @@ const refreshCalcomToken = async (userId, refreshToken) => {
 const getCalIntegration = async (userId) => {
   const { data } = await supabaseAdmin
     .from("integrations")
-    .select("access_token, refresh_token, expires_at, is_active")
+    .select("access_token, refresh_token, expires_at, is_active, event_type_id, event_type_slug, cal_username, cal_team_slug, cal_organization_slug, cal_time_zone, booking_url")
     .eq("user_id", userId)
     .eq("provider", "calcom")
     .maybeSingle();
@@ -5479,6 +5479,13 @@ const getCalIntegration = async (userId) => {
     access_token: accessToken,
     refresh_token: refreshToken,
     user_id: userId,
+    // Map integration column names to the config format expected by fetchCalSlots
+    cal_event_type_id: data.event_type_id,
+    cal_event_type_slug: data.event_type_slug,
+    cal_username: data.cal_username,
+    cal_team_slug: data.cal_team_slug,
+    cal_organization_slug: data.cal_organization_slug,
+    cal_time_zone: data.cal_time_zone,
   };
 };
 
@@ -5548,9 +5555,19 @@ const getCalConfig = async (userId) => {
   ]);
   const hasToken = Boolean(integration?.access_token || profile?.cal_api_key);
   if (!hasToken) return null;
+  
+  // Merge config: integration data takes precedence over profile data
+  // (OAuth callback stores to integrations, legacy manual setup uses profiles)
   return {
-    ...profile,
+    cal_api_key: profile?.cal_api_key || null,
+    cal_event_type_id: integration?.cal_event_type_id || profile?.cal_event_type_id || null,
+    cal_event_type_slug: integration?.cal_event_type_slug || profile?.cal_event_type_slug || null,
+    cal_username: integration?.cal_username || profile?.cal_username || null,
+    cal_team_slug: integration?.cal_team_slug || profile?.cal_team_slug || null,
+    cal_organization_slug: integration?.cal_organization_slug || profile?.cal_organization_slug || null,
+    cal_time_zone: integration?.cal_time_zone || profile?.cal_time_zone || "America/New_York",
     cal_access_token: integration?.access_token || null,
+    booking_url: integration?.booking_url || null,
   };
 };
 
