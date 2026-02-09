@@ -18,7 +18,12 @@ import { normalizePhone } from "../lib/phone.js";
 import { getImpersonation } from "../lib/impersonation.js";
 
 const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
-const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0);
+// End of month: last moment of the last day (23:59:59.999) so all-day appointments are included
+const endOfMonth = (date) => {
+  const d = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  d.setHours(23, 59, 59, 999);
+  return d;
+};
 
 const pad = (value) => String(value).padStart(2, "0");
 const defaultCalendarFormState = {
@@ -138,35 +143,15 @@ export default function CalendarPage() {
     setLoading(true);
     const start = startOfMonth(date);
     const end = endOfMonth(date);
-    const impersonation = getImpersonation();
-    if (impersonation.active && impersonation.userId) {
-      try {
-        const res = await getAppointments(start.toISOString(), end.toISOString());
-        setAppointments(res.data?.appointments || []);
-        setLoadError(null);
-      } catch (err) {
-        console.error("[Calendar] Load error:", err);
-        setLoadError(err.userMessage || err.message || "Failed to load appointments");
-        setAppointments([]);
-      }
-      setLoading(false);
-      return;
+    try {
+      const res = await getAppointments(start.toISOString(), end.toISOString());
+      setAppointments(res.data?.appointments || []);
+      setLoadError(null);
+    } catch (err) {
+      console.error("[Calendar] Load error:", err);
+      setLoadError(err.userMessage || err.message || "Failed to load appointments");
+      setAppointments([]);
     }
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData?.session?.user;
-    if (!user) {
-      setLoading(false);
-      return;
-    }
-    const { data } = await supabase
-      .from("appointments")
-      .select("*")
-      .eq("user_id", user.id)
-      .gte("start_time", start.toISOString())
-      .lte("start_time", end.toISOString())
-      .order("start_time", { ascending: true });
-
-    setAppointments(data || []);
     setLoading(false);
   };
 
