@@ -7163,9 +7163,9 @@ const retellWebhookHandler = async (req, res) => {
         }
       }
 
-      // LOG ERROR if we couldn't map the call to a user
+      // BLOCK if we couldn't map the call to a user - NO FREE CALLS
       if (!agentRow?.user_id) {
-        console.error("📞 [RETELL MAPPING ERROR] Could not find user for call_started:", {
+        console.error("📞 [RETELL MAPPING ERROR] BLOCKING CALL - Could not find user:", {
           normalized_to_number: normalizedToNumber,
           raw_to_number: toNumber,
           agent_id: agentId,
@@ -7173,8 +7173,27 @@ const retellWebhookHandler = async (req, res) => {
           call_id: callId,
           timestamp: new Date().toISOString(),
         });
-        // Return 200 to avoid Retell retries, but call won't be tracked
-        return res.status(200).json({ warning: "User not found for phone/agent" });
+        // Log to error_logs for admin review
+        trackError({
+          error: new Error("Unattributed call blocked - user not found"),
+          context: {
+            source: "call_started",
+            to_number: normalizedToNumber,
+            agent_id: agentId,
+            call_id: callId,
+          },
+          severity: "high",
+          endpoint: "/retell-webhook",
+          method: "POST",
+        });
+        // Store for manual review
+        await storeUnknownPhone({
+          phoneNumber: normalizedToNumber || agentId || "unknown",
+          eventType: "call_started_blocked",
+          rawPayload: payload,
+        });
+        // Return 402 to block the call - NO FREE RIDES
+        return res.status(402).json({ error: "User not found - call blocked" });
       }
 
       if (agentRow?.user_id) {
@@ -7428,22 +7447,43 @@ const retellWebhookHandler = async (req, res) => {
         user_id: agentRow?.user_id || null,
       });
 
-      // FAILSAFE: If we can't find the owner, DO NOT attribute to anyone
-      // This prevents accidentally charging the wrong user
+      // FAILSAFE: If we can't find the owner, this is a BILLING ISSUE
+      // The call already happened (call_started should have blocked it)
+      // Track it as high-severity for immediate admin review
       if (!agentRow?.user_id) {
-        console.error("📞 [call_ended] FAILSAFE: Cannot determine call owner, skipping attribution", {
+        const durationSeconds = Math.round((call.duration_ms || payload.duration_ms || 0) / 1000);
+        console.error("📞 [call_ended] BILLING ALERT: Unattributed call completed!", {
           toNumber: normalizedToNumber,
           agentId,
           callId,
+          duration_seconds: durationSeconds,
         });
-        // Store in unknown_phone for manual review
+        
+        // Track as high-severity billing issue
+        trackError({
+          error: new Error(`BILLING ISSUE: Unattributed call completed (${durationSeconds}s)`),
+          context: {
+            source: "call_ended_unattributed",
+            to_number: normalizedToNumber,
+            agent_id: agentId,
+            call_id: callId,
+            duration_seconds: durationSeconds,
+            from_number: fromNumber,
+          },
+          severity: "critical",
+          endpoint: "/retell-webhook",
+          method: "POST",
+        });
+        
+        // Store in unknown_phone for manual review and billing recovery
         await storeUnknownPhone({
           phoneNumber: normalizedToNumber || agentId || "unknown",
-          eventType: "call_ended_unattributed",
-          rawPayload: payload,
+          eventType: "call_ended_unattributed_BILLING",
+          rawPayload: { ...payload, duration_seconds: durationSeconds },
         });
-        // Return 200 so Retell doesn't retry, but we didn't process it
-        return res.json({ received: true, warning: "Could not attribute call to user" });
+        
+        // Return 200 so Retell doesn't retry, but flag it clearly
+        return res.json({ received: true, error: "BILLING_ISSUE", warning: "Unattributed call - requires manual review" });
       }
 
       // ========================================
