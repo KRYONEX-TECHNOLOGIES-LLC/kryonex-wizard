@@ -5654,13 +5654,18 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
   }
 
   if (toolName === "book_appointment") {
+    console.log("[book_appointment] CALLED by agent:", agentId, "for user:", userId, "args:", JSON.stringify(args).slice(0, 500));
     const { start, end } = resolveToolAppointmentWindow(args);
     if (!start || !end) {
+      console.warn("[book_appointment] Missing start time, args:", JSON.stringify(args).slice(0, 300));
       return { ok: false, error: "Missing start time" };
     }
+    console.log("[book_appointment] Resolved window:", { start: start.toISOString(), end: end.toISOString() });
     const calConfig = await getCalConfig(userId);
+    console.log("[book_appointment] Cal config found:", Boolean(calConfig), calConfig ? { hasToken: Boolean(calConfig.cal_access_token), eventTypeId: calConfig.cal_event_type_id } : "null");
     if (calConfig) {
       const booking = await createCalBooking({ config: calConfig, userId, start, args });
+      console.log("[book_appointment] Cal.com booking result:", booking ? { uid: booking.uid || booking.id, start: booking.start } : "null");
       
       // Also insert into appointments table so it appears in calendar UI
       const normalizedCustomerPhone = normalizePhoneE164(args.customer_phone || booking?.attendee?.phoneNumber);
@@ -5712,11 +5717,15 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       }
       
       if (appointmentError) {
-        console.warn("[book_appointment] Cal.com booking succeeded but DB insert failed", {
+        console.error("[book_appointment] Cal.com booking succeeded but DB insert FAILED:", {
           userId,
           booking_uid: booking?.uid,
           error: appointmentError.message,
+          code: appointmentError.code,
+          details: appointmentError.details,
         });
+      } else {
+        console.log("[book_appointment] Cal.com + DB insert SUCCESS, appointment_id:", appointmentData?.id, "booking_uid:", booking?.uid || booking?.id);
       }
       
       await logEvent({
@@ -5750,23 +5759,30 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       
       return { ok: true, source: "cal.com", booking, appointment: appointmentData };
     }
+    console.log("[book_appointment] No Cal.com config, using INTERNAL booking for user:", userId);
     const internalCustomerPhone = normalizePhoneE164(args.customer_phone);
+    const insertPayload = {
+      user_id: userId,
+      customer_name: args.customer_name || "Customer",
+      customer_phone: internalCustomerPhone,
+      customer_email: args.customer_email || args.email || null,
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      location: args.service_address || args.location || null,
+      notes: args.service_issue || args.notes || null,
+      status: "booked",
+    };
+    console.log("[book_appointment] Inserting into appointments:", JSON.stringify(insertPayload).slice(0, 500));
     const { data, error } = await supabaseAdmin
       .from("appointments")
-      .insert({
-        user_id: userId,
-        customer_name: args.customer_name || "Customer",
-        customer_phone: internalCustomerPhone,
-        customer_email: args.customer_email || args.email || null,
-        start_time: start.toISOString(),
-        end_time: end.toISOString(),
-        location: args.service_address || args.location || null,
-        notes: args.service_issue || args.notes || null,
-        status: "booked",
-      })
+      .insert(insertPayload)
       .select("*")
       .single();
-    if (error) return { ok: false, error: error.message };
+    if (error) {
+      console.error("[book_appointment] INTERNAL INSERT FAILED:", error.message, error.code, error.details);
+      return { ok: false, error: error.message };
+    }
+    console.log("[book_appointment] INTERNAL INSERT SUCCESS, id:", data?.id);
     await logEvent({
       userId,
       actionType: "APPOINTMENT_BOOKED",
@@ -8137,6 +8153,7 @@ const retellWebhookHandler = async (req, res) => {
     }
 
     if (eventType === "tool_call" || eventType === "function_call") {
+      console.log("[retell-webhook] TOOL_CALL received, raw tool names:", JSON.stringify((payload?.tool_calls || payload?.tool_call || []).map?.(t => t?.name || t?.tool_name) || payload?.tool_call?.name || "unknown"));
       const toolCalls = normalizeToolPayload(payload);
       const agentId = payload.agent_id || call.agent_id || payload.data?.agent_id;
       if (!agentId) {
