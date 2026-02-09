@@ -6722,7 +6722,7 @@ const retellWebhookHandler = async (req, res) => {
         call.duration_seconds ||
         payload.duration_seconds ||
         0;
-      const recordingUrl =
+      let recordingUrl =
         call.recording_url ||
         call.recordingUrl ||
         call.recording?.url ||
@@ -6730,6 +6730,23 @@ const retellWebhookHandler = async (req, res) => {
         payload.recordingUrl ||
         payload.recording?.url ||
         null;
+      
+      // If no recording_url in payload, fetch it from Retell API
+      if (!recordingUrl && callId) {
+        try {
+          console.log("📞 [call_ended] No recording_url in webhook, fetching from Retell API for call:", callId);
+          const callDetailsResponse = await retellClient.get(`/v2/get-call/${callId}`);
+          if (callDetailsResponse?.data?.recording_url) {
+            recordingUrl = callDetailsResponse.data.recording_url;
+            console.log("📞 [call_ended] Fetched recording_url from Retell API:", recordingUrl);
+          } else {
+            console.log("📞 [call_ended] No recording_url available from Retell API yet");
+          }
+        } catch (fetchErr) {
+          console.warn("📞 [call_ended] Failed to fetch recording from Retell API:", fetchErr.message);
+        }
+      }
+      
       const disposition =
         call.disposition ||
         call.status ||
