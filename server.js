@@ -5396,11 +5396,13 @@ const refreshCalcomToken = async (userId, refreshToken) => {
     return null;
   }
   try {
-    const response = await axios.post("https://app.cal.com/api/auth/oauth/token", {
+    const response = await axios.post("https://api.cal.com/v2/auth/oauth2/token", {
       client_id: CALCOM_CLIENT_ID,
       client_secret: CALCOM_CLIENT_SECRET,
       grant_type: "refresh_token",
       refresh_token: refreshToken,
+    }, {
+      headers: { "Content-Type": "application/json" },
     });
     const newAccessToken = response.data?.access_token;
     const newRefreshToken = response.data?.refresh_token || refreshToken;
@@ -6285,13 +6287,18 @@ app.get("/api/calcom/callback", async (req, res) => {
   try {
     console.log("[calcom-callback] Attempting token exchange with redirect_uri:", calcomRedirectUri);
     const tokenResponse = await axios.post(
-      "https://app.cal.com/api/auth/oauth/token",
+      "https://api.cal.com/v2/auth/oauth2/token",
       {
         code,
         client_id: CALCOM_CLIENT_ID,
         client_secret: CALCOM_CLIENT_SECRET,
         grant_type: "authorization_code",
         redirect_uri: calcomRedirectUri,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
       }
     );
     
