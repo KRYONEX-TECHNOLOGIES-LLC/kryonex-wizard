@@ -268,7 +268,7 @@ export default function ReferralPage() {
         </div>
         <div className="referral-header-badge">
           <Sparkles size={16} />
-          <span>$25 + 10% for 12 months</span>
+          <span>$25 + 10% for 12 months (30-day hold)</span>
         </div>
       </div>
 

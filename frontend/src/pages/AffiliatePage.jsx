@@ -82,7 +82,7 @@ export default function AffiliatePage() {
           <DollarSign size={24} />
           <div>
             <span className="stat-value">$25</span>
-            <span className="stat-label">Upfront Bonus</span>
+            <span className="stat-label">Sign-Up Bonus*</span>
           </div>
         </div>
         <div className="stat-item">
@@ -180,7 +180,7 @@ export default function AffiliatePage() {
           
           <div className="calculator-results">
             <div className="result-row">
-              <span>Upfront Bonuses</span>
+              <span>Sign-Up Bonuses*</span>
               <span className="result-value">${upfrontTotal.toLocaleString()}</span>
             </div>
             <div className="result-row">
@@ -194,7 +194,7 @@ export default function AffiliatePage() {
           </div>
           
           <p className="calculator-note">
-            *Based on Pro plan ($249/mo). Higher tier referrals = higher commissions.
+            *Based on Pro plan ($249/mo). All commissions paid after 30-day verification period.
           </p>
         </div>
       </section>
@@ -206,7 +206,7 @@ export default function AffiliatePage() {
           <div className="benefit-card">
             <Gift className="benefit-icon" />
             <h3>Generous Commissions</h3>
-            <p>$25 upfront + 10% monthly for a full year. Most programs only pay once.</p>
+            <p>$25 sign-up bonus + 10% monthly for a full year (after 30-day verification).</p>
           </div>
           <div className="benefit-card">
             <Users className="benefit-icon" />
@@ -260,7 +260,7 @@ export default function AffiliatePage() {
             <span className="highlight-cyan">$99.70/mo</span>
             <span className="highlight-green">$1,221.40</span>
           </div>
-          <p className="commission-note">Plus $25 upfront bonus on every referral!</p>
+          <p className="commission-note">*Plus $25 sign-up bonus on every referral (paid after 30-day verification)</p>
         </div>
       </section>
 
