@@ -2180,22 +2180,60 @@ const sendSmsInternal = async ({
   const smsCap = usage.sms_cap ?? 0;
   const smsCredit = usage.sms_credit ?? 0;
   const totalSmsCap = smsCap + smsCredit;
-  const newSmsUsed = (usage.sms_used || 0) + 1;
-  if (!bypassUsage && newSmsUsed > totalSmsCap) {
-    console.warn("[sendSms] SMS blocked: usage cap reached", {
-      user_id: userId,
-      sms_used: usage.sms_used,
-      sms_cap: smsCap,
-      sms_credit: smsCredit,
-      total_cap: totalSmsCap,
-    });
-    await supabaseAdmin
-      .from("usage_limits")
-      .update({ limit_state: "paused", updated_at: new Date().toISOString() })
-      .eq("user_id", userId);
-    const err = new Error("Usage cap reached");
-    err.code = "USAGE_CAP_REACHED";
-    throw err;
+  
+  // ATOMIC SMS: Increment FIRST to prevent race conditions
+  // If two requests come in simultaneously near the cap, only one will succeed
+  let smsReserved = false;
+  let newSmsUsed = (usage.sms_used || 0) + 1;
+  
+  if (!bypassUsage) {
+    // Try atomic increment first
+    try {
+      const { data: atomicResult, error: rpcError } = await supabaseAdmin
+        .rpc("increment_sms_usage", {
+          p_user_id: userId,
+          p_count: 1,
+        });
+      
+      if (!rpcError && atomicResult && atomicResult.length > 0) {
+        newSmsUsed = atomicResult[0].new_sms_used;
+        smsReserved = true;
+        console.log("[sendSms] ATOMIC SMS RESERVE SUCCESS:", { user_id: userId, new_sms_used: newSmsUsed });
+      }
+    } catch (rpcErr) {
+      console.warn("[sendSms] ATOMIC SMS RESERVE FAILED, using fallback:", rpcErr.message);
+    }
+    
+    // Fallback: non-atomic increment if RPC not available
+    if (!smsReserved) {
+      await supabaseAdmin
+        .from("usage_limits")
+        .update({
+          sms_used: newSmsUsed,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+      smsReserved = true;
+    }
+    
+    // Check if over cap AFTER incrementing
+    if (newSmsUsed > totalSmsCap) {
+      console.warn("[sendSms] SMS blocked: usage cap reached", {
+        user_id: userId,
+        sms_used: newSmsUsed,
+        sms_cap: smsCap,
+        sms_credit: smsCredit,
+        total_cap: totalSmsCap,
+      });
+      // Already incremented, so set paused state
+      await supabaseAdmin
+        .from("usage_limits")
+        .update({ limit_state: "paused", updated_at: new Date().toISOString() })
+        .eq("user_id", userId);
+      const err = new Error("Usage cap reached");
+      err.code = "USAGE_CAP_REACHED";
+      throw err;
+    }
   }
 
   // Determine which phone number to send from:
@@ -2273,37 +2311,8 @@ const sendSmsInternal = async ({
     cost_cents: 0,
   });
   
-  // ATOMIC UPDATE: Use RPC function to prevent race conditions
-  let atomicSmsSuccess = false;
-  try {
-    const { data: atomicResult, error: rpcError } = await supabaseAdmin
-      .rpc("increment_sms_usage", {
-        p_user_id: userId,
-        p_count: 1,
-      });
-    
-    if (!rpcError && atomicResult && atomicResult.length > 0) {
-      atomicSmsSuccess = true;
-      console.log("[sendSms] ATOMIC SMS INCREMENT SUCCESS:", {
-        user_id: userId,
-        new_sms_used: atomicResult[0].new_sms_used,
-      });
-    }
-  } catch (rpcErr) {
-    console.warn("[sendSms] ATOMIC SMS INCREMENT FAILED, using fallback:", rpcErr.message);
-  }
-  
-  // Fallback if RPC not available
-  if (!atomicSmsSuccess) {
-    const nextSmsUsed = (usage.sms_used || 0) + 1;
-    await supabaseAdmin
-      .from("usage_limits")
-      .update({
-        sms_used: nextSmsUsed,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId);
-  }
+  // NOTE: SMS usage already incremented BEFORE sending (atomic increment-first pattern)
+  // This prevents race conditions where concurrent requests could both pass the cap check
 
   await auditLog({
     userId,
@@ -5795,6 +5804,8 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         appointmentError = result.error;
       }
       
+      // Track whether DB insert failed - important for visibility
+      let dbSyncWarning = null;
       if (appointmentError) {
         console.error("[book_appointment] Cal.com booking succeeded but DB insert FAILED:", {
           userId,
@@ -5802,6 +5813,13 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
           error: appointmentError.message,
           code: appointmentError.code,
           details: appointmentError.details,
+        });
+        dbSyncWarning = "calendar_sync_failed";
+        // Track the error for admin visibility
+        trackError({
+          error: new Error(`Cal.com booking succeeded but DB insert failed: ${appointmentError.message}`),
+          context: { userId, booking_uid: booking?.uid, code: appointmentError.code },
+          severity: "high",
         });
       } else {
         console.log("[book_appointment] Cal.com + DB insert SUCCESS, appointment_id:", appointmentData?.id, "booking_uid:", booking?.uid || booking?.id);
@@ -5815,6 +5833,7 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
           appointment_id: appointmentData?.id || null,
           start: booking?.start || start.toISOString(),
           source: "cal.com",
+          db_sync_failed: !!appointmentError,
         },
       });
       
@@ -5836,7 +5855,14 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         trackError({ error: err, context: { source: "cal.com", action: "appointment_booked" }, severity: "medium" });
       });
       
-      return { ok: true, source: "cal.com", booking, appointment: appointmentData };
+      // Return success with warning if DB sync failed (Cal.com booking still exists)
+      return { 
+        ok: true, 
+        source: "cal.com", 
+        booking, 
+        appointment: appointmentData,
+        ...(dbSyncWarning && { warning: dbSyncWarning }),
+      };
     }
     console.log("[book_appointment] No Cal.com config, using INTERNAL booking for user:", userId);
     const internalCustomerPhone = normalizePhoneE164(args.customer_phone);
@@ -6580,6 +6606,22 @@ app.get("/api/calcom/callback", async (req, res) => {
       // Webhook registration is best-effort; log but don't fail the OAuth flow
       console.warn("[calcom-callback] Webhook registration failed (non-blocking):", whErr.response?.data || whErr.message);
       console.warn("[calcom-callback] Webhook URL attempted:", webhookUrl);
+      
+      // Track this failure - user is "connected" but won't receive Cal.com events
+      trackError({
+        error: new Error(`Cal.com webhook registration failed: ${whErr.message}`),
+        context: {
+          source: "calcom-callback",
+          webhook_url: webhookUrl,
+          event_type_id: eventType?.id,
+          cal_username: eventType?.profile?.username || eventType?.owner?.username,
+          response_data: whErr.response?.data,
+        },
+        userId: stateData.userId,
+        severity: "high", // This is important - user won't get booking notifications
+        endpoint: "/api/calcom/callback",
+        method: "GET",
+      });
     }
     
     return res.redirect(
@@ -6782,6 +6824,20 @@ app.post("/webhooks/calcom", async (req, res) => {
         calUserId,
         eventSlug: eventType.slug,
       });
+      
+      // Log to webhook_queue for admin review and potential replay
+      const failedWebhookKey = `calcom_unresolved_${bookingUid || Date.now()}`;
+      await supabaseAdmin.from("webhook_queue").insert({
+        phone_number: customerPhone || "",
+        user_id: null,
+        agent_id: null,
+        event_type: `calcom_${triggerEvent}`,
+        raw_payload: req.body,
+        idempotency_key: failedWebhookKey,
+        received_at: new Date().toISOString(),
+        error_message: `User not found. Tried: cal_user_id=${calUserId}, cal_username=${calUsername}, email=${organizerEmail}`,
+      }).catch(err => console.error("[calcom-webhook] Failed to log unresolved webhook:", err.message));
+      
       // Track this for debugging
       trackError({
         error: new Error("Cal.com webhook - user not found"),
@@ -6791,13 +6847,18 @@ app.post("/webhooks/calcom", async (req, res) => {
           organizerEmail, 
           calUserId,
           triggerEvent,
+          bookingUid,
+          customerPhone,
+          webhook_queue_key: failedWebhookKey,
         },
-        severity: "medium",
+        severity: "high", // Elevated to high - this is a booking that won't show in our system
         endpoint: "/webhooks/calcom",
         method: "POST",
       });
-      // Still return 200 to acknowledge receipt
-      return res.json({ ok: true, warning: "User not found" });
+      
+      // Return 200 to acknowledge receipt (Cal.com won't retry anyway)
+      // The webhook_queue entry allows admin to manually resolve
+      return res.json({ ok: true, warning: "User not found", logged_for_review: true });
     }
     
     // Handle different event types

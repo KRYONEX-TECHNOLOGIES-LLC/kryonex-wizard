@@ -462,6 +462,11 @@ export default function WizardPage({
     };
   }, [embeddedMode]);
 
+  // Scroll to top when step changes - ensures users always start at top of each step
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [step]);
+
   const safeStep = Math.min(Math.max(1, step), maxStep);
   const currentStep = stepMeta[safeStep - 1];
   const StepIcon = currentStep.icon;
