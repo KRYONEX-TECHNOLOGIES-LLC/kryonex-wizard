@@ -308,7 +308,7 @@ export default function AffiliateDashboardPage() {
           <div className="link-card-header">
             <ExternalLink size={20} />
             <span>Your Referral Link</span>
-            <span className="link-helper">Share this link to earn $25 + 10% monthly</span>
+            <span className="link-helper">Earn $25 + 10% monthly (30-day verification)</span>
           </div>
           <div className="link-card-body">
             <div className="link-input-group">
@@ -614,7 +614,7 @@ export default function AffiliateDashboardPage() {
               <div className="step-number">2</div>
               <div className="step-content">
                 <h4>They Subscribe</h4>
-                <p>When they sign up and pay, you earn $25 instantly</p>
+                <p>When they sign up and pay, you earn $25 (after 30-day hold)</p>
               </div>
             </div>
             <div className="step">

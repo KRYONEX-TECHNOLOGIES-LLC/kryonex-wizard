@@ -309,10 +309,10 @@ export default function AffiliateSignupPage() {
                   </div>
                   <div>
                     <h4 style={{ color: "#e5e7eb", fontWeight: 600, marginBottom: "0.25rem" }}>
-                      $25 Instant Bonus
+                      $25 Sign-Up Bonus
                     </h4>
                     <p style={{ color: "#9ca3af", fontSize: "0.9rem", lineHeight: 1.5 }}>
-                      Get $25 for every new customer who subscribes through your link
+                      Earn $25 for every new customer (paid after 30-day verification)
                     </p>
                   </div>
                 </div>
