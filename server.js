@@ -7779,7 +7779,7 @@ const retellWebhookHandler = async (req, res) => {
           const customerName = analysisData.customer_name || regexExtracted?.callerName || "Customer";
           const customerPhone = normalizePhoneE164(analysisData.customer_phone || fromNumber || "");
           
-          // Check if this appointment already exists (Cal.com webhook may have beaten us)
+          // Check if this appointment already exists (tool_call or Cal.com webhook may have beaten us)
           let appointmentExists = false;
           if (bookingUid) {
             const { data: existing } = await supabaseAdmin
@@ -7788,6 +7788,23 @@ const retellWebhookHandler = async (req, res) => {
               .eq("cal_booking_uid", bookingUid)
               .maybeSingle();
             if (existing) appointmentExists = true;
+          }
+          // Also check by user + start_time to prevent duplicates when Cal.com isn't involved
+          if (!appointmentExists && appointmentStart) {
+            const windowStart = new Date(new Date(appointmentStart).getTime() - 5 * 60 * 1000).toISOString();
+            const windowEnd = new Date(new Date(appointmentStart).getTime() + 5 * 60 * 1000).toISOString();
+            const { data: timeMatch } = await supabaseAdmin
+              .from("appointments")
+              .select("id")
+              .eq("user_id", agentRow.user_id)
+              .gte("start_time", windowStart)
+              .lte("start_time", windowEnd)
+              .limit(1)
+              .maybeSingle();
+            if (timeMatch) {
+              appointmentExists = true;
+              console.log("📞 [call_ended] Appointment already exists by time match, skipping:", timeMatch.id);
+            }
           }
           
           if (!appointmentExists) {
