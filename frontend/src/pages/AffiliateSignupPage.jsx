@@ -134,7 +134,7 @@ export default function AffiliateSignupPage() {
           user_id: userId,
           account_type: "affiliate",
           affiliate_name: fullName.trim(),
-          paypal_email: paypalEmail.trim(),
+          payout_email: paypalEmail.trim(),
           created_at: new Date().toISOString(),
         }, {
           onConflict: "user_id",
@@ -516,15 +516,7 @@ export default function AffiliateSignupPage() {
                   }}
                 />
                 <span style={{ color: "#9ca3af", fontSize: "0.85rem", lineHeight: 1.5 }}>
-                  I agree to the{" "}
-                  <Link
-                    to="/affiliate/terms"
-                    style={{ color: "#a78bfa", textDecoration: "underline" }}
-                    target="_blank"
-                  >
-                    affiliate terms
-                  </Link>
-                  . I understand commissions have a 30-day hold period and fraudulent activity will result in account suspension.
+                  I agree to the affiliate terms. I understand commissions have a 30-day hold period and fraudulent activity will result in account suspension.
                 </span>
               </label>
 

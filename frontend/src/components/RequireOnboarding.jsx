@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 export default function RequireOnboarding({ children }) {
   const [checking, setChecking] = React.useState(true);
   const [isComplete, setIsComplete] = React.useState(false);
+  const [affiliateRedirect, setAffiliateRedirect] = React.useState(false);
 
   React.useEffect(() => {
     let mounted = true;
@@ -46,8 +47,8 @@ export default function RequireOnboarding({ children }) {
         } else {
           // Affiliate-only accounts should not access business routes - redirect to affiliate dashboard
           if (profile.account_type === "affiliate") {
-            // Redirect affiliate users to their dashboard instead of wizard
-            window.location.href = "/affiliate/dashboard";
+            setAffiliateRedirect(true);
+            setChecking(false);
             return;
           }
           
@@ -86,6 +87,10 @@ export default function RequireOnboarding({ children }) {
         SCANNING PROFILE...
       </div>
     );
+  }
+
+  if (affiliateRedirect) {
+    return <Navigate to="/affiliate/dashboard" replace />;
   }
 
   if (!isComplete) {

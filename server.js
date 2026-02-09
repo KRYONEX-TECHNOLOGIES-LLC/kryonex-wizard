@@ -4105,10 +4105,10 @@ const planConfig = (planType) => {
     return { call_minutes: 3000, sms_count: 5000, grace_seconds: 600 };
   }
   if (plan.includes("elite")) {
-    return { call_minutes: 1200, sms_count: 2000, grace_seconds: 600 };
+    return { call_minutes: 800, sms_count: 3000, grace_seconds: 600 };
   }
   if (plan.includes("pro")) {
-    return { call_minutes: 500, sms_count: 800, grace_seconds: 600 };
+    return { call_minutes: 300, sms_count: 1000, grace_seconds: 600 };
   }
   if (plan.includes("core") || plan.includes("starter")) {
     return { call_minutes: 150, sms_count: 250, grace_seconds: 600 };

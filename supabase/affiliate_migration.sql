@@ -36,13 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_profiles_account_type ON public.profiles(account_
 ALTER TABLE public.profiles 
 ADD COLUMN IF NOT EXISTS affiliate_name text;
 
--- ============================================
--- 2b. ADD paypal_email TO PROFILES TABLE
--- ============================================
--- For affiliate payout destination
-
-ALTER TABLE public.profiles 
-ADD COLUMN IF NOT EXISTS paypal_email text;
+-- NOTE: payout_email already exists on profiles from referral_system.sql
+-- No need to add paypal_email — using payout_email for all payout destinations
 
 -- ============================================
 -- 3. ADD fraud_score TO REFERRALS TABLE
@@ -71,6 +66,12 @@ ADD COLUMN IF NOT EXISTS extended_hold_until timestamptz;
 
 ALTER TABLE public.referral_commissions 
 ADD COLUMN IF NOT EXISTS hold_reason text;
+
+ALTER TABLE public.referral_commissions 
+ADD COLUMN IF NOT EXISTS notes text;
+
+ALTER TABLE public.referral_commissions 
+ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 
 -- ============================================
 -- 5. HELPER FUNCTION - Calculate fraud score

@@ -791,7 +791,7 @@ export default function WizardPage({
         
         // Affiliate-only users should not access the wizard - redirect to affiliate dashboard
         if (profile?.account_type === "affiliate") {
-          window.location.href = "/affiliate/dashboard";
+          navigate("/affiliate/dashboard");
           return;
         }
         

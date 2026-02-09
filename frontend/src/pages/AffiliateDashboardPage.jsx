@@ -57,13 +57,13 @@ export default function AffiliateDashboardPage() {
       if (sessionData?.session?.user) {
         const { data: profile } = await supabase
           .from("profiles")
-          .select("affiliate_name, paypal_email")
+          .select("affiliate_name, payout_email")
           .eq("user_id", sessionData.session.user.id)
           .maybeSingle();
         
         setUserName(profile?.affiliate_name || sessionData.session.user.email?.split("@")[0] || "Affiliate");
-        if (profile?.paypal_email) {
-          setPayoutEmail(profile.paypal_email);
+        if (profile?.payout_email) {
+          setPayoutEmail(profile.payout_email);
         }
       }
       
