@@ -7091,35 +7091,101 @@ const retellWebhookHandler = async (req, res) => {
         },
       });
       
-      const { data: newLead, error: leadError } = await supabaseAdmin.from("leads").insert({
-        user_id: agentRow.user_id,
-        owner_id: agentRow.user_id,
-        agent_id: agentId,
-        call_id: callId, // For idempotency - prevents duplicate leads from webhook retries
-        name: bestName,
-        phone: bestPhone,
-        status: leadStatus,
-        summary: bestSummary,
-        transcript,
-        sentiment: bestSentiment,
-        recording_url: recordingUrl,
-        call_duration_seconds: durationSeconds || null,
-        // Post-call analysis fields (direct columns for easier querying)
-        service_address: analysisData.service_address || null,
-        issue_type: analysisData.issue_type || null,
-        call_outcome: analysisData.call_outcome || null,
-        appointment_booked: analysisData.appointment_booked === true,
-        // Full metadata for debugging/reference
-        metadata: {
-          post_call_analysis: Object.keys(postCallAnalysis).length > 0 ? postCallAnalysis : null,
-          extracted_vars: extractedVars || null,
-          regex_extracted: regexExtracted || null,
-          from_number: fromNumber || null,
-          to_number: normalizedToNumber || null,
-        },
-      }).select("id").single();
+      // BULLETPROOF: Use upsert with onConflict to handle duplicates at database level
+      // Even if app-level idempotency check somehow misses, this prevents duplicate leads
+      let newLead = null;
+      let leadError = null;
+      
+      if (callId) {
+        // If we have call_id, use upsert to prevent duplicates
+        const { data, error } = await supabaseAdmin
+          .from("leads")
+          .upsert(
+            {
+              user_id: agentRow.user_id,
+              owner_id: agentRow.user_id,
+              agent_id: agentId,
+              call_id: callId,
+              name: bestName,
+              phone: bestPhone,
+              status: leadStatus,
+              summary: bestSummary,
+              transcript,
+              sentiment: bestSentiment,
+              recording_url: recordingUrl,
+              call_duration_seconds: durationSeconds || null,
+              service_address: analysisData.service_address || null,
+              issue_type: analysisData.issue_type || null,
+              call_outcome: analysisData.call_outcome || null,
+              appointment_booked: analysisData.appointment_booked === true,
+              metadata: {
+                post_call_analysis: Object.keys(postCallAnalysis).length > 0 ? postCallAnalysis : null,
+                extracted_vars: extractedVars || null,
+                regex_extracted: regexExtracted || null,
+                from_number: fromNumber || null,
+                to_number: normalizedToNumber || null,
+              },
+            },
+            { 
+              onConflict: "call_id",
+              ignoreDuplicates: true  // Skip if call_id already exists - NO duplicate counting
+            }
+          )
+          .select("id")
+          .maybeSingle();
+        
+        newLead = data;
+        leadError = error;
+      } else {
+        // No call_id - use regular insert (rare edge case)
+        console.warn("📞 [call_ended] WARNING: No call_id provided, using regular insert");
+        const { data, error } = await supabaseAdmin.from("leads").insert({
+          user_id: agentRow.user_id,
+          owner_id: agentRow.user_id,
+          agent_id: agentId,
+          call_id: null,
+          name: bestName,
+          phone: bestPhone,
+          status: leadStatus,
+          summary: bestSummary,
+          transcript,
+          sentiment: bestSentiment,
+          recording_url: recordingUrl,
+          call_duration_seconds: durationSeconds || null,
+          service_address: analysisData.service_address || null,
+          issue_type: analysisData.issue_type || null,
+          call_outcome: analysisData.call_outcome || null,
+          appointment_booked: analysisData.appointment_booked === true,
+          metadata: {
+            post_call_analysis: Object.keys(postCallAnalysis).length > 0 ? postCallAnalysis : null,
+            extracted_vars: extractedVars || null,
+            regex_extracted: regexExtracted || null,
+            from_number: fromNumber || null,
+            to_number: normalizedToNumber || null,
+          },
+        }).select("id").single();
+        newLead = data;
+        leadError = error;
+      }
 
+      // Handle duplicate key errors gracefully (don't return 500, return 200)
       if (leadError) {
+        // Check if it's a duplicate key error
+        const isDuplicateError = leadError.message?.includes("duplicate") || 
+                                  leadError.message?.includes("unique") ||
+                                  leadError.code === "23505";
+        
+        if (isDuplicateError) {
+          console.log("📞 [call_ended] DUPLICATE LEAD BLOCKED BY DATABASE:", {
+            call_id: callId,
+            user_id: agentRow.user_id,
+            error: leadError.message,
+          });
+          // Return 200 so Retell doesn't retry - this is expected behavior
+          return res.json({ received: true, duplicate: true, blocked_by: "database_constraint" });
+        }
+        
+        // Actual error - log and return 500
         console.error("📞 [call_ended] LEAD INSERT FAILED:", {
           user_id: agentRow.user_id,
           error: leadError.message,

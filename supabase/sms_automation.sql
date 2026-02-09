@@ -182,6 +182,7 @@ USING (
 
 -- ============================================
 -- 8. CALL TRACKING IDEMPOTENCY (Prevent duplicate counting)
+-- BULLETPROOF: Multiple layers of protection against duplicate webhooks
 -- ============================================
 
 -- Add call_id column to leads table for idempotency checks
@@ -190,21 +191,30 @@ ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS call_id text;
 -- Create unique index on call_id to prevent duplicate leads from webhook retries
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_call_id ON public.leads(call_id) WHERE call_id IS NOT NULL;
 
--- Create unique constraint on usage_calls.call_id for upsert operations
--- First check if column exists, then add unique constraint
+-- ALSO add a unique constraint (belt AND suspenders)
 DO $$
 BEGIN
-  -- Check if the unique constraint already exists
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'leads_call_id_unique'
+  ) THEN
+    ALTER TABLE public.leads ADD CONSTRAINT leads_call_id_unique UNIQUE (call_id);
+  END IF;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+  WHEN duplicate_table THEN NULL;
+END $$;
+
+-- Create unique constraint on usage_calls.call_id for upsert operations
+DO $$
+BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'usage_calls_call_id_unique'
   ) THEN
-    -- Add unique constraint
     ALTER TABLE public.usage_calls ADD CONSTRAINT usage_calls_call_id_unique UNIQUE (call_id);
   END IF;
 EXCEPTION
-  WHEN duplicate_table THEN
-    -- Constraint already exists, ignore
-    NULL;
+  WHEN duplicate_object THEN NULL;
+  WHEN duplicate_table THEN NULL;
 END $$;
 
 -- Also create an index for faster lookups
