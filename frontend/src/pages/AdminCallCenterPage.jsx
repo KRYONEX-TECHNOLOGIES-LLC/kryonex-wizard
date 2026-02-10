@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import TopMenu from "../components/TopMenu.jsx";
 import SideNav from "../components/SideNav.jsx";
-import { createCallRecording, getAdminLeads, triggerDemoCall } from "../lib/api.js";
+import { createCallRecording, triggerDemoCall } from "../lib/api.js";
 import { getSavedState, saveState } from "../lib/persistence.js";
 import { normalizePhone } from "../lib/phone.js";
 
@@ -114,53 +114,36 @@ export default function AdminCallCenterPage() {
     });
   };
 
-  // Fetch real leads from backend
+  // Load leads from local dialer queue only - leads must be explicitly transferred
   const fetchLeads = React.useCallback(async (options = {}) => {
     const { force = false } = options;
     setLoading(true);
     setError("");
     try {
-      // Check cached queue first unless forced refresh
-      const persistedQueue = getSavedState(CALL_CENTER_QUEUE_KEY);
-      if (!force && Array.isArray(persistedQueue) && persistedQueue.length > 0) {
+      // Only load from local storage queue - leads must be explicitly transferred from Lead Grid
+      const persistedQueue = getSavedState(CALL_CENTER_QUEUE_KEY) || [];
+      
+      // If force refresh requested but queue is empty, show empty state
+      // Don't auto-populate from all leads - that defeats the purpose of "Transfer to Dialer"
+      if (Array.isArray(persistedQueue) && persistedQueue.length > 0) {
         persistQueue(persistedQueue);
-        if (persistedQueue.length && !selectedLeadId) {
+        if (!selectedLeadId) {
           const first = persistedQueue[0];
           persistSelectedLeadId(first?.id || "");
           setDialNumber(first?.phone || first?.customer_phone || "");
         }
-        setLoading(false);
-        return;
-      }
-      
-      // Fetch real leads from admin endpoint
-      const response = await getAdminLeads();
-      const allLeads = response.data?.leads || [];
-      
-      // Transform leads for call center display
-      const callCenterLeads = allLeads.map((lead) => ({
-        id: lead.id,
-        business_name: lead.business_name || lead.name || "Unknown Caller",
-        phone: lead.phone || lead.customer_phone || "",
-        status: lead.status || "new",
-        last_outcome: lead.outcome || lead.summary?.slice(0, 40) || "--",
-        user_id: lead.user_id,
-        created_at: lead.created_at,
-      }));
-      
-      persistQueue(callCenterLeads);
-      if (callCenterLeads.length && !selectedLeadId) {
-        const first = callCenterLeads[0];
-        persistSelectedLeadId(first.id);
-        setDialNumber(first.phone || "");
-      } else if (!callCenterLeads.length) {
+      } else {
+        // Queue is empty - show empty state, don't auto-populate
+        persistQueue([]);
         persistSelectedLeadId("");
         setDialNumber("");
+        if (force) {
+          triggerToast("Queue is empty. Transfer leads from Lead Grid Command.");
+        }
       }
     } catch (err) {
       const message = err.response?.data?.error || err.message || "";
-      setError(message || "Failed to load leads");
-      triggerToast("Failed to load leads from server");
+      setError(message || "Failed to load queue");
     } finally {
       setLoading(false);
     }
