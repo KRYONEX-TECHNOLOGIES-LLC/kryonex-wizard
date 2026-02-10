@@ -55,6 +55,7 @@ const {
   CONSENT_VERSION,
   RESEND_API_KEY,
   MASTER_SMS_NUMBER,
+  SMS_SENDING_ENABLED,
 } = process.env;
 
 if (!RETELL_API_KEY) throw new Error("Missing RETELL_API_KEY");
@@ -1925,6 +1926,17 @@ const logKeywordResponse = async ({ fromNumber, tenantId, keyword, originalBody,
 
 // Send auto-reply (used for system responses like opt-out, disambiguation, rate limit)
 const sendAutoReply = async ({ toNumber, body, source }) => {
+  // Check if SMS sending is enabled
+  const smsEnabled = String(SMS_SENDING_ENABLED || "").toLowerCase() === "true";
+  if (!smsEnabled) {
+    console.log("[sendAutoReply] SMS_SENDING_ENABLED is OFF - auto-reply not sent:", {
+      to: toNumber,
+      bodyPreview: body.slice(0, 50),
+      source,
+    });
+    return { pending: true, reason: "sms_not_enabled" };
+  }
+  
   if (!MASTER_SMS_NUMBER) {
     console.warn("[sendAutoReply] No MASTER_SMS_NUMBER configured, skipping auto-reply");
     return null;
@@ -2086,6 +2098,29 @@ const sendSmsInternal = async ({
   }
   // Use normalized phone for all operations
   to = normalizedTo;
+
+  // =========================================================================
+  // SMS GATE: If SMS_SENDING_ENABLED is not "true", skip sending and counting
+  // This allows the system to be ready without actually sending until the
+  // universal number is fully activated. No usage counted, no SMS sent.
+  // =========================================================================
+  const smsEnabled = String(SMS_SENDING_ENABLED || "").toLowerCase() === "true";
+  if (!smsEnabled) {
+    console.log("[sendSms] SMS_SENDING_ENABLED is OFF - message queued but not sent or counted:", {
+      to: normalizedTo,
+      source: source || "unknown",
+      bodyPreview: body.slice(0, 50) + (body.length > 50 ? "..." : ""),
+      userId,
+    });
+    // Return pending status - no usage counted, no SMS actually sent
+    return { 
+      pending: true, 
+      reason: "sms_not_enabled",
+      message: "SMS system not yet active. Message will send when enabled.",
+      to: normalizedTo,
+      source: source || "unknown",
+    };
+  }
 
   // BULLETPROOF SMS: Validate source type - reject freeform manual sends
   const normalizedSource = (source || "manual").toLowerCase();
@@ -2349,6 +2384,19 @@ const sendSmsFromAgent = async ({ agentId, to, body, userId, source }) => {
   if (!agentId || !to || !body) {
     throw new Error("agentId, to, and body are required");
   }
+  
+  // Check if SMS sending is enabled
+  const smsEnabled = String(SMS_SENDING_ENABLED || "").toLowerCase() === "true";
+  if (!smsEnabled) {
+    console.log("[sendSmsFromAgent] SMS_SENDING_ENABLED is OFF - message not sent:", {
+      to,
+      agentId,
+      source: source || "agent_tool",
+      bodyPreview: body.slice(0, 50) + (body.length > 50 ? "..." : ""),
+    });
+    return { pending: true, reason: "sms_not_enabled" };
+  }
+  
   const { data: agentRow, error: agentError } = await supabaseAdmin
     .from("agents")
     .select("phone_number, user_id")
