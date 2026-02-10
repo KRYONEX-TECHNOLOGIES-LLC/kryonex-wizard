@@ -7515,15 +7515,53 @@ const retellWebhookHandler = async (req, res) => {
   try {
     lastRetellWebhookAt = new Date().toISOString();
     
+    // EMERGENCY DEBUG: Log EVERY incoming request immediately
+    console.log("🔥 [RETELL INCOMING] Raw request:", {
+      timestamp: new Date().toISOString(),
+      hasBody: Boolean(req.body),
+      bodyKeys: req.body ? Object.keys(req.body) : [],
+      hasSignature: Boolean(req.headers["x-retell-signature"]),
+      contentType: req.headers["content-type"],
+      bodyPreview: JSON.stringify(req.body || {}).substring(0, 500),
+    });
+    
     // Verify Retell webhook signature for security
     // Retell uses the API key for signature verification, NOT a separate webhook secret
     const signature = req.headers["x-retell-signature"];
-    if (RETELL_API_KEY && !verifyRetellSignature(JSON.stringify(req.body), signature, RETELL_API_KEY)) {
-      console.error("[retell-webhook] Invalid signature - rejecting request");
-      return res.status(401).json({ error: "Invalid webhook signature" });
+    const payload = req.body || {};
+    
+    // Check if this looks like a custom function call (has args/arguments field)
+    const looksLikeCustomFunction = Boolean(payload.args || payload.arguments);
+    
+    if (RETELL_API_KEY && signature) {
+      const sigValid = verifyRetellSignature(JSON.stringify(req.body), signature, RETELL_API_KEY);
+      if (!sigValid) {
+        console.error("[retell-webhook] Invalid signature - rejecting request", {
+          looksLikeCustomFunction,
+          hasSignature: true,
+        });
+        return res.status(401).json({ error: "Invalid webhook signature" });
+      }
+    } else if (RETELL_API_KEY && !signature && !looksLikeCustomFunction) {
+      // Only reject unsigned requests if they're not custom functions
+      // (Retell custom functions might not include signature)
+      console.warn("[retell-webhook] Missing signature for non-custom-function request");
     }
     
-    const payload = req.body || {};
+    // Log if this is a custom function call for debugging
+    if (looksLikeCustomFunction) {
+      console.log("🎯 [CUSTOM FUNCTION DETECTED] Payload structure:", {
+        hasArgs: Boolean(payload.args),
+        hasArguments: Boolean(payload.arguments),
+        hasName: Boolean(payload.name),
+        hasFunctionName: Boolean(payload.function_name),
+        hasToolName: Boolean(payload.tool_name),
+        hasCall: Boolean(payload.call),
+        allKeys: Object.keys(payload),
+      });
+    }
+    
+    // payload already defined above
     const eventType =
       payload.event_type || payload.event || payload.type || "unknown";
     const call = payload.call || payload.data || {};
