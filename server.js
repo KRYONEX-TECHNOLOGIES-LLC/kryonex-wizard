@@ -6518,14 +6518,108 @@ app.get("/api/calcom/callback", async (req, res) => {
         const eventSlug = "service-call";
         
         try {
-          // Create the event type via Cal.com API
-          const createEventResponse = await calClient.post("/event-types", {
+          // =====================================================================
+          // STEP 1: Create a schedule with wizard business hours
+          // =====================================================================
+          let scheduleId = null;
+          
+          // Parse wizard hours (format: "08:00" or "8:00 AM")
+          const parseTimeToMinutes = (timeStr) => {
+            if (!timeStr) return null;
+            // Handle "HH:MM" format
+            const match24 = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+            if (match24) {
+              return parseInt(match24[1]) * 60 + parseInt(match24[2]);
+            }
+            // Handle "H:MM AM/PM" format
+            const match12 = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+            if (match12) {
+              let hours = parseInt(match12[1]);
+              const mins = parseInt(match12[2]);
+              const isPM = match12[3].toUpperCase() === 'PM';
+              if (isPM && hours !== 12) hours += 12;
+              if (!isPM && hours === 12) hours = 0;
+              return hours * 60 + mins;
+            }
+            return null;
+          };
+          
+          const formatMinutesToTime = (mins) => {
+            if (mins === null) return null;
+            const h = Math.floor(mins / 60).toString().padStart(2, '0');
+            const m = (mins % 60).toString().padStart(2, '0');
+            return `${h}:${m}`;
+          };
+          
+          // Default hours if not set in wizard
+          const weekdayStart = formatMinutesToTime(parseTimeToMinutes(userProfile?.weekday_open)) || "08:00";
+          const weekdayEnd = formatMinutesToTime(parseTimeToMinutes(userProfile?.weekday_close)) || "17:00";
+          const weekendEnabled = userProfile?.weekend_enabled === true;
+          const saturdayStart = formatMinutesToTime(parseTimeToMinutes(userProfile?.saturday_open)) || "09:00";
+          const saturdayEnd = formatMinutesToTime(parseTimeToMinutes(userProfile?.saturday_close)) || "14:00";
+          
+          console.log("[calcom-callback] Wizard hours:", { weekdayStart, weekdayEnd, weekendEnabled, saturdayStart, saturdayEnd });
+          
+          // Build availability array for Cal.com schedule
+          // Days: Monday=1, Tuesday=2, ... Sunday=7
+          const availability = [];
+          
+          // Monday - Friday
+          for (let day = 1; day <= 5; day++) {
+            availability.push({
+              days: [day === 1 ? "Monday" : day === 2 ? "Tuesday" : day === 3 ? "Wednesday" : day === 4 ? "Thursday" : "Friday"],
+              startTime: weekdayStart,
+              endTime: weekdayEnd,
+            });
+          }
+          
+          // Saturday (if enabled)
+          if (weekendEnabled) {
+            availability.push({
+              days: ["Saturday"],
+              startTime: saturdayStart,
+              endTime: saturdayEnd,
+            });
+          }
+          
+          try {
+            const scheduleResponse = await calClient.post("/schedules", {
+              name: `${businessName} Business Hours`,
+              timeZone: "America/New_York", // Default, could get from wizard
+              isDefault: true,
+              availability: availability,
+            }, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "cal-api-version": "2024-06-14",
+                "Content-Type": "application/json",
+              },
+            });
+            
+            scheduleId = scheduleResponse.data?.data?.id || scheduleResponse.data?.id;
+            console.log("[calcom-callback] Auto-created schedule with wizard hours:", { scheduleId, availability });
+          } catch (schedErr) {
+            console.error("[calcom-callback] Failed to create schedule:", schedErr.response?.data || schedErr.message);
+            // Continue without custom schedule - Cal.com will use default
+          }
+          
+          // =====================================================================
+          // STEP 2: Create the event type (with schedule if we created one)
+          // =====================================================================
+          const eventTypePayload = {
             title: eventTitle,
             slug: eventSlug,
             length: 60, // 60 minute appointments
             description: `Schedule a service appointment with ${businessName}`,
             locations: [{ type: "inPerson", address: "" }], // Customer provides address
-          }, {
+          };
+          
+          // Link to our custom schedule if we created one
+          if (scheduleId) {
+            eventTypePayload.scheduleId = scheduleId;
+          }
+          
+          const createEventResponse = await calClient.post("/event-types", eventTypePayload, {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               "cal-api-version": CAL_API_VERSION_EVENT_TYPES,
@@ -6534,7 +6628,7 @@ app.get("/api/calcom/callback", async (req, res) => {
           });
           
           eventType = createEventResponse.data?.data || createEventResponse.data;
-          console.log("[calcom-callback] Auto-created event type:", { id: eventType?.id, slug: eventType?.slug });
+          console.log("[calcom-callback] Auto-created event type:", { id: eventType?.id, slug: eventType?.slug, scheduleId });
           
         } catch (createErr) {
           console.error("[calcom-callback] Failed to auto-create event type:", createErr.response?.data || createErr.message);
