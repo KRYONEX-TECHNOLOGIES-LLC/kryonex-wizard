@@ -5,6 +5,26 @@ import SideNav from "../components/SideNav.jsx";
 import { getFilteredLeads, logOutboundCallAttempt, flagLead } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
+// Helper to fetch recording audio with auth and return blob URL (bypasses CORS)
+const fetchRecordingAudio = async (leadId) => {
+  const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  
+  const response = await fetch(`${apiUrl}/api/lead-recording-proxy/${leadId}`, {
+    headers: {
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+  });
+  
+  if (!response.ok) {
+    throw new Error("Failed to load recording");
+  }
+  
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+};
+
 // Format seconds to MM:SS
 const formatDuration = (seconds) => {
   if (!seconds || seconds <= 0) return "--";
@@ -35,6 +55,13 @@ export default function LeadsPage() {
   const [isSeller, setIsSeller] = React.useState(false);
   const [isAdmin, setIsAdmin] = React.useState(false);
   const [expandedId, setExpandedId] = React.useState(null);
+  
+  // Audio playback state
+  const audioRef = React.useRef(new Audio());
+  const blobUrlCache = React.useRef({});
+  const [playingId, setPlayingId] = React.useState(null);
+  const [isPlaying, setIsPlaying] = React.useState(false);
+  const [loadingAudio, setLoadingAudio] = React.useState(null);
   
   // Filter state
   const [filters, setFilters] = React.useState({
@@ -100,6 +127,67 @@ export default function LeadsPage() {
       mounted = false;
     };
   }, []);
+
+  // Audio event listeners and cleanup
+  React.useEffect(() => {
+    const audio = audioRef.current;
+    const handleEnded = () => setIsPlaying(false);
+    audio.addEventListener("ended", handleEnded);
+    return () => {
+      audio.pause();
+      audio.removeEventListener("ended", handleEnded);
+      // Clean up blob URLs to prevent memory leaks
+      Object.values(blobUrlCache.current).forEach((url) => {
+        URL.revokeObjectURL(url);
+      });
+    };
+  }, []);
+
+  // Toggle audio playback for a lead
+  const togglePlayLead = async (lead) => {
+    if (!lead.recording_url) return;
+    const audio = audioRef.current;
+    
+    // If clicking on currently playing lead, toggle pause/play
+    if (playingId === lead.id) {
+      if (audio.paused) {
+        audio.play().catch((err) => console.error("Audio playback failed:", err));
+        setIsPlaying(true);
+      } else {
+        audio.pause();
+        setIsPlaying(false);
+      }
+      return;
+    }
+    
+    // Stop current playback
+    audio.pause();
+    setPlayingId(lead.id);
+    setIsPlaying(false);
+    
+    // Check if we already have this recording cached
+    let blobUrl = blobUrlCache.current[lead.id];
+    
+    if (!blobUrl) {
+      // Fetch the recording through our proxy with auth
+      setLoadingAudio(lead.id);
+      try {
+        blobUrl = await fetchRecordingAudio(lead.id);
+        blobUrlCache.current[lead.id] = blobUrl;
+      } catch (err) {
+        console.error("Failed to load recording:", err);
+        setLoadingAudio(null);
+        setPlayingId(null);
+        return;
+      }
+      setLoadingAudio(null);
+    }
+    
+    // Play the audio
+    audio.src = blobUrl;
+    audio.play().catch((err) => console.error("Audio playback failed:", err));
+    setIsPlaying(true);
+  };
 
   // Text search filter
   const filtered = leads.filter((lead) => {
@@ -421,7 +509,18 @@ export default function LeadsPage() {
                                 {lead.recording_url && (
                                   <div className="recording-section">
                                     <h4>Recording</h4>
-                                    <audio controls src={lead.recording_url} className="audio-player" />
+                                    <div className="audio-player-row">
+                                      <button 
+                                        className="play-btn"
+                                        onClick={() => togglePlayLead(lead)}
+                                        disabled={loadingAudio === lead.id}
+                                      >
+                                        {loadingAudio === lead.id ? "⏳ Loading..." : playingId === lead.id && isPlaying ? "❚❚ Pause" : "▶ Play"}
+                                      </button>
+                                      {playingId === lead.id && (
+                                        <span className="now-playing-indicator">Now Playing</span>
+                                      )}
+                                    </div>
                                   </div>
                                 )}
                                 

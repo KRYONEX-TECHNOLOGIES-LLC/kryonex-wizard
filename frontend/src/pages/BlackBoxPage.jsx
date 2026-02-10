@@ -5,6 +5,26 @@ import SideNav from "../components/SideNav.jsx";
 import { fetchUserCallRecordings, flagLead } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
+// Helper to fetch recording audio with auth and return blob URL
+const fetchRecordingAudio = async (recordId) => {
+  const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:3000";
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  
+  const response = await fetch(`${apiUrl}/api/recording-proxy/${recordId}`, {
+    headers: {
+      Authorization: token ? `Bearer ${token}` : "",
+    },
+  });
+  
+  if (!response.ok) {
+    throw new Error("Failed to load recording");
+  }
+  
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+};
+
 const formatDuration = (seconds) => {
   if (typeof seconds === "string" && seconds.includes(":")) {
     return seconds;
@@ -178,24 +198,57 @@ export default function BlackBoxPage() {
     };
   }, []);
 
-  const togglePlay = (record) => {
+  // Cache for blob URLs to avoid refetching
+  const blobUrlCache = React.useRef({});
+  const [loadingAudio, setLoadingAudio] = React.useState(null);
+
+  const togglePlay = async (record) => {
     if (!record.recording_url) return;
     const audio = audioRef.current;
-    if (playingId !== record.id) {
-      audio.pause();
-      audio.src = record.recording_url;
-      audio.play().catch(() => {});
-      setPlayingId(record.id);
-      setIsPlaying(true);
+    
+    // If clicking on currently playing record, toggle pause/play
+    if (playingId === record.id) {
+      if (audio.paused) {
+        audio.play().catch((err) => {
+          console.error("Audio playback failed:", err);
+        });
+        setIsPlaying(true);
+      } else {
+        audio.pause();
+        setIsPlaying(false);
+      }
       return;
     }
-    if (audio.paused) {
-      audio.play().catch(() => {});
-      setIsPlaying(true);
-    } else {
-      audio.pause();
-      setIsPlaying(false);
+    
+    // Stop current playback
+    audio.pause();
+    setPlayingId(record.id);
+    setIsPlaying(false);
+    
+    // Check if we already have this recording cached
+    let blobUrl = blobUrlCache.current[record.id];
+    
+    if (!blobUrl) {
+      // Fetch the recording through our proxy with auth
+      setLoadingAudio(record.id);
+      try {
+        blobUrl = await fetchRecordingAudio(record.id);
+        blobUrlCache.current[record.id] = blobUrl;
+      } catch (err) {
+        console.error("Failed to load recording:", err);
+        setLoadingAudio(null);
+        setPlayingId(null);
+        return;
+      }
+      setLoadingAudio(null);
     }
+    
+    // Play the audio
+    audio.src = blobUrl;
+    audio.play().catch((err) => {
+      console.error("Audio playback failed:", err);
+    });
+    setIsPlaying(true);
   };
 
   const handlePlayClick = (event, record) => {
@@ -239,6 +292,10 @@ export default function BlackBoxPage() {
       audio.pause();
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("timeupdate", handleTimeUpdate);
+      // Clean up blob URLs to prevent memory leaks
+      Object.values(blobUrlCache.current).forEach((url) => {
+        URL.revokeObjectURL(url);
+      });
     };
   }, []);
 
@@ -339,8 +396,9 @@ export default function BlackBoxPage() {
                       <button
                         className="action-button"
                         onClick={(event) => handlePlayClick(event, row)}
+                        disabled={loadingAudio === row.id}
                       >
-                        {playingId === row.id && isPlaying ? "❚❚" : "▶"} Play
+                        {loadingAudio === row.id ? "⏳" : playingId === row.id && isPlaying ? "❚❚" : "▶"} {loadingAudio === row.id ? "Loading..." : "Play"}
                       </button>
                       {playingId === row.id && isPlaying ? (
                         <WaveformVisualizer 
@@ -479,11 +537,14 @@ export default function BlackBoxPage() {
                   <button
                     className="play-btn large"
                     onClick={() => togglePlay(activeRecord)}
+                    disabled={loadingAudio === activeRecord.id}
                   >
-                    {playingId === activeRecord.id && isPlaying ? "❚❚" : "▶"}
+                    {loadingAudio === activeRecord.id ? "⏳" : playingId === activeRecord.id && isPlaying ? "❚❚" : "▶"}
                   </button>
                   <div className="waveform-container">
-                    {playingId === activeRecord.id ? (
+                    {loadingAudio === activeRecord.id ? (
+                      <div className="waveform-placeholder">Loading audio...</div>
+                    ) : playingId === activeRecord.id ? (
                       <WaveformVisualizer 
                         audioRef={audioRef}
                         isPlaying={isPlaying}

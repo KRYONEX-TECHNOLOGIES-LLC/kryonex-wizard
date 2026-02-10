@@ -13457,6 +13457,121 @@ app.get("/call-recordings", requireAuth, resolveEffectiveUser, async (req, res) 
   }
 });
 
+// Recording proxy endpoint - streams audio to bypass CORS restrictions on Retell URLs
+app.get("/api/recording-proxy/:id", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const recordingId = req.params.id;
+
+    // Look up the recording and verify ownership
+    const { data: recording, error } = await supabaseAdmin
+      .from("call_recordings")
+      .select("id, recording_url, seller_id")
+      .eq("id", recordingId)
+      .eq("seller_id", uid)
+      .single();
+
+    if (error || !recording) {
+      return res.status(404).json({ error: "Recording not found" });
+    }
+
+    if (!recording.recording_url) {
+      return res.status(404).json({ error: "Recording URL not available" });
+    }
+
+    // Fetch the audio from Retell's storage and stream it back
+    const audioResponse = await axios({
+      method: "GET",
+      url: recording.recording_url,
+      responseType: "stream",
+      headers: {
+        // Some Retell URLs may need auth header
+        ...(recording.recording_url.includes("retellai") && RETELL_API_KEY
+          ? { Authorization: `Bearer ${RETELL_API_KEY}` }
+          : {}),
+      },
+    });
+
+    // Set appropriate headers for audio streaming
+    res.setHeader("Content-Type", audioResponse.headers["content-type"] || "audio/mpeg");
+    if (audioResponse.headers["content-length"]) {
+      res.setHeader("Content-Length", audioResponse.headers["content-length"]);
+    }
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+
+    // Stream the audio to the client
+    audioResponse.data.pipe(res);
+  } catch (err) {
+    console.error("[recording-proxy] Error:", err.message);
+    if (err.response?.status === 404) {
+      return res.status(404).json({ error: "Recording file not found" });
+    }
+    return res.status(500).json({ error: "Failed to stream recording" });
+  }
+});
+
+// Lead recording proxy endpoint - streams audio to bypass CORS restrictions
+app.get("/api/lead-recording-proxy/:leadId", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    const leadId = req.params.leadId;
+    
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("role")
+      .eq("user_id", uid)
+      .maybeSingle();
+    const role = profile?.role || "owner";
+
+    // Look up the lead and verify ownership
+    const { data: lead, error } = await supabaseAdmin
+      .from("leads")
+      .select("id, recording_url, user_id, owner_id")
+      .eq("id", leadId)
+      .eq(role === "seller" ? "owner_id" : "user_id", uid)
+      .single();
+
+    if (error || !lead) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    if (!lead.recording_url) {
+      return res.status(404).json({ error: "Recording URL not available" });
+    }
+
+    // Fetch the audio from Retell's storage and stream it back
+    const audioResponse = await axios({
+      method: "GET",
+      url: lead.recording_url,
+      responseType: "stream",
+      headers: {
+        // Some Retell URLs may need auth header
+        ...(lead.recording_url.includes("retellai") && RETELL_API_KEY
+          ? { Authorization: `Bearer ${RETELL_API_KEY}` }
+          : {}),
+      },
+    });
+
+    // Set appropriate headers for audio streaming
+    res.setHeader("Content-Type", audioResponse.headers["content-type"] || "audio/mpeg");
+    if (audioResponse.headers["content-length"]) {
+      res.setHeader("Content-Length", audioResponse.headers["content-length"]);
+    }
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+
+    // Stream the audio to the client
+    audioResponse.data.pipe(res);
+  } catch (err) {
+    console.error("[lead-recording-proxy] Error:", err.message);
+    if (err.response?.status === 404) {
+      return res.status(404).json({ error: "Recording file not found" });
+    }
+    return res.status(500).json({ error: "Failed to stream recording" });
+  }
+});
+
 app.get("/admin/dialer-queue", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
