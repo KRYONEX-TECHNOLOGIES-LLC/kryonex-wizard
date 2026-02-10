@@ -4732,10 +4732,10 @@ const getEnhancedDashboardStats = async (userId) => {
       .eq("user_id", userId)
       .gte("start_time", weekStart),
     
-    // All appointments with job values
+    // All appointments with job values and status
     supabaseAdmin
       .from("appointments")
-      .select("job_value")
+      .select("job_value, status")
       .eq("user_id", userId),
     
     // BACKUP: All time usage_calls count (tracks calls even if lead creation failed)
@@ -4793,9 +4793,20 @@ const getEnhancedDashboardStats = async (userId) => {
   const leadsThisWeek = weekLeadsResult.count || 0;
   const bookedCount = bookedLeadsResult.count || 0;
   
-  // Booking rate
+  // Appointments - filter by booked/confirmed/scheduled status
+  const appointmentsToday = todayApptsResult.count || 0;
+  const appointmentsThisWeek = weekApptsResult.count || 0;
+  const allAppointments = allApptsResult.data || [];
+  const bookedAppointments = allAppointments.filter(apt => 
+    apt.status === "booked" || 
+    apt.status === "confirmed" || 
+    apt.status === "scheduled"
+  );
+  const appointmentsAllTime = bookedAppointments.length;
+  
+  // Booking rate = appointments / calls (not leads!)
   const bookingRatePercent = callsAllTime > 0 
-    ? Math.round((bookedCount / callsAllTime) * 100) 
+    ? Math.round((appointmentsAllTime / callsAllTime) * 100) 
     : 0;
   
   // Average call duration - try leads first, then usage_calls, then usage_limits
@@ -4846,18 +4857,13 @@ const getEnhancedDashboardStats = async (userId) => {
     lastCallSummary = lastLead.summary;
   }
   
-  // Appointments
-  const appointmentsToday = todayApptsResult.count || 0;
-  const appointmentsThisWeek = weekApptsResult.count || 0;
-  const appointmentsAllTime = (allApptsResult.data || []).length;
-  
-  // Pipeline value
-  const jobValues = (allApptsResult.data || [])
+  // Pipeline value - use booked appointments only
+  const jobValues = bookedAppointments
     .map(r => Number(r.job_value))
     .filter(v => Number.isFinite(v) && v > 0);
   const pipelineValue = jobValues.length > 0
     ? jobValues.reduce((a, b) => a + b, 0)
-    : bookedCount * avgJobValue;
+    : appointmentsAllTime * avgJobValue;
   
   return {
     // CALLS = actual phone calls received (from usage_calls table)
@@ -9883,24 +9889,32 @@ app.get(
         { data: usage },
         { data: leads },
         { data: appointments },
+        { data: usageCalls },
       ] = await Promise.all([
         supabaseAdmin.from("profiles").select("plan_type, business_name, created_at").eq("user_id", uid).maybeSingle(),
         supabaseAdmin.from("subscriptions").select("plan_type, status").eq("user_id", uid).maybeSingle(),
         supabaseAdmin.from("usage_limits").select("call_used_seconds, sms_used").eq("user_id", uid).maybeSingle(),
         supabaseAdmin.from("leads").select("id, created_at, status, call_duration_seconds").eq("user_id", uid),
         supabaseAdmin.from("appointments").select("id, status").eq("user_id", uid),
+        // Use usage_calls for accurate call count (matches enhanced stats)
+        supabaseAdmin.from("usage_calls").select("id, seconds", { count: "exact", head: false }).eq("user_id", uid),
       ]);
       
       const allLeads = leads || [];
       const allAppointments = appointments || [];
+      const allUsageCalls = usageCalls || [];
       
-      // Calculate metrics
-      const totalCalls = allLeads.length;
-      const totalDurationSeconds = allLeads.reduce((sum, l) => sum + (l.call_duration_seconds || 0), 0);
+      // Calculate metrics - use usage_calls for total calls (source of truth)
+      const totalCalls = allUsageCalls.length || allLeads.length; // Fallback to leads if usage_calls empty
+      const totalDurationSeconds = allLeads.reduce((sum, l) => sum + (l.call_duration_seconds || 0), 0) ||
+        allUsageCalls.reduce((sum, c) => sum + (c.seconds || 0), 0);
       const avgCallDuration = totalCalls > 0 ? totalDurationSeconds / totalCalls : 0;
       
+      // Filter appointments by booked/confirmed/scheduled (matches enhanced stats)
       const bookedAppointments = allAppointments.filter(a => 
-        a.status === "booked" || a.status === "confirmed"
+        a.status === "booked" || 
+        a.status === "confirmed" || 
+        a.status === "scheduled"
       ).length;
       
       // ROI Calculations
