@@ -72,9 +72,15 @@ ADMIN_EMAIL=admin@example.com
 # Email
 RESEND_API_KEY=re_...
 
+# SMS (Universal Number System)
+MASTER_SMS_NUMBER=+1...              # Shared SMS number for all tenants
+SMS_SENDING_ENABLED=false           # Set to "true" when number is fully active
+                                    # When false: SMS logged but NOT sent or counted
+
 # === OPTIONAL ===
 PORT=3000
 RETELL_AUTO_SYNC_MINUTES=60
+RETELL_SMS_SANDBOX=false            # Set to "true" for testing (no actual SMS sent)
 ```
 
 ---
@@ -131,11 +137,25 @@ POST   /leads/:id/flag             - Flag for review
 #### Appointments
 ```
 GET    /appointments               - List appointments
-POST   /appointments               - Create appointment
+POST   /appointments               - Create appointment (triggers SMS notifications)
 PUT    /appointments/:id           - Update appointment
 DELETE /appointments/:id           - Delete appointment
 POST   /appointments/:id/request-review - Send review request SMS
 ```
+
+**Appointment Fields:**
+- `customer_name`, `customer_phone`, `customer_email`
+- `start_time`, `end_time`, `duration_minutes`
+- `location` (service address)
+- `issue_type` (NO_HEAT, NO_AC, LEAK, etc.)
+- `notes`, `status`
+- `cal_booking_uid` (if synced with Cal.com)
+- `source` (retell_calcom, retell_internal, manual, etc.)
+
+**Booking Notifications:**
+- Customer SMS confirmation (if `agents.confirmation_sms_enabled`)
+- Owner SMS notification (if `profiles.appointment_sms_enabled` and `profiles.phone` set)
+- Owner email alert (always sent if Resend configured)
 
 #### Messages
 ```
@@ -280,10 +300,27 @@ POST /stripe-webhook               - Payment events
 #### Cal.com
 ```
 POST /webhooks/calcom              - Booking events
-     - BOOKING_CREATED: Create appointment
+     - BOOKING_CREATED: Create appointment, send notifications
      - BOOKING_RESCHEDULED: Update appointment
      - BOOKING_CANCELLED: Cancel appointment
 ```
+
+#### Retell Custom Functions (Tool Calls)
+```
+POST /retell-tool-call            - AI agent custom function calls
+     - book_appointment: Create Cal.com booking + local appointment
+     - check_calendar_availability: Query Cal.com availability
+     - reschedule_appointment: Update existing booking
+     - cancel_booking: Cancel Cal.com booking
+```
+
+**Tool Call Flow:**
+1. Retell AI calls custom function during phone call
+2. Request sent to `/retell-tool-call` with full call context
+3. Function executes (e.g., creates Cal.com booking)
+4. Response returned to Retell AI
+5. AI communicates result to caller
+6. Notifications sent (customer SMS, owner SMS/email)
 
 ### Outbound Webhooks
 
@@ -318,6 +355,45 @@ Configure secret in webhook settings to enable.
 ---
 
 ## SMS Automation
+
+### Universal Number System
+
+All SMS sent through shared `MASTER_SMS_NUMBER` with automatic business name prefixing:
+- Format: `[Business Name] message text`
+- Per-tenant usage tracking
+- Opt-out compliance (per-tenant and global)
+- Conversation routing via thread locks
+
+**SMS Gate Control:**
+- Set `SMS_SENDING_ENABLED=false` to disable sending (messages logged but not sent or counted)
+- Set `SMS_SENDING_ENABLED=true` to enable full SMS functionality
+- Perfect for pre-launch: system ready but no messages sent until number activated
+
+### Booking Confirmation SMS (to Customers)
+
+Automatically sent when appointments are booked:
+
+1. Check `agents.confirmation_sms_enabled` (default: true)
+2. Format: `Hi [Name]! Your appointment with [Business] is confirmed for [Date] at [Time]. Location: [Address]. We'll see you then!`
+3. Sent via `sendBookingConfirmationSms()` → `sendSmsInternal()`
+4. Includes business name in message (skipBusinessPrefix: true)
+
+**Triggered by:**
+- AI phone call bookings (`book_appointment` tool)
+- Cal.com webhook bookings (`BOOKING_CREATED`)
+- Manual appointment creation (`POST /appointments`)
+
+### Owner Notification SMS (to Business Owners)
+
+Alert business owners of new bookings:
+
+1. Check `profiles.appointment_sms_enabled` (default: true)
+2. Requires `profiles.phone` to be set
+3. Format: `NEW BOOKING: [Customer] for [Date] at [Time] - [Service Type] at [Location]. Customer: [Phone]`
+4. Sent via `sendNewAppointmentSmsToOwner()` → `sendSmsInternal()`
+
+**Triggered by:**
+- All appointment booking sources (AI, Cal.com, manual)
 
 ### Post-Call SMS
 
@@ -543,3 +619,45 @@ node scripts/simulate_retell.js
 1. **"Agent not found"** - Phone number not in E.164 or not in `agents`
 2. **"Usage exceeded"** - Check `usage_limits` table
 3. **"Invalid token"** - Supabase JWT expired or invalid
+4. **SMS not sending** - Check `SMS_SENDING_ENABLED=true` in Railway
+5. **SMS counting but not sending** - `SMS_SENDING_ENABLED` is false, set to true
+6. **Owner notifications not received** - Ensure `profiles.phone` is set and `profiles.appointment_sms_enabled=true`
+
+### Enabling SMS When Universal Number is Ready
+
+**Step-by-step activation:**
+
+1. **Verify universal number is active:**
+   - Number should be provisioned and active in Retell
+   - Test inbound/outbound SMS manually
+
+2. **Set environment variables in Railway:**
+   ```
+   MASTER_SMS_NUMBER=+1XXXXXXXXXX
+   SMS_SENDING_ENABLED=true
+   ```
+
+3. **Redeploy (or wait for auto-deploy):**
+   - Railway will automatically redeploy on env var change
+   - Or trigger manual redeploy from Railway dashboard
+
+4. **Verify SMS is working:**
+   - Check logs for `[sendSms] SMS_SENDING_ENABLED is ON`
+   - Test booking an appointment
+   - Verify SMS sent and usage counted
+
+5. **Monitor usage:**
+   - Check `/admin/users` for SMS usage
+   - Verify `usage_limits.sms_used` increments correctly
+   - Check `messages` table for sent messages
+
+**Before activation (SMS_SENDING_ENABLED=false):**
+- ✅ System attempts to send SMS (logged)
+- ✅ No actual SMS sent
+- ✅ No usage counted
+- ✅ Perfect for pre-launch testing
+
+**After activation (SMS_SENDING_ENABLED=true):**
+- ✅ SMS actually sent via Retell
+- ✅ Usage counted per tenant
+- ✅ All notifications active (booking confirmations, owner alerts)

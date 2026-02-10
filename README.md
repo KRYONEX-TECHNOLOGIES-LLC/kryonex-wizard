@@ -126,6 +126,56 @@ kryonex-wizard/
 
 ---
 
+## SMS & Appointment Notifications
+
+### Universal SMS Number System
+
+The platform uses a **shared SMS number** (`MASTER_SMS_NUMBER`) for all tenants. Messages are automatically prefixed with `[Business Name]` so recipients know which business sent the message.
+
+**Important:** Until your universal SMS number is fully activated, set `SMS_SENDING_ENABLED=false` in Railway. This ensures:
+- ✅ SMS attempts are logged (system is ready)
+- ✅ **NO messages are actually sent**
+- ✅ **NO usage is counted** toward user accounts
+- ✅ When you flip the switch, everything starts working immediately
+
+**To activate SMS when ready:**
+1. Ensure `MASTER_SMS_NUMBER` is set in Railway
+2. Set `SMS_SENDING_ENABLED=true` in Railway
+3. Redeploy (or wait for auto-deploy)
+4. SMS will now send and count usage
+
+### Appointment Booking Notifications
+
+When appointments are booked (via AI calls, Cal.com, or manual entry):
+
+**1. Customer SMS Confirmation** (if enabled)
+- Sent automatically to customer's phone
+- Includes: business name, date, time, location
+- Controlled by `agents.confirmation_sms_enabled` (default: true)
+
+**2. Business Owner SMS Notification**
+- Sent to owner's phone number (`profiles.phone`)
+- Format: `NEW BOOKING: [Customer] for [Date] at [Time] - [Service Type] at [Location]. Customer: [Phone]`
+- Controlled by `profiles.appointment_sms_enabled` (default: true)
+
+**3. Business Owner Email Alert**
+- Beautiful HTML email with full appointment details
+- Includes deep-link button that opens directly to the appointment in calendar
+- Shows: customer info, time, location, service type, booking source, notes
+
+### Enhanced Calendar Display
+
+Appointment cards now show:
+- Customer name, phone, email
+- Service address/location
+- Issue type (NO_HEAT, NO_AC, LEAK, etc.)
+- Duration in minutes
+- Job value (if set)
+- Booking source (AI Booked, Manual, Cal.com, etc.)
+- Direct link to Cal.com booking (if applicable)
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -172,6 +222,7 @@ Run these SQL files in Supabase SQL Editor **in order**:
 4. `supabase/fix_agents_constraints.sql` - Agent constraints (required)
 5. `supabase/referral_system.sql` - Referral program
 6. `supabase/sms_automation.sql` - SMS automation
+7. `supabase/appointments_enhancement.sql` - Enhanced appointment fields (issue_type, source, duration_minutes, owner notifications)
 
 ### 4. Start Development
 
@@ -205,6 +256,11 @@ RETELL_LLM_ID_HVAC=llm_...
 RETELL_LLM_ID_PLUMBING=llm_...
 RETELL_MASTER_AGENT_ID=agent_...
 RETELL_PHONE_NUMBER=+1...
+
+# SMS (Universal Number System)
+MASTER_SMS_NUMBER=+1...              # Shared SMS number for all tenants
+SMS_SENDING_ENABLED=false            # Set to "true" when number is fully active
+                                     # When false: SMS attempts logged but NOT sent or counted
 
 # Stripe
 STRIPE_SECRET_KEY=sk_live_...
@@ -541,6 +597,62 @@ node scripts/simulate_retell.js
 | [supabase/README.md](supabase/README.md) | Database schema |
 | [scripts/README.md](scripts/README.md) | Utility scripts |
 | [cypress/README.md](cypress/README.md) | E2E testing guide |
+
+---
+
+## Recent Updates & Improvements
+
+### Appointment Booking Enhancements (Feb 2026)
+
+**Enhanced Calendar Display:**
+- Appointment cards now show full details: customer email, issue type, service address, booking source
+- Direct links to Cal.com bookings when applicable
+- Color-coded status indicators
+
+**Automated Notifications:**
+- **Customer SMS confirmations** sent automatically when appointments are booked
+- **Owner SMS notifications** alert business owners of new bookings
+- **Owner email alerts** with beautiful HTML formatting and deep-links to calendar
+
+**Database Enhancements:**
+- Added `issue_type` field to track service type (NO_HEAT, NO_AC, LEAK, etc.)
+- Added `source` field to track booking origin (retell_calcom, manual, etc.)
+- Added `duration_minutes` for accurate appointment duration tracking
+- Added `customer_email` for complete customer records
+- Added `appointment_sms_enabled` and `phone` to profiles for owner notifications
+
+### SMS System Improvements
+
+**Universal Number Architecture:**
+- All SMS sent from shared `MASTER_SMS_NUMBER`
+- Automatic business name prefixing: `[Business Name] message text`
+- Per-tenant usage tracking and opt-out compliance
+- Intelligent conversation routing via thread locks
+
+**SMS Gate System:**
+- `SMS_SENDING_ENABLED` environment variable controls SMS sending
+- When `false`: SMS attempts logged but NOT sent or counted (perfect for pre-launch)
+- When `true`: Full SMS functionality active, usage counted
+- Allows system to be production-ready before number activation
+
+**Notification Types:**
+- Booking confirmations (to customers)
+- Appointment notifications (to owners)
+- Post-call SMS (automated follow-ups)
+- Review requests (after completed appointments)
+
+### Cal.com Integration Fixes
+
+**Booking Reliability:**
+- Fixed `eventTypeId` type validation (must be integer)
+- Removed `lengthInMinutes` for fixed-duration event types
+- Enhanced metadata handling (no null values, length limits)
+- Improved error handling with detailed Cal.com API error logging
+
+**Webhook Processing:**
+- Fixed `call_ended` webhook 500 errors
+- Improved duplicate detection
+- Better error recovery and logging
 
 ---
 
