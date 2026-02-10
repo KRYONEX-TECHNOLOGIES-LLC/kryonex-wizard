@@ -6612,6 +6612,7 @@ app.get("/api/calcom/callback", async (req, res) => {
     // Fetch Cal.com user info for better webhook resolution
     let calUserId = null;
     let calUserEmail = null;
+    let calUsername = null;
     try {
       const meResponse = await calClient.get("/me", {
         headers: {
@@ -6619,23 +6620,30 @@ app.get("/api/calcom/callback", async (req, res) => {
           "cal-api-version": "2024-08-13",
         },
       });
-      calUserId = meResponse.data?.data?.id || meResponse.data?.id || null;
-      calUserEmail = meResponse.data?.data?.email || meResponse.data?.email || null;
-      console.log("[calcom-oauth] Fetched user info:", { calUserId, calUserEmail });
+      const meData = meResponse.data?.data || meResponse.data || {};
+      calUserId = meData.id || null;
+      calUserEmail = meData.email || null;
+      calUsername = meData.username || meData.name?.toLowerCase().replace(/\s+/g, '') || null;
+      console.log("[calcom-oauth] Fetched user info:", { calUserId, calUserEmail, calUsername });
     } catch (meErr) {
       console.warn("[calcom-oauth] Could not fetch /me:", meErr.message);
     }
     
     let eventType = null;
     let bookingUrl = null;
+    let eventTypes = [];
+    
+    // Try to fetch existing event types
     try {
       const eventTypesResponse = await calClient.get("/event-types", {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          "cal-api-version": CAL_API_VERSION_EVENT_TYPES,
+          "cal-api-version": "2024-06-11", // Use older stable version
         },
       });
-      const eventTypes =
+      console.log("[calcom-callback] Event types response:", JSON.stringify(eventTypesResponse.data).slice(0, 500));
+      eventTypes =
+        eventTypesResponse.data?.data?.eventTypeGroups?.[0]?.eventTypes ||
         eventTypesResponse.data?.data?.eventTypes ||
         eventTypesResponse.data?.eventTypes ||
         eventTypesResponse.data?.data ||
@@ -6644,6 +6652,13 @@ app.get("/api/calcom/callback", async (req, res) => {
         eventTypes.find((item) => item?.isDefault || item?.default) ||
         eventTypes[0] ||
         null;
+      console.log("[calcom-callback] Found existing event types:", eventTypes.length, "using:", eventType?.id);
+    } catch (fetchErr) {
+      console.warn("[calcom-callback] Could not fetch event types (will try to create):", fetchErr.response?.status, fetchErr.response?.data?.message || fetchErr.message);
+      // Continue to create one
+    }
+    
+    try {
       
       // =========================================================================
       // AUTO-CREATE EVENT TYPE if user has none
@@ -6730,6 +6745,7 @@ app.get("/api/calcom/callback", async (req, res) => {
           }
           
           try {
+            console.log("[calcom-callback] Creating schedule with availability:", JSON.stringify(availability));
             const scheduleResponse = await calClient.post("/schedules", {
               name: `${businessName} Business Hours`,
               timeZone: "America/New_York", // Default, could get from wizard
@@ -6738,15 +6754,16 @@ app.get("/api/calcom/callback", async (req, res) => {
             }, {
               headers: {
                 Authorization: `Bearer ${accessToken}`,
-                "cal-api-version": "2024-06-14",
+                "cal-api-version": "2024-06-11", // Use stable version
                 "Content-Type": "application/json",
               },
             });
             
+            console.log("[calcom-callback] Schedule response:", JSON.stringify(scheduleResponse.data).slice(0, 500));
             scheduleId = scheduleResponse.data?.data?.id || scheduleResponse.data?.id;
-            console.log("[calcom-callback] Auto-created schedule with wizard hours:", { scheduleId, availability });
+            console.log("[calcom-callback] Auto-created schedule:", { scheduleId });
           } catch (schedErr) {
-            console.error("[calcom-callback] Failed to create schedule:", schedErr.response?.data || schedErr.message);
+            console.error("[calcom-callback] Failed to create schedule:", schedErr.response?.status, schedErr.response?.data || schedErr.message);
             // Continue without custom schedule - Cal.com will use default
           }
           
@@ -6756,9 +6773,9 @@ app.get("/api/calcom/callback", async (req, res) => {
           const eventTypePayload = {
             title: eventTitle,
             slug: eventSlug,
-            length: 60, // 60 minute appointments
+            lengthInMinutes: 60, // 60 minute appointments (v2 uses lengthInMinutes)
             description: `Schedule a service appointment with ${businessName}`,
-            locations: [{ type: "inPerson", address: "" }], // Customer provides address
+            locations: [{ type: "attendeeAddress" }], // Customer provides address (v2 format)
           };
           
           // Link to our custom schedule if we created one
@@ -6766,14 +6783,17 @@ app.get("/api/calcom/callback", async (req, res) => {
             eventTypePayload.scheduleId = scheduleId;
           }
           
+          console.log("[calcom-callback] Creating event type with payload:", JSON.stringify(eventTypePayload));
+          
           const createEventResponse = await calClient.post("/event-types", eventTypePayload, {
             headers: {
               Authorization: `Bearer ${accessToken}`,
-              "cal-api-version": CAL_API_VERSION_EVENT_TYPES,
+              "cal-api-version": "2024-06-14", // Use stable version for event type creation
               "Content-Type": "application/json",
             },
           });
           
+          console.log("[calcom-callback] Create event response:", JSON.stringify(createEventResponse.data).slice(0, 500));
           eventType = createEventResponse.data?.data || createEventResponse.data;
           console.log("[calcom-callback] Auto-created event type:", { id: eventType?.id, slug: eventType?.slug, scheduleId });
           
@@ -6784,20 +6804,25 @@ app.get("/api/calcom/callback", async (req, res) => {
       }
       
       if (eventType) {
+        // Use username from event type, or fallback to username from /me
         const username =
           eventType?.profile?.username ||
           eventType?.owner?.username ||
           eventType?.users?.[0]?.username ||
+          calUsername ||
           null;
-        const slug = eventType?.slug || null;
+        const slug = eventType?.slug || "service-call";
         const calComUrl = username
-          ? `https://cal.com/${username}/${slug || "service-call"}`
+          ? `https://cal.com/${username}/${slug}`
           : null;
         bookingUrl =
           calComUrl ||
           eventType?.schedulingUrl ||
           eventType?.bookingUrl ||
           (username && slug ? `https://cal.com/${username}/${slug}` : null);
+        
+        console.log("[calcom-callback] Built booking URL:", { username, slug, bookingUrl });
+        
         await supabaseAdmin
           .from("profiles")
           .update({
@@ -6812,9 +6837,17 @@ app.get("/api/calcom/callback", async (req, res) => {
           .eq("user_id", stateData.userId);
       }
     } catch (err) {
-      console.error("[calcom-callback] Error fetching/creating event types:", err.message);
+      console.error("[calcom-callback] Error fetching/creating event types:", err.response?.data || err.message);
       bookingUrl = null;
     }
+
+    // Final username - use calUsername from /me as ultimate fallback
+    const finalUsername = 
+      eventType?.profile?.username ||
+      eventType?.owner?.username ||
+      eventType?.users?.[0]?.username ||
+      calUsername ||
+      null;
 
     const upsertData = {
       user_id: stateData.userId,
@@ -6827,11 +6860,7 @@ app.get("/api/calcom/callback", async (req, res) => {
       booking_url: bookingUrl,
       event_type_id: eventType?.id || null,
       event_type_slug: eventType?.slug || null,
-      cal_username:
-        eventType?.profile?.username ||
-        eventType?.owner?.username ||
-        eventType?.users?.[0]?.username ||
-        null,
+      cal_username: finalUsername,
       cal_team_slug: eventType?.team?.slug || null,
       cal_organization_slug: eventType?.organization?.slug || null,
       cal_time_zone: eventType?.timeZone || null,
