@@ -824,26 +824,79 @@ export default function CalendarPage() {
                       <p className="manifest-notes">{appt.notes}</p>
                     )}
                     <div className="manifest-details">
+                      {/* Service Address / Location */}
                       <div className="manifest-detail-row">
                         <span className="detail-label">📍 Location</span>
-                        <span className="detail-value">{appt.location || "TBD"}</span>
+                        <span className="detail-value">{appt.location || appt.service_address || "TBD"}</span>
                       </div>
+                      
+                      {/* Customer Phone */}
                       {appt.customer_phone && (
                         <div className="manifest-detail-row">
                           <span className="detail-label">📞 Phone</span>
                           <span className="detail-value">{appt.customer_phone}</span>
                         </div>
                       )}
-                      {appt.duration_minutes && (
+                      
+                      {/* Customer Email */}
+                      {appt.customer_email && (
                         <div className="manifest-detail-row">
-                          <span className="detail-label">⏱️ Duration</span>
-                          <span className="detail-value">{appt.duration_minutes} min</span>
+                          <span className="detail-label">📧 Email</span>
+                          <span className="detail-value">{appt.customer_email}</span>
                         </div>
                       )}
+                      
+                      {/* Issue Type / Service Type */}
+                      {appt.issue_type && (
+                        <div className="manifest-detail-row">
+                          <span className="detail-label">🔧 Service</span>
+                          <span className="detail-value">{appt.issue_type.replace(/_/g, ' ')}</span>
+                        </div>
+                      )}
+                      
+                      {/* Duration */}
+                      {(appt.duration_minutes || 60) && (
+                        <div className="manifest-detail-row">
+                          <span className="detail-label">⏱️ Duration</span>
+                          <span className="detail-value">{appt.duration_minutes || 60} min</span>
+                        </div>
+                      )}
+                      
+                      {/* Job Value */}
                       {appt.job_value && (
                         <div className="manifest-detail-row">
                           <span className="detail-label">💰 Value</span>
                           <span className="detail-value">${appt.job_value}</span>
+                        </div>
+                      )}
+                      
+                      {/* Booking Source */}
+                      <div className="manifest-detail-row">
+                        <span className="detail-label">📲 Source</span>
+                        <span className="detail-value">
+                          {appt.cal_booking_uid 
+                            ? "Cal.com (AI Booked)" 
+                            : appt.source === "retell_call_ended" 
+                              ? "AI Phone Call"
+                              : appt.source === "manual"
+                                ? "Manual Entry"
+                                : "Phone Booking"}
+                        </span>
+                      </div>
+                      
+                      {/* Cal.com Booking Link */}
+                      {appt.cal_booking_uid && (
+                        <div className="manifest-detail-row">
+                          <span className="detail-label">🔗 Cal.com</span>
+                          <a 
+                            href={`https://app.cal.com/booking/${appt.cal_booking_uid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="detail-value"
+                            style={{ color: "#22d3ee", textDecoration: "underline" }}
+                          >
+                            View in Cal.com
+                          </a>
                         </div>
                       )}
                     </div>

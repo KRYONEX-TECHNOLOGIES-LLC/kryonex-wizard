@@ -2454,65 +2454,139 @@ const sendSmsFromAgent = async ({ agentId, to, body, userId, source }) => {
 
 const sendBookingAlert = async (userEmail, appointment) => {
   if (!resend || !userEmail || !appointment?.id) return;
+  
   const appointmentDate =
     appointment.start_time?.slice(0, 10) ||
     appointment.start_date ||
     new Date().toISOString().slice(0, 10);
+  
+  // Deep link directly to this appointment in the calendar
   const deepLink = `${appBaseUrl}/calendar?date=${appointmentDate}&appointmentId=${appointment.id}`;
   const customerName = appointment.customer_name || "Customer";
+  
   const formatDateTime = (value) =>
     value
       ? new Date(value).toLocaleString("en-US", {
-          month: "short",
+          weekday: "long",
+          month: "long",
           day: "numeric",
           year: "numeric",
           hour: "numeric",
           minute: "2-digit",
         })
       : "TBD";
+  
+  const formatTime = (value) =>
+    value
+      ? new Date(value).toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        })
+      : "TBD";
+  
   const duration = appointment.duration_minutes
     ? `${appointment.duration_minutes} min`
     : "60 min";
+  
   const jobValue =
     appointment.job_value && Number(appointment.job_value)
       ? `$${Number(appointment.job_value).toLocaleString()}`
-      : "Not set";
-  const detailRows = [
-    { label: "Customer", value: customerName },
-    {
-      label: "When",
-      value: formatDateTime(appointment.start_time || appointment.start_date),
-    },
-    { label: "Location", value: appointment.location || "Location TBD" },
-    { label: "Phone", value: appointment.customer_phone || "—" },
+      : null;
+  
+  const issueType = appointment.issue_type
+    ? appointment.issue_type.replace(/_/g, " ").toUpperCase()
+    : null;
+  
+  const source = appointment.cal_booking_uid
+    ? "AI Booked via Cal.com"
+    : appointment.source === "retell_calcom"
+      ? "AI Phone Booking (Cal.com)"
+      : appointment.source === "retell_internal"
+        ? "AI Phone Booking"
+        : "Phone Booking";
+  
+  // Build detail rows - only include populated fields
+  const detailItems = [
+    { label: "Customer Name", value: customerName },
+    { label: "Appointment Time", value: formatDateTime(appointment.start_time || appointment.start_date) },
     { label: "Duration", value: duration },
+    { label: "Service Location", value: appointment.location || null },
+    { label: "Customer Phone", value: appointment.customer_phone || null },
+    { label: "Customer Email", value: appointment.customer_email || null },
+    { label: "Service Type", value: issueType },
     { label: "Job Value", value: jobValue },
-    { label: "Status", value: (appointment.status || "Booked").toUpperCase() },
-  ]
+    { label: "Booking Source", value: source },
+    { label: "Status", value: (appointment.status || "Scheduled").toUpperCase() },
+  ].filter(row => row.value); // Only include rows with values
+  
+  const detailRows = detailItems
     .map(
       (row) =>
-        `<tr><td style="padding:4px 8px;color:#475569;font-weight:600;">${row.label}</td><td style="padding:4px 8px;color:#0f172a;">${row.value}</td></tr>`
+        `<tr>
+          <td style="padding:10px 12px;color:#64748b;font-weight:500;border-bottom:1px solid #e2e8f0;width:40%;">${row.label}</td>
+          <td style="padding:10px 12px;color:#0f172a;font-weight:600;border-bottom:1px solid #e2e8f0;">${row.value}</td>
+        </tr>`
     )
     .join("");
-  const notes = appointment.notes ? appointment.notes : "No additional notes.";
+  
+  const notes = appointment.notes ? appointment.notes : null;
+  const notesHtml = notes
+    ? `<div style="margin:16px 0;padding:12px 16px;background:#fefce8;border-left:4px solid #eab308;border-radius:0 8px 8px 0;">
+        <strong style="color:#854d0e;">Notes:</strong> <span style="color:#713f12;">${notes}</span>
+      </div>`
+    : "";
+  
   await resend.emails.send({
     from: "Kryonex Alerts <alerts@kryonextech.com>",
     to: userEmail,
-    subject: `New Appointment: ${customerName}`,
+    subject: `🗓️ New Appointment Booked: ${customerName} - ${formatTime(appointment.start_time)}`,
     html: `
-      <div style="font-family: 'Inter', system-ui, sans-serif; color: #0f172a; background:#f8fafc; padding:24px; border-radius:20px;">
-        <h2 style="margin: 0 0 8px; color:#0f172a;">Manifest: ${customerName}</h2>
-        <p style="margin:0 0 18px; color:#475569;">The job has been booked and is now visible inside your Kryonex Command Deck.</p>
-        <table cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; border:1px solid rgba(15,23,42,0.08);">
-          ${detailRows}
-        </table>
-        <p style="margin:12px 0 20px; color:#475569;"><strong>Notes:</strong> ${notes}</p>
-        <a href="${deepLink}" style="display:inline-block;padding:14px 22px;background:#0f172a;color:#f8fafc;text-decoration:none;border-radius:10px;font-weight:700;">
-          Open Daily Manifest
-        </a>
+      <div style="font-family: 'Inter', system-ui, sans-serif; max-width:600px; margin:0 auto;">
+        <!-- Header -->
+        <div style="background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding:32px 24px; border-radius:20px 20px 0 0;">
+          <h1 style="margin:0 0 8px; color:#22d3ee; font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:1px;">
+            New Booking Confirmed
+          </h1>
+          <h2 style="margin:0; color:#f8fafc; font-size:24px; font-weight:700;">
+            ${customerName}
+          </h2>
+          <p style="margin:8px 0 0; color:#94a3b8; font-size:14px;">
+            ${formatDateTime(appointment.start_time || appointment.start_date)}
+          </p>
+        </div>
+        
+        <!-- Body -->
+        <div style="background:#ffffff; padding:24px; border:1px solid #e2e8f0; border-top:none;">
+          <table cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse;">
+            ${detailRows}
+          </table>
+          
+          ${notesHtml}
+          
+          <!-- CTA Button -->
+          <div style="margin-top:24px; text-align:center;">
+            <a href="${deepLink}" style="display:inline-block;padding:16px 32px;background:linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);color:#ffffff;text-decoration:none;border-radius:12px;font-weight:700;font-size:16px;box-shadow:0 4px 14px rgba(6, 182, 212, 0.4);">
+              📅 View in Calendar
+            </a>
+          </div>
+          
+          <p style="margin:20px 0 0; text-align:center; color:#94a3b8; font-size:12px;">
+            Click the button above to go directly to this appointment in your Kryonex calendar.
+          </p>
+        </div>
+        
+        <!-- Footer -->
+        <div style="background:#f8fafc; padding:16px 24px; border-radius:0 0 20px 20px; border:1px solid #e2e8f0; border-top:none;">
+          <p style="margin:0; color:#64748b; font-size:12px; text-align:center;">
+            This notification was sent by <strong>Kryonex AI</strong> • <a href="${appBaseUrl}/settings" style="color:#0891b2;">Manage notification preferences</a>
+          </p>
+        </div>
       </div>
     `,
   });
+  
+  console.log("[sendBookingAlert] Email sent to:", userEmail, "for appointment:", appointment.id);
 };
 
 /**
@@ -2583,6 +2657,84 @@ const sendBookingConfirmationSms = async ({ userId, customerPhone, customerName,
       error: err,
       context: { userId, customerPhone, action: "booking_confirmation_sms" },
       severity: "medium",
+    });
+    return { sent: false, reason: err.message };
+  }
+};
+
+/**
+ * Send SMS notification to business owner when a new appointment is booked
+ * This notifies the service provider of incoming jobs
+ */
+const sendNewAppointmentSmsToOwner = async ({ userId, customerName, customerPhone, startTime, location, issueType }) => {
+  try {
+    // Get owner's phone number from profiles
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("phone, business_name, appointment_sms_enabled")
+      .eq("user_id", userId)
+      .maybeSingle();
+    
+    // Check if notifications are enabled (default to true)
+    const notificationsEnabled = profile?.appointment_sms_enabled ?? true;
+    if (!notificationsEnabled) {
+      console.log("[sendNewAppointmentSmsToOwner] Notifications disabled for user:", userId);
+      return { sent: false, reason: "disabled" };
+    }
+    
+    // Owner's phone number
+    const ownerPhone = profile?.phone;
+    if (!ownerPhone) {
+      console.log("[sendNewAppointmentSmsToOwner] No owner phone number found for user:", userId);
+      return { sent: false, reason: "no_owner_phone" };
+    }
+    
+    // Format the appointment time
+    const appointmentDate = new Date(startTime);
+    const formattedDate = appointmentDate.toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+    const formattedTime = appointmentDate.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    
+    // Build notification message
+    const customer = customerName || "New Customer";
+    const issue = issueType ? issueType.replace(/_/g, " ") : "Service Call";
+    
+    let smsBody = `NEW BOOKING: ${customer} for ${formattedDate} at ${formattedTime}`;
+    if (issueType) {
+      smsBody += ` - ${issue}`;
+    }
+    if (location) {
+      smsBody += ` at ${location}`;
+    }
+    if (customerPhone) {
+      smsBody += `. Customer: ${customerPhone}`;
+    }
+    
+    // Send the SMS to owner
+    const result = await sendSmsInternal({
+      userId,
+      to: ownerPhone,
+      body: smsBody,
+      source: "appointment_notification",
+      skipBusinessPrefix: true,
+    });
+    
+    console.log("[sendNewAppointmentSmsToOwner] Sent notification to owner:", ownerPhone, "result:", result?.success ? "success" : "failed");
+    return { sent: true, messageId: result?.messageId };
+    
+  } catch (err) {
+    console.error("[sendNewAppointmentSmsToOwner] Error sending notification:", err.message);
+    trackError({
+      error: err,
+      context: { userId, action: "appointment_notification_sms" },
+      severity: "low",
     });
     return { sent: false, reason: err.message };
   }
@@ -5923,6 +6075,9 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         notes: args.service_issue || args.notes || `Booked via Cal.com`,
         status: "scheduled",
         cal_booking_uid: calBookingUid,
+        issue_type: args.issue_type || null,
+        duration_minutes: args.duration_minutes ? parseInt(args.duration_minutes, 10) : 60,
+        source: "retell_calcom",
       };
       
       let appointmentData, appointmentError;
@@ -6029,6 +6184,20 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       }
       
       // =========================================================================
+      // SEND SMS NOTIFICATION TO BUSINESS OWNER (new booking alert)
+      // =========================================================================
+      if (appointmentData?.id) {
+        sendNewAppointmentSmsToOwner({
+          userId,
+          customerName: args.customer_name || booking?.attendee?.name || "Customer",
+          customerPhone: normalizedCustomerPhone,
+          startTime: booking?.start || start.toISOString(),
+          location: args.service_address || args.location || null,
+          issueType: args.issue_type || null,
+        }).catch(err => console.error("[book_appointment] Owner SMS notification error:", err.message));
+      }
+      
+      // =========================================================================
       // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
       // =========================================================================
       if (appointmentData?.id) {
@@ -6065,6 +6234,9 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       location: args.service_address || args.location || null,
       notes: args.service_issue || args.notes || null,
       status: "booked",
+      issue_type: args.issue_type || null,
+      duration_minutes: args.duration_minutes ? parseInt(args.duration_minutes, 10) : 60,
+      source: "retell_internal",
     };
     console.log("[book_appointment] Inserting into appointments:", JSON.stringify(insertPayload).slice(0, 500));
     const { data, error } = await supabaseAdmin
@@ -6124,6 +6296,20 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         businessName: internalProfile?.business_name,
         location: args.service_address || args.location || null,
       }).catch(err => console.error("[book_appointment] Confirmation SMS error:", err.message));
+    }
+    
+    // =========================================================================
+    // SEND SMS NOTIFICATION TO BUSINESS OWNER (new booking alert)
+    // =========================================================================
+    if (data?.id) {
+      sendNewAppointmentSmsToOwner({
+        userId,
+        customerName: args.customer_name || "Customer",
+        customerPhone: internalCustomerPhone,
+        startTime: data?.start_time || start.toISOString(),
+        location: args.service_address || args.location || null,
+        issueType: args.issue_type || null,
+      }).catch(err => console.error("[book_appointment] Owner SMS notification error:", err.message));
     }
     
     // =========================================================================
@@ -7346,6 +7532,18 @@ app.post("/webhooks/calcom", async (req, res) => {
           location,
         }).catch(err => console.error("[calcom-webhook] Confirmation SMS error:", err.message));
       }
+      
+      // =========================================================================
+      // SEND SMS NOTIFICATION TO BUSINESS OWNER (new booking alert)
+      // =========================================================================
+      sendNewAppointmentSmsToOwner({
+        userId,
+        customerName,
+        customerPhone,
+        startTime,
+        location,
+        issueType: null, // Cal.com webhooks don't have issue_type
+      }).catch(err => console.error("[calcom-webhook] Owner SMS notification error:", err.message));
       
       // =========================================================================
       // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
@@ -8690,6 +8888,18 @@ const retellWebhookHandler = async (req, res) => {
                   location: analysisData.service_address || null,
                 }).catch(err => console.error("[call_ended] Confirmation SMS error:", err.message));
               }
+              
+              // =========================================================================
+              // SEND SMS NOTIFICATION TO BUSINESS OWNER (new booking alert)
+              // =========================================================================
+              sendNewAppointmentSmsToOwner({
+                userId: agentRow.user_id,
+                customerName,
+                customerPhone,
+                startTime: appointmentStart,
+                location: analysisData.service_address || null,
+                issueType: analysisData.issue_type || null,
+              }).catch(err => console.error("[call_ended] Owner SMS notification error:", err.message));
               
               // =========================================================================
               // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
@@ -14417,6 +14627,8 @@ app.post(
           eta_link: etaLink,
           cal_booking_uid: calBookingUid,
           status: "booked",
+          duration_minutes: durationMinutes,
+          source: calBookingUid ? "manual_calcom" : "manual",
         })
         .select("*")
         .single();
@@ -14425,12 +14637,46 @@ app.post(
         return res.status(500).json({ error: error.message });
       }
 
-      if (req.user?.email) {
-        try {
-          await sendBookingAlert(req.user.email, data);
-        } catch (err) {
-          console.error("sendBookingAlert error:", err.message);
-        }
+      // =========================================================================
+      // SEND NOTIFICATIONS
+      // =========================================================================
+      // Get profile for business name
+      const { data: manualProfile } = await supabaseAdmin
+        .from("profiles")
+        .select("business_name, email")
+        .eq("user_id", uid)
+        .maybeSingle();
+      
+      // Send confirmation SMS to customer
+      if (sanitizedPhone && data?.id) {
+        sendBookingConfirmationSms({
+          userId: uid,
+          customerPhone: sanitizedPhone,
+          customerName: sanitizedName,
+          startTime: startTime.toISOString(),
+          businessName: manualProfile?.business_name,
+          location: sanitizedLocation,
+        }).catch(err => console.error("[appointments] Confirmation SMS error:", err.message));
+      }
+      
+      // Send SMS notification to business owner
+      if (data?.id) {
+        sendNewAppointmentSmsToOwner({
+          userId: uid,
+          customerName: sanitizedName,
+          customerPhone: sanitizedPhone,
+          startTime: startTime.toISOString(),
+          location: sanitizedLocation,
+          issueType: null,
+        }).catch(err => console.error("[appointments] Owner SMS notification error:", err.message));
+      }
+      
+      // Send email alert to owner
+      const ownerEmail = req.user?.email || manualProfile?.email;
+      if (ownerEmail && data?.id) {
+        sendBookingAlert(ownerEmail, data).catch(err => 
+          console.error("[appointments] sendBookingAlert error:", err.message)
+        );
       }
 
       // Send appointment_booked webhook (API endpoint)
@@ -14444,7 +14690,7 @@ app.post(
         end_time: data?.end_time || endTime.toISOString(),
         location: data?.location || location || null,
         notes: data?.notes || notes || null,
-        source: "api",
+        source: "manual",
         eta_link: etaLink || null,
         created_at: new Date().toISOString(),
       }).catch(err => console.error("[webhook] appointment_booked (api) error:", err.message));
