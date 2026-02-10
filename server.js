@@ -13885,171 +13885,153 @@ app.post("/api/retell/webhook", retellWebhookHandler);
 
 // =====================================================================
 // DEDICATED CUSTOM FUNCTION ENDPOINT FOR RETELL
-// Retell custom functions (book_appointment, check_calendar, etc.)
-// are SEPARATE from webhook events. They have a different format.
-// This endpoint handles ALL custom function calls from Retell.
+// 
+// Retell custom functions are called DURING a live call. When the LLM
+// decides to invoke a function, Retell makes a synchronous HTTP POST
+// to this endpoint and waits for the response.
+//
+// IMPORTANT: "Payload: args only" toggle in Retell MUST be OFF.
+// When OFF, Retell sends: { call, name, arguments, retell_llm_dynamic_variables, ... }
+// When ON (bad), Retell only sends the raw args with no context.
+//
+// We REQUIRE agent_id to identify the user. No fallback hacks.
 // =====================================================================
 app.post("/retell-tool-call", async (req, res) => {
+  const startTime = Date.now();
+  
   try {
+    // ===== STEP 1: Log EVERYTHING immediately =====
+    const rawBody = JSON.stringify(req.body || {});
+    console.log("🔧 [TOOL CALL] ========================================");
+    console.log("🔧 [TOOL CALL] INCOMING REQUEST AT", new Date().toISOString());
+    console.log("🔧 [TOOL CALL] Content-Type:", req.headers["content-type"]);
+    console.log("🔧 [TOOL CALL] Raw body length:", rawBody.length);
+    console.log("🔧 [TOOL CALL] Raw body:", rawBody.substring(0, 3000));
+    console.log("🔧 [TOOL CALL] All headers:", JSON.stringify(req.headers).substring(0, 1000));
+    
     const payload = req.body || {};
+    const payloadKeys = Object.keys(payload);
+    console.log("🔧 [TOOL CALL] Payload keys:", payloadKeys);
     
-    console.log("🔧 [RETELL TOOL CALL] ====== INCOMING REQUEST ======");
-    console.log("🔧 [RETELL TOOL CALL] Headers:", {
-      contentType: req.headers["content-type"],
-      hasSignature: Boolean(req.headers["x-retell-signature"]),
-      userAgent: req.headers["user-agent"],
-    });
-    console.log("🔧 [RETELL TOOL CALL] Body keys:", Object.keys(payload));
-    console.log("🔧 [RETELL TOOL CALL] Full body:", JSON.stringify(payload).substring(0, 2000));
+    // ===== STEP 2: Parse Retell's payload format =====
+    // Retell sends: { call: {...}, name: "func_name", arguments: {...}, retell_llm_dynamic_variables: {...} }
+    // The "call" object contains: call_id, agent_id, from_number, to_number, etc.
     
-    // Detect the format:
-    // Format A (full payload): { name: "book_appointment", args: {...}, call_id: "...", agent_id: "..." }
-    // Format B (args only):    { customer_name: "John", customer_phone: "...", ... }
-    // Format C (nested call):  { name: "book_appointment", args: {...}, call: { call_id: "...", agent_id: "..." } }
+    const call = payload.call || {};
+    const functionName = payload.name || payload.function_name || payload.tool_name || null;
+    const args = payload.arguments || payload.args || {};
+    const dynamicVars = payload.retell_llm_dynamic_variables || {};
     
-    let functionName = payload.name || payload.function_name || payload.tool_name || null;
-    let args = payload.args || payload.arguments || null;
-    let agentId = payload.agent_id || payload.call?.agent_id || null;
-    let callId = payload.call_id || payload.call?.call_id || null;
+    // Extract identifiers from the call object
+    const agentId = call.agent_id || payload.agent_id || null;
+    const callId = call.call_id || payload.call_id || null;
+    const fromNumber = call.from_number || payload.from_number || null;
+    const toNumber = call.to_number || payload.to_number || null;
     
-    // If no args field, check if the payload itself IS the args (args-only mode)
-    if (!args && !functionName) {
-      // Try to detect function from the args structure
-      if (payload.start_time_iso && payload.customer_name) {
-        functionName = "book_appointment";
-        args = payload;
-      } else if (payload.new_start_time_iso) {
-        functionName = "reschedule_appointment";
-        args = payload;
-      } else if (payload.start_date || payload.duration_minutes) {
-        functionName = "check_calendar_availability";
-        args = payload;
-      } else if (payload.customer_phone && !payload.start_date && !payload.start_time_iso && !payload.new_start_time_iso) {
-        // cancel_booking has customer_phone and optionally reason
-        functionName = "cancel_booking";
-        args = payload;
-      } else if (Object.keys(payload).length === 0) {
-        // Empty args - likely after_hours_check
-        functionName = "after_hours_check";
-        args = {};
-      } else {
-        // Unknown format - log everything and return error
-        console.error("🔧 [RETELL TOOL CALL] UNKNOWN FORMAT - cannot detect function:", JSON.stringify(payload).substring(0, 1000));
-        return res.status(400).json({ ok: false, error: "Unknown function call format" });
-      }
-      console.log("🔧 [RETELL TOOL CALL] Detected args-only mode, inferred function:", functionName);
-    }
-    
-    // If we have a function name but args is still null, use the full payload as args
-    if (functionName && !args) {
-      args = {};
-    }
-    
-    if (!functionName) {
-      console.error("🔧 [RETELL TOOL CALL] Missing function name");
-      return res.status(400).json({ ok: false, error: "Missing function name" });
-    }
-    
-    console.log("🔧 [RETELL TOOL CALL] Parsed:", {
+    console.log("🔧 [TOOL CALL] Parsed:", {
       functionName,
       agentId,
       callId,
-      argsKeys: args ? Object.keys(args) : [],
+      fromNumber,
+      toNumber,
+      argsKeys: Object.keys(args),
+      dynamicVarsKeys: Object.keys(dynamicVars),
+      hasCallObject: Boolean(payload.call),
     });
     
-    // Look up user from agent_id
+    // ===== STEP 3: Validate required fields =====
+    if (!functionName) {
+      console.error("🔧 [TOOL CALL] ERROR: Missing function name. Retell should send 'name' field.");
+      console.error("🔧 [TOOL CALL] This usually means 'Payload: args only' is ON in Retell - turn it OFF.");
+      return res.json({ 
+        ok: false, 
+        error: "Missing function name. Ensure 'Payload: args only' is OFF in Retell function settings.",
+        debug: { payloadKeys, hasCallObject: Boolean(payload.call) }
+      });
+    }
+    
+    // ===== STEP 4: Find the user from agent_id (PRIMARY) or phone number (FALLBACK) =====
     let userId = null;
     let resolvedAgentId = agentId;
     
+    // Primary: Look up by agent_id
     if (agentId) {
       const { data: agentRow } = await supabaseAdmin
         .from("agents")
-        .select("user_id")
+        .select("user_id, phone_number")
         .eq("agent_id", agentId)
         .maybeSingle();
-      if (agentRow) userId = agentRow.user_id;
+      
+      if (agentRow?.user_id) {
+        userId = agentRow.user_id;
+        console.log("🔧 [TOOL CALL] Found user via agent_id:", userId);
+      }
     }
     
-    // If no agent_id or not found, try to find from call_id
+    // Fallback: Look up by to_number (the Retell phone number receiving the call)
+    if (!userId && toNumber) {
+      const normalizedTo = toNumber.replace(/\D/g, "");
+      const phoneVariants = [
+        toNumber,
+        `+${normalizedTo}`,
+        `+1${normalizedTo}`,
+        normalizedTo,
+      ];
+      
+      const { data: agentByPhone } = await supabaseAdmin
+        .from("agents")
+        .select("user_id, agent_id")
+        .in("phone_number", phoneVariants)
+        .maybeSingle();
+      
+      if (agentByPhone?.user_id) {
+        userId = agentByPhone.user_id;
+        resolvedAgentId = agentByPhone.agent_id || resolvedAgentId;
+        console.log("🔧 [TOOL CALL] Found user via to_number:", { userId, resolvedAgentId, toNumber });
+      }
+    }
+    
+    // Fallback: Look up by call_id from leads or usage_calls
     if (!userId && callId) {
-      const { data: leadRow } = await supabaseAdmin
+      const { data: leadByCall } = await supabaseAdmin
         .from("leads")
         .select("user_id")
         .eq("retell_call_id", callId)
         .maybeSingle();
-      if (leadRow) userId = leadRow.user_id;
-    }
-    
-    // FALLBACK: If no agent_id/call_id (args-only mode), find the most recently active call
-    // Retell custom functions in "args only" mode don't include metadata
-    if (!userId) {
-      console.log("🔧 [RETELL TOOL CALL] No agent_id/call_id found, trying fallback lookups...");
       
-      // Strategy 1: Look for the most recently started call (within last 30 min)
-      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const { data: recentCall } = await supabaseAdmin
-        .from("usage_calls")
-        .select("user_id, agent_id, call_id")
-        .gte("created_at", thirtyMinAgo)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      
-      if (recentCall?.user_id) {
-        userId = recentCall.user_id;
-        resolvedAgentId = recentCall.agent_id || resolvedAgentId;
-        console.log("🔧 [RETELL TOOL CALL] Found user via recent call:", {
-          user_id: userId,
-          agent_id: resolvedAgentId,
-          call_id: recentCall.call_id,
-        });
-      }
-      
-      // Strategy 2: Try customer_phone from args to find agent
-      if (!userId && args?.customer_phone) {
-        const phone = args.customer_phone;
-        const { data: leadByPhone } = await supabaseAdmin
-          .from("leads")
-          .select("user_id")
-          .eq("phone", phone)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (leadByPhone?.user_id) {
-          userId = leadByPhone.user_id;
-          console.log("🔧 [RETELL TOOL CALL] Found user via customer_phone:", userId);
-        }
-      }
-      
-      // Strategy 3: If there's only one active agent in the system, use it
-      if (!userId) {
-        const { data: activeAgents } = await supabaseAdmin
-          .from("agents")
+      if (leadByCall?.user_id) {
+        userId = leadByCall.user_id;
+        console.log("🔧 [TOOL CALL] Found user via call_id in leads:", userId);
+      } else {
+        const { data: usageByCall } = await supabaseAdmin
+          .from("usage_calls")
           .select("user_id, agent_id")
-          .eq("is_active", true)
-          .limit(5);
+          .eq("call_id", callId)
+          .maybeSingle();
         
-        if (activeAgents?.length === 1) {
-          userId = activeAgents[0].user_id;
-          resolvedAgentId = activeAgents[0].agent_id;
-          console.log("🔧 [RETELL TOOL CALL] Found single active agent:", {
-            user_id: userId,
-            agent_id: resolvedAgentId,
-          });
-        } else {
-          console.log("🔧 [RETELL TOOL CALL] Multiple active agents found:", activeAgents?.length);
+        if (usageByCall?.user_id) {
+          userId = usageByCall.user_id;
+          resolvedAgentId = usageByCall.agent_id || resolvedAgentId;
+          console.log("🔧 [TOOL CALL] Found user via call_id in usage_calls:", userId);
         }
       }
     }
     
+    // If still no user, we cannot proceed
     if (!userId) {
-      console.error("🔧 [RETELL TOOL CALL] Could not find user for agent:", agentId, "call:", callId, "all strategies exhausted");
-      return res.status(404).json({ ok: false, error: "Could not identify the user for this call" });
+      console.error("🔧 [TOOL CALL] ERROR: Could not identify user.");
+      console.error("🔧 [TOOL CALL] Tried: agent_id=" + agentId + ", to_number=" + toNumber + ", call_id=" + callId);
+      console.error("🔧 [TOOL CALL] Make sure 'Payload: args only' is OFF in Retell function settings.");
+      return res.json({ 
+        ok: false, 
+        error: "Could not identify user. Retell must send 'call' object with agent_id or phone number.",
+        debug: { agentId, callId, toNumber, payloadKeys }
+      });
     }
     
-    console.log("🔧 [RETELL TOOL CALL] Found user:", userId, "for agent:", resolvedAgentId);
+    // ===== STEP 5: Execute the tool =====
+    console.log("🔧 [TOOL CALL] Executing:", { functionName, userId, resolvedAgentId, args });
     
-    // Route to handleToolCall
     const toolForHandler = {
       name: functionName,
       arguments: args,
@@ -14061,16 +14043,21 @@ app.post("/retell-tool-call", async (req, res) => {
       userId,
     });
     
-    console.log("🔧 [RETELL TOOL CALL] Result:", {
+    const elapsed = Date.now() - startTime;
+    console.log("🔧 [TOOL CALL] COMPLETE in " + elapsed + "ms:", {
       functionName,
       ok: result?.ok,
-      error: result?.error,
-      hasData: Boolean(result?.appointment || result?.booking || result?.available !== undefined),
+      error: result?.error || null,
     });
     
+    // ===== STEP 6: Return result to Retell =====
+    // Retell expects a JSON response that the LLM can use to continue the conversation
     return res.json(result);
+    
   } catch (err) {
-    console.error("🔧 [RETELL TOOL CALL] UNHANDLED ERROR:", err.message, err.stack?.substring(0, 500));
+    const elapsed = Date.now() - startTime;
+    console.error("🔧 [TOOL CALL] UNHANDLED ERROR after " + elapsed + "ms:", err.message);
+    console.error("🔧 [TOOL CALL] Stack:", err.stack?.substring(0, 800));
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
