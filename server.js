@@ -5983,10 +5983,29 @@ const createCalBooking = async ({ config, userId, start, args }) => {
     ? parseInt(String(config.cal_event_type_id), 10) 
     : undefined;
   
+  // Build service address for location
+  const serviceAddress = args.service_address || args.address || args.location || null;
+  
+  // Build issue/notes description for Cal.com
+  const issueType = args.issue_type || null;
+  const serviceIssue = args.service_issue || args.notes || null;
+  let bookingNotes = "";
+  if (issueType) {
+    const issueLabel = issueType.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    bookingNotes += `Service Issue: ${issueLabel}\n`;
+  }
+  if (serviceIssue) {
+    bookingNotes += `Details: ${serviceIssue}\n`;
+  }
+  if (serviceAddress) {
+    bookingNotes += `Service Address: ${serviceAddress}\n`;
+  }
+  
   // Build metadata - Cal.com is strict: no null values, max 50 keys
   const metadata = { source: "retell_tool" };
   if (args.lead_id) metadata.lead_id = String(args.lead_id).substring(0, 500);
-  if (args.issue_type) metadata.issue_type = String(args.issue_type).substring(0, 100);
+  if (issueType) metadata.issue_type = String(issueType).substring(0, 100);
+  if (serviceAddress) metadata.service_address = String(serviceAddress).substring(0, 200);
   
   const body = {
     start: start.toISOString(),
@@ -6006,6 +6025,17 @@ const createCalBooking = async ({ config, userId, start, args }) => {
     // Don't send lengthInMinutes - Cal.com event type has fixed duration
     // Sending it causes: "Can't specify 'lengthInMinutes' because event type does not have multiple possible lengths"
   };
+  
+  // Add location/address if event type supports attendee address
+  // Cal.com v2 uses location field for the meeting location
+  if (serviceAddress) {
+    body.location = serviceAddress;
+  }
+  
+  // Add notes/description if we have service details
+  if (bookingNotes.trim()) {
+    body.notes = bookingNotes.trim();
+  }
 
   console.log("[createCalBooking] Attempting booking:", {
     start: body.start,
@@ -6972,6 +7002,72 @@ app.get("/api/calcom/callback", async (req, res) => {
         eventTypes[0] ||
         null;
       console.log("[calcom-callback] Found existing event types:", eventTypes.length, "using:", eventType?.id);
+      
+      // =========================================================================
+      // AUTO-FIX VIDEO EVENT TYPES - Convert to service call format
+      // If the existing event type is for video meetings (google meet, zoom, cal video),
+      // automatically update it to use customer address (attendeeAddress) for service calls
+      // =========================================================================
+      if (eventType?.id) {
+        const locations = eventType.locations || eventType.metadata?.locations || [];
+        const isVideoType = locations.some(loc => {
+          const locType = loc?.type || "";
+          return locType.includes("google") || 
+                 locType.includes("zoom") || 
+                 locType.includes("meet") || 
+                 locType.includes("video") ||
+                 locType === "integrations:google:meet" ||
+                 locType === "integrations:zoom" ||
+                 locType === "conferencing";
+        });
+        
+        // Also check if title indicates it's not a service call
+        const titleLooksLikeVideo = eventType.title?.toLowerCase().includes("secret") ||
+                                     eventType.title?.toLowerCase().includes("meeting") ||
+                                     eventType.title?.toLowerCase().includes("video");
+        
+        if (isVideoType || titleLooksLikeVideo) {
+          console.log("[calcom-callback] Detected video/meeting event type, converting to service call:", {
+            id: eventType.id,
+            title: eventType.title,
+            locations: locations.map(l => l?.type).join(", "),
+          });
+          
+          // Get user's industry for proper title
+          const { data: userProfile2 } = await supabaseAdmin
+            .from("profiles")
+            .select("business_name, industry")
+            .eq("user_id", stateData.userId)
+            .maybeSingle();
+          
+          const bizName = userProfile2?.business_name || "Service";
+          const ind = userProfile2?.industry || "hvac";
+          const fixedTitle = ind === "plumbing" ? "Plumbing Service Call" : 
+                            ind === "hvac" ? "HVAC Service Call" : "Service Call";
+          
+          try {
+            const fixResponse = await calClient.patch(`/event-types/${eventType.id}`, {
+              title: fixedTitle,
+              description: `Schedule a service appointment with ${bizName}. Our team will come to your location.`,
+              locations: [{ type: "attendeeAddress" }],
+            }, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "cal-api-version": "2024-06-14",
+                "Content-Type": "application/json",
+              },
+            });
+            console.log("[calcom-callback] Successfully converted event type to service call:", fixResponse.data);
+            // Update eventType with fixed data
+            eventType = fixResponse.data?.data || fixResponse.data || eventType;
+            eventType.title = fixedTitle;
+            eventType.locations = [{ type: "attendeeAddress" }];
+          } catch (fixErr) {
+            console.warn("[calcom-callback] Could not auto-fix event type:", fixErr.response?.data || fixErr.message);
+            // Continue with the existing event type
+          }
+        }
+      }
     } catch (fetchErr) {
       console.warn("[calcom-callback] Could not fetch event types (will try to create):", fetchErr.response?.status, fetchErr.response?.data?.message || fetchErr.message);
       // Continue to create one
@@ -7336,6 +7432,88 @@ app.post("/api/calcom/disconnect", requireAuth, resolveEffectiveUser, async (req
     return res.json({ connected: false });
   } catch (err) {
     return res.status(500).json({ error: "Unable to disconnect calendar" });
+  }
+});
+
+// =============================================================================
+// FIX CAL.COM EVENT TYPE - Convert video meetings to service calls
+// =============================================================================
+app.post("/api/calcom/fix-event-type", requireAuth, resolveEffectiveUser, async (req, res) => {
+  try {
+    const uid = req.effectiveUserId ?? req.user.id;
+    console.log("[calcom-fix] Fixing event type for user:", uid);
+    
+    // Get Cal.com config and token
+    const config = await getCalConfig(uid);
+    if (!config?.cal_access_token) {
+      return res.status(400).json({ error: "Cal.com not connected. Please reconnect your calendar." });
+    }
+    
+    const eventTypeId = config.cal_event_type_id;
+    if (!eventTypeId) {
+      return res.status(400).json({ error: "No event type configured. Please reconnect Cal.com." });
+    }
+    
+    // Get user profile for business name and industry
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("business_name, industry")
+      .eq("user_id", uid)
+      .maybeSingle();
+    
+    const businessName = profile?.business_name || "Service";
+    const industry = profile?.industry || "hvac";
+    const newTitle = industry === "plumbing" ? "Plumbing Service Call" : 
+                     industry === "hvac" ? "HVAC Service Call" : "Service Call";
+    
+    // Update the event type via Cal.com API
+    const updatePayload = {
+      title: newTitle,
+      description: `Schedule a service appointment with ${businessName}. Our team will come to your location.`,
+      locations: [{ type: "attendeeAddress" }], // Customer provides address (not video!)
+    };
+    
+    console.log("[calcom-fix] Updating event type", { eventTypeId, updatePayload });
+    
+    const response = await calClient.patch(`/event-types/${eventTypeId}`, updatePayload, {
+      headers: {
+        Authorization: `Bearer ${config.cal_access_token}`,
+        "cal-api-version": "2024-06-14",
+        "Content-Type": "application/json",
+      },
+    });
+    
+    console.log("[calcom-fix] Event type updated successfully:", response.data);
+    
+    // Update the stored slug if it changed
+    const updatedEventType = response.data?.data || response.data;
+    if (updatedEventType?.slug) {
+      await supabaseAdmin
+        .from("integrations")
+        .update({ 
+          event_type_slug: updatedEventType.slug,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", uid)
+        .eq("provider", "calcom");
+    }
+    
+    return res.json({ 
+      success: true, 
+      message: "Event type updated to service call format",
+      eventType: {
+        id: eventTypeId,
+        title: newTitle,
+        locationType: "attendeeAddress",
+      }
+    });
+    
+  } catch (err) {
+    console.error("[calcom-fix] Error:", err.response?.data || err.message);
+    return res.status(500).json({ 
+      error: "Failed to update event type",
+      details: err.response?.data?.message || err.message,
+    });
   }
 });
 
