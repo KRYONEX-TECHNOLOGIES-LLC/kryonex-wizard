@@ -5772,6 +5772,16 @@ const createCalBooking = async ({ config, userId, start, args }) => {
   const customerEmail = args.customer_email || args.email || fallbackEmail;
   const customerName = args.customer_name || args.name || "Customer";
   
+  // Ensure eventTypeId is an integer (Cal.com requires this)
+  const eventTypeId = config.cal_event_type_id 
+    ? parseInt(String(config.cal_event_type_id), 10) 
+    : undefined;
+  
+  // Build metadata - Cal.com is strict: no null values, max 50 keys
+  const metadata = { source: "retell_tool" };
+  if (args.lead_id) metadata.lead_id = String(args.lead_id).substring(0, 500);
+  if (args.issue_type) metadata.issue_type = String(args.issue_type).substring(0, 100);
+  
   const body = {
     start: start.toISOString(),
     attendee: {
@@ -5780,16 +5790,13 @@ const createCalBooking = async ({ config, userId, start, args }) => {
       timeZone: args.time_zone || config.cal_time_zone || "America/New_York",
       phoneNumber: customerPhone,
     },
-    eventTypeId: config.cal_event_type_id || undefined,
+    eventTypeId: eventTypeId,
     eventTypeSlug: config.cal_event_type_slug || undefined,
     username: config.cal_username || undefined,
     teamSlug: config.cal_team_slug || undefined,
     organizationSlug: config.cal_organization_slug || undefined,
     bookingFieldsResponses: args.booking_fields || undefined,
-    metadata: {
-      source: "retell_tool",
-      lead_id: args.lead_id || null,
-    },
+    metadata,
     lengthInMinutes: args.duration_minutes
       ? Number(args.duration_minutes)
       : undefined,
