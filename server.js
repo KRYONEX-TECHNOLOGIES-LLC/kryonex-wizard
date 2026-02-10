@@ -7306,6 +7306,40 @@ app.post("/webhooks/calcom", async (req, res) => {
         source: "cal.com_webhook",
       }).catch(err => console.error("[calcom-webhook] outbound webhook error:", err.message));
       
+      // =========================================================================
+      // SEND RESCHEDULE NOTIFICATION SMS TO CUSTOMER
+      // =========================================================================
+      if (customerPhone) {
+        const { data: reschedProfile } = await supabaseAdmin
+          .from("profiles")
+          .select("business_name")
+          .eq("user_id", userId)
+          .maybeSingle();
+        
+        const { data: reschedAgent } = await supabaseAdmin
+          .from("agents")
+          .select("confirmation_sms_enabled")
+          .eq("user_id", userId)
+          .maybeSingle();
+        
+        const reschedEnabled = reschedAgent?.confirmation_sms_enabled ?? true;
+        
+        if (reschedEnabled) {
+          const bizName = reschedProfile?.business_name || "Your service provider";
+          const apptDate = new Date(startTime);
+          const dateStr = apptDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+          const timeStr = apptDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          const msg = `${bizName}: Your appointment has been rescheduled to ${dateStr} at ${timeStr}. Reply STOP to opt out.`;
+          
+          sendSmsInternal({
+            userId,
+            to: customerPhone,
+            body: msg,
+            source: "reschedule_notification",
+          }).catch(err => console.error("[calcom-webhook] Reschedule SMS error:", err.message));
+        }
+      }
+      
       console.log("[calcom-webhook] Updated appointment", { appointmentId: updated.id, bookingUid });
       return res.json({ ok: true, appointment_id: updated.id });
     }
@@ -7334,6 +7368,41 @@ app.post("/webhooks/calcom", async (req, res) => {
           action: "cancelled",
           source: "cal.com_webhook",
         }).catch(err => console.error("[calcom-webhook] outbound webhook error:", err.message));
+        
+        // =========================================================================
+        // SEND CANCELLATION NOTIFICATION SMS TO CUSTOMER
+        // =========================================================================
+        const cancelPhone = cancelled.customer_phone || customerPhone;
+        if (cancelPhone) {
+          const { data: cancelProfile } = await supabaseAdmin
+            .from("profiles")
+            .select("business_name")
+            .eq("user_id", userId)
+            .maybeSingle();
+          
+          const { data: cancelAgent } = await supabaseAdmin
+            .from("agents")
+            .select("confirmation_sms_enabled")
+            .eq("user_id", userId)
+            .maybeSingle();
+          
+          const cancelSmsEnabled = cancelAgent?.confirmation_sms_enabled ?? true;
+          
+          if (cancelSmsEnabled) {
+            const bizName = cancelProfile?.business_name || "Your service provider";
+            const cancelledDate = new Date(cancelled.start_time);
+            const dateStr = cancelledDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+            const timeStr = cancelledDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+            const msg = `${bizName}: Your appointment for ${dateStr} at ${timeStr} has been cancelled. Contact us to reschedule. Reply STOP to opt out.`;
+            
+            sendSmsInternal({
+              userId,
+              to: cancelPhone,
+              body: msg,
+              source: "cancellation_notification",
+            }).catch(err => console.error("[calcom-webhook] Cancellation SMS error:", err.message));
+          }
+        }
       }
       
       console.log("[calcom-webhook] Cancelled appointment", { bookingUid });
