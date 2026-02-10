@@ -5797,9 +5797,8 @@ const createCalBooking = async ({ config, userId, start, args }) => {
     organizationSlug: config.cal_organization_slug || undefined,
     bookingFieldsResponses: args.booking_fields || undefined,
     metadata,
-    lengthInMinutes: args.duration_minutes
-      ? Number(args.duration_minutes)
-      : undefined,
+    // Don't send lengthInMinutes - Cal.com event type has fixed duration
+    // Sending it causes: "Can't specify 'lengthInMinutes' because event type does not have multiple possible lengths"
   };
 
   console.log("[createCalBooking] Attempting booking:", {
