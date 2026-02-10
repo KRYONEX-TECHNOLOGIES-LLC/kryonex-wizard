@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Building2,
@@ -356,6 +356,43 @@ export default function WizardPage({
     String(import.meta.env.VITE_WIZARD_MAINTENANCE || "").toLowerCase() === "true";
   const audioRef = useRef({ ctx: null, lastToneAt: 0 });
   const advancedToDeployRef = useRef(false);
+  
+  // Validation state - tracks if user attempted to continue without completing required fields
+  const [validationAttempted, setValidationAttempted] = useState({
+    step1: false,
+    step2: false,
+    step3: false,
+    step4: false,
+  });
+  
+  // Refs for scrolling to validation errors
+  const businessNameRef = useRef(null);
+  const areaCodeRef = useRef(null);
+  const industryRef = useRef(null);
+  const consentRef = useRef(null);
+  const standardFeeRef = useRef(null);
+  const emergencyFeeRef = useRef(null);
+  
+  // Scroll to first error element smoothly
+  const scrollToError = useCallback((ref) => {
+    if (ref?.current) {
+      ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Add focus if it's an input
+      if (ref.current.querySelector?.("input")) {
+        ref.current.querySelector("input").focus();
+      } else if (ref.current.tagName === "INPUT") {
+        ref.current.focus();
+      }
+    }
+  }, []);
+  
+  // Reset validation state when step changes
+  useEffect(() => {
+    setValidationAttempted((prev) => ({
+      ...prev,
+      [`step${step}`]: false,
+    }));
+  }, [step]);
 
   useEffect(() => {
     setCalStatusLoading(false);
@@ -1154,14 +1191,33 @@ export default function WizardPage({
   const handleIdentitySubmit = async () => {
     setSaveError("");
     setCheckoutError("");
-    setSaving(true);
+    
+    // Mark validation as attempted so errors show
+    setValidationAttempted((prev) => ({ ...prev, step1: true }));
+    
     const businessName = (form.nameInput || "").trim();
     const areaCode = (form.areaCodeInput || "").trim();
+    const industrySelected = form.industryInput === "hvac" || form.industryInput === "plumbing";
+    
+    // Validate all fields and scroll to first error
     if (!businessName || businessName.length < 2) {
-      setSaveError("Business name is required (at least 2 characters).");
-      setSaving(false);
+      scrollToError(businessNameRef);
       return;
     }
+    if (areaCode.length !== 3) {
+      scrollToError(areaCodeRef);
+      return;
+    }
+    if (!industrySelected) {
+      scrollToError(industryRef);
+      return;
+    }
+    if (!consentAccepted) {
+      scrollToError(consentRef);
+      return;
+    }
+    
+    setSaving(true);
     try {
       if (embeddedMode?.targetUserId) {
         await adminSaveOnboardingIdentity({
@@ -1347,12 +1403,16 @@ export default function WizardPage({
                     </p>
                   </div>
                   <div className="space-y-6">
-                    <div className="space-y-2">
+                    <div className="space-y-2" ref={businessNameRef}>
                       <label className="text-xs uppercase tracking-wider text-white/50">
-                        Business Name
+                        Business Name <span className="text-neon-pink">*</span>
                       </label>
                       <input
-                        className="glass-input w-full text-lg"
+                        className={`glass-input w-full text-lg ${
+                          validationAttempted.step1 && !form.nameInput.trim()
+                            ? "border-neon-pink/60 ring-1 ring-neon-pink/30"
+                            : ""
+                        }`}
                         placeholder="e.g. Apex Comfort Co."
                         value={form.nameInput}
                         onChange={(e) => {
@@ -1361,13 +1421,22 @@ export default function WizardPage({
                         }}
                         autoFocus
                       />
+                      {validationAttempted.step1 && !form.nameInput.trim() && (
+                        <p className="text-xs text-neon-pink font-medium animate-pulse">
+                          ⚠ Business name is required
+                        </p>
+                      )}
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-2" ref={areaCodeRef}>
                       <label className="text-xs uppercase tracking-wider text-white/50">
-                        Area Code
+                        Area Code <span className="text-neon-pink">*</span>
                       </label>
                       <input
-                        className="glass-input w-full text-lg tracking-[0.5em] font-mono"
+                        className={`glass-input w-full text-lg tracking-[0.5em] font-mono ${
+                          validationAttempted.step1 && !areaCodeValid
+                            ? "border-neon-pink/60 ring-1 ring-neon-pink/30"
+                            : ""
+                        }`}
                         placeholder="___"
                         value={form.areaCodeInput}
                         onChange={handleAreaCode}
@@ -1375,16 +1444,29 @@ export default function WizardPage({
                       />
                       <p
                         className={`text-xs ${
-                          areaCodeValid ? "text-neon-green" : "text-neon-pink"
+                          areaCodeValid 
+                            ? "text-neon-green" 
+                            : validationAttempted.step1 
+                              ? "text-neon-pink font-medium animate-pulse" 
+                              : "text-neon-pink"
                         }`}
                       >
-                        {areaCodeValid ? "✓ Routing Valid" : "Must be 3 digits"}
+                        {areaCodeValid 
+                          ? "✓ Routing Valid" 
+                          : validationAttempted.step1 
+                            ? "⚠ Must be exactly 3 digits" 
+                            : "Must be 3 digits"}
                       </p>
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-2" ref={industryRef}>
                       <label className="text-xs uppercase tracking-wider text-white/50">
-                        Protocol
+                        Protocol <span className="text-neon-pink">*</span>
                       </label>
+                      {validationAttempted.step1 && !(form.industryInput === "hvac" || form.industryInput === "plumbing") && (
+                        <p className="text-xs text-neon-pink font-medium animate-pulse mb-2">
+                          ⚠ Select a protocol to continue
+                        </p>
+                      )}
                       <div className="grid grid-cols-2 gap-3">
                         {INDUSTRIES.map((ind) => {
                           const isSelected = form.industryInput === ind.id;
@@ -1415,15 +1497,23 @@ export default function WizardPage({
                         })}
                       </div>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div 
+                      ref={consentRef}
+                      className={`rounded-2xl border bg-white/5 p-4 ${
+                        validationAttempted.step1 && !consentAccepted
+                          ? "border-neon-pink/60 ring-1 ring-neon-pink/30"
+                          : "border-white/10"
+                      }`}
+                    >
                       <div className="text-xs uppercase tracking-wider text-white/50">
-                        Consent Protocol
+                        Consent Protocol <span className="text-neon-pink">*</span>
                       </div>
-                      <label className="mt-3 flex items-start gap-3 text-sm text-white/70">
+                      <label className="mt-3 flex items-start gap-3 text-sm text-white/70 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={consentAccepted}
                           onChange={(event) => handleConsent(event.target.checked)}
+                          className="mt-0.5"
                         />
                         <span>
                           I confirm I have obtained all required customer consent
@@ -1431,6 +1521,11 @@ export default function WizardPage({
                           Privacy Policy.
                         </span>
                       </label>
+                      {validationAttempted.step1 && !consentAccepted && (
+                        <div className="mt-2 text-neon-pink text-xs font-medium animate-pulse">
+                          ⚠ You must accept consent to continue
+                        </div>
+                      )}
                       {consentError ? (
                         <div className="mt-2 text-neon-pink text-xs">
                           {consentError}
@@ -1662,34 +1757,53 @@ export default function WizardPage({
                     <p className="text-sm text-white/50 mb-4">
                       Define the financial thresholds for the AI to quote
                     </p>
+                    {validationAttempted.step2 && (!form.standardFee || !form.emergencyFee) && (
+                      <p className="text-xs text-neon-pink font-medium animate-pulse mb-4">
+                        ⚠ Both fee fields are required to continue
+                      </p>
+                    )}
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
+                      <div className="space-y-2" ref={standardFeeRef}>
                         <label className="text-xs uppercase tracking-wider text-white/50">
-                          Standard Dispatch Fee
+                          Standard Dispatch Fee <span className="text-neon-pink">*</span>
                         </label>
                         <div className="relative">
                           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50">$</span>
                           <input
-                            className="glass-input w-full pl-8"
+                            className={`glass-input w-full pl-8 ${
+                              validationAttempted.step2 && !form.standardFee
+                                ? "border-neon-pink/60 ring-1 ring-neon-pink/30"
+                                : ""
+                            }`}
                             placeholder="89"
                             value={form.standardFee}
                             onChange={(e) => updateField("standardFee", e.target.value.replace(/[^0-9]/g, ""))}
                           />
                         </div>
+                        {validationAttempted.step2 && !form.standardFee && (
+                          <p className="text-xs text-neon-pink font-medium">Required</p>
+                        )}
                       </div>
-                      <div className="space-y-2">
+                      <div className="space-y-2" ref={emergencyFeeRef}>
                         <label className="text-xs uppercase tracking-wider text-white/50">
-                          Emergency / After-Hours
+                          Emergency / After-Hours <span className="text-neon-pink">*</span>
                         </label>
                         <div className="relative">
                           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50">$</span>
                           <input
-                            className="glass-input w-full pl-8"
+                            className={`glass-input w-full pl-8 ${
+                              validationAttempted.step2 && !form.emergencyFee
+                                ? "border-neon-pink/60 ring-1 ring-neon-pink/30"
+                                : ""
+                            }`}
                             placeholder="189"
                             value={form.emergencyFee}
                             onChange={(e) => updateField("emergencyFee", e.target.value.replace(/[^0-9]/g, ""))}
                           />
                         </div>
+                        {validationAttempted.step2 && !form.emergencyFee && (
+                          <p className="text-xs text-neon-pink font-medium">Required</p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -3345,8 +3459,19 @@ export default function WizardPage({
               </button>
             ) : step === 2 ? (
               <button
-                onClick={() => persistStep(3)}
-                disabled={!canContinueLogistics}
+                onClick={() => {
+                  // Validate step 2 fields
+                  setValidationAttempted((prev) => ({ ...prev, step2: true }));
+                  if (!form.standardFee) {
+                    scrollToError(standardFeeRef);
+                    return;
+                  }
+                  if (!form.emergencyFee) {
+                    scrollToError(emergencyFeeRef);
+                    return;
+                  }
+                  persistStep(3);
+                }}
                 className="glow-button"
               >
                 Continue to Communications
