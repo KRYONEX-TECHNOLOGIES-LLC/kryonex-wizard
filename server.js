@@ -7807,6 +7807,24 @@ const retellWebhookHandler = async (req, res) => {
 
     if (eventType === "call_ended") {
       console.log("📞 [call_ended] processing call_ended event...");
+      
+      // LOG TOOL CALLS from the call to debug what functions were called during the call
+      const toolCallsFromCall = call.tool_calls || [];
+      const transcriptWithTools = call.transcript_with_tool_calls || [];
+      if (toolCallsFromCall.length > 0) {
+        console.log("📞 [call_ended] TOOL CALLS during call:", JSON.stringify(toolCallsFromCall).substring(0, 2000));
+      } else {
+        console.log("📞 [call_ended] No tool_calls field found in call data");
+      }
+      // Log tool calls from transcript
+      const toolCallEntries = transcriptWithTools.filter(e => e.role === "tool_call_invocation" || e.role === "tool_call_result" || e.tool_call_id);
+      if (toolCallEntries.length > 0) {
+        console.log("📞 [call_ended] TOOL CALL TRANSCRIPT ENTRIES:", JSON.stringify(toolCallEntries).substring(0, 3000));
+      }
+      // Log public_log_url for debugging
+      if (call.public_log_url) {
+        console.log("📞 [call_ended] PUBLIC LOG URL:", call.public_log_url);
+      }
       const transcript = call.transcript || payload.transcript || "";
       const extractedVars =
         payload.variables ||
@@ -13864,6 +13882,125 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
 // Security is handled via RETELL_API_KEY signature verification in retellWebhookHandler
 app.post("/retell-webhook", retellWebhookHandler);
 app.post("/api/retell/webhook", retellWebhookHandler);
+
+// =====================================================================
+// DEDICATED CUSTOM FUNCTION ENDPOINT FOR RETELL
+// Retell custom functions (book_appointment, check_calendar, etc.)
+// are SEPARATE from webhook events. They have a different format.
+// This endpoint handles ALL custom function calls from Retell.
+// =====================================================================
+app.post("/retell-tool-call", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    
+    console.log("🔧 [RETELL TOOL CALL] ====== INCOMING REQUEST ======");
+    console.log("🔧 [RETELL TOOL CALL] Headers:", {
+      contentType: req.headers["content-type"],
+      hasSignature: Boolean(req.headers["x-retell-signature"]),
+      userAgent: req.headers["user-agent"],
+    });
+    console.log("🔧 [RETELL TOOL CALL] Body keys:", Object.keys(payload));
+    console.log("🔧 [RETELL TOOL CALL] Full body:", JSON.stringify(payload).substring(0, 2000));
+    
+    // Detect the format:
+    // Format A (full payload): { name: "book_appointment", args: {...}, call_id: "...", agent_id: "..." }
+    // Format B (args only):    { customer_name: "John", customer_phone: "...", ... }
+    // Format C (nested call):  { name: "book_appointment", args: {...}, call: { call_id: "...", agent_id: "..." } }
+    
+    let functionName = payload.name || payload.function_name || payload.tool_name || null;
+    let args = payload.args || payload.arguments || null;
+    let agentId = payload.agent_id || payload.call?.agent_id || null;
+    let callId = payload.call_id || payload.call?.call_id || null;
+    
+    // If no args field, check if the payload itself IS the args (args-only mode)
+    if (!args && !functionName) {
+      // Try to detect function from the args structure
+      if (payload.start_time_iso && payload.customer_name) {
+        functionName = "book_appointment";
+        args = payload;
+      } else if (payload.new_start_time_iso) {
+        functionName = "reschedule_appointment";
+        args = payload;
+      } else if (payload.start_date) {
+        functionName = "check_calendar_availability";
+        args = payload;
+      } else if (payload.customer_phone && !payload.start_date && !payload.start_time_iso && !payload.new_start_time_iso) {
+        // cancel_booking has customer_phone and optionally reason
+        functionName = "cancel_booking";
+        args = payload;
+      } else {
+        // Unknown format - log everything and return error
+        console.error("🔧 [RETELL TOOL CALL] UNKNOWN FORMAT - cannot detect function:", JSON.stringify(payload).substring(0, 1000));
+        return res.status(400).json({ ok: false, error: "Unknown function call format" });
+      }
+      console.log("🔧 [RETELL TOOL CALL] Detected args-only mode, inferred function:", functionName);
+    }
+    
+    if (!functionName) {
+      console.error("🔧 [RETELL TOOL CALL] Missing function name");
+      return res.status(400).json({ ok: false, error: "Missing function name" });
+    }
+    
+    console.log("🔧 [RETELL TOOL CALL] Parsed:", {
+      functionName,
+      agentId,
+      callId,
+      argsKeys: args ? Object.keys(args) : [],
+    });
+    
+    // Look up user from agent_id
+    let userId = null;
+    if (agentId) {
+      const { data: agentRow } = await supabaseAdmin
+        .from("agents")
+        .select("user_id")
+        .eq("agent_id", agentId)
+        .maybeSingle();
+      if (agentRow) userId = agentRow.user_id;
+    }
+    
+    // If no agent_id or not found, try to find from call_id
+    if (!userId && callId) {
+      const { data: leadRow } = await supabaseAdmin
+        .from("leads")
+        .select("user_id")
+        .eq("retell_call_id", callId)
+        .maybeSingle();
+      if (leadRow) userId = leadRow.user_id;
+    }
+    
+    if (!userId) {
+      console.error("🔧 [RETELL TOOL CALL] Could not find user for agent:", agentId, "call:", callId);
+      return res.status(404).json({ ok: false, error: "Could not identify the user for this call" });
+    }
+    
+    console.log("🔧 [RETELL TOOL CALL] Found user:", userId, "for agent:", agentId);
+    
+    // Route to handleToolCall
+    const toolForHandler = {
+      name: functionName,
+      arguments: args,
+    };
+    
+    const result = await handleToolCall({
+      tool: toolForHandler,
+      agentId: agentId || "unknown",
+      userId,
+    });
+    
+    console.log("🔧 [RETELL TOOL CALL] Result:", {
+      functionName,
+      ok: result?.ok,
+      error: result?.error,
+      hasData: Boolean(result?.appointment || result?.booking || result?.available !== undefined),
+    });
+    
+    return res.json(result);
+  } catch (err) {
+    console.error("🔧 [RETELL TOOL CALL] UNHANDLED ERROR:", err.message, err.stack?.substring(0, 500));
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 app.post(
   "/retell/demo-call",
