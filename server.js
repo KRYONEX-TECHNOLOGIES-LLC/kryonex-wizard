@@ -13921,19 +13921,28 @@ app.post("/retell-tool-call", async (req, res) => {
       } else if (payload.new_start_time_iso) {
         functionName = "reschedule_appointment";
         args = payload;
-      } else if (payload.start_date) {
+      } else if (payload.start_date || payload.duration_minutes) {
         functionName = "check_calendar_availability";
         args = payload;
       } else if (payload.customer_phone && !payload.start_date && !payload.start_time_iso && !payload.new_start_time_iso) {
         // cancel_booking has customer_phone and optionally reason
         functionName = "cancel_booking";
         args = payload;
+      } else if (Object.keys(payload).length === 0) {
+        // Empty args - likely after_hours_check
+        functionName = "after_hours_check";
+        args = {};
       } else {
         // Unknown format - log everything and return error
         console.error("🔧 [RETELL TOOL CALL] UNKNOWN FORMAT - cannot detect function:", JSON.stringify(payload).substring(0, 1000));
         return res.status(400).json({ ok: false, error: "Unknown function call format" });
       }
       console.log("🔧 [RETELL TOOL CALL] Detected args-only mode, inferred function:", functionName);
+    }
+    
+    // If we have a function name but args is still null, use the full payload as args
+    if (functionName && !args) {
+      args = {};
     }
     
     if (!functionName) {
@@ -13950,6 +13959,8 @@ app.post("/retell-tool-call", async (req, res) => {
     
     // Look up user from agent_id
     let userId = null;
+    let resolvedAgentId = agentId;
+    
     if (agentId) {
       const { data: agentRow } = await supabaseAdmin
         .from("agents")
@@ -13969,12 +13980,74 @@ app.post("/retell-tool-call", async (req, res) => {
       if (leadRow) userId = leadRow.user_id;
     }
     
+    // FALLBACK: If no agent_id/call_id (args-only mode), find the most recently active call
+    // Retell custom functions in "args only" mode don't include metadata
     if (!userId) {
-      console.error("🔧 [RETELL TOOL CALL] Could not find user for agent:", agentId, "call:", callId);
+      console.log("🔧 [RETELL TOOL CALL] No agent_id/call_id found, trying fallback lookups...");
+      
+      // Strategy 1: Look for the most recently started call (within last 30 min)
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const { data: recentCall } = await supabaseAdmin
+        .from("usage_calls")
+        .select("user_id, agent_id, call_id")
+        .gte("created_at", thirtyMinAgo)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (recentCall?.user_id) {
+        userId = recentCall.user_id;
+        resolvedAgentId = recentCall.agent_id || resolvedAgentId;
+        console.log("🔧 [RETELL TOOL CALL] Found user via recent call:", {
+          user_id: userId,
+          agent_id: resolvedAgentId,
+          call_id: recentCall.call_id,
+        });
+      }
+      
+      // Strategy 2: Try customer_phone from args to find agent
+      if (!userId && args?.customer_phone) {
+        const phone = args.customer_phone;
+        const { data: leadByPhone } = await supabaseAdmin
+          .from("leads")
+          .select("user_id")
+          .eq("phone", phone)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (leadByPhone?.user_id) {
+          userId = leadByPhone.user_id;
+          console.log("🔧 [RETELL TOOL CALL] Found user via customer_phone:", userId);
+        }
+      }
+      
+      // Strategy 3: If there's only one active agent in the system, use it
+      if (!userId) {
+        const { data: activeAgents } = await supabaseAdmin
+          .from("agents")
+          .select("user_id, agent_id")
+          .eq("is_active", true)
+          .limit(5);
+        
+        if (activeAgents?.length === 1) {
+          userId = activeAgents[0].user_id;
+          resolvedAgentId = activeAgents[0].agent_id;
+          console.log("🔧 [RETELL TOOL CALL] Found single active agent:", {
+            user_id: userId,
+            agent_id: resolvedAgentId,
+          });
+        } else {
+          console.log("🔧 [RETELL TOOL CALL] Multiple active agents found:", activeAgents?.length);
+        }
+      }
+    }
+    
+    if (!userId) {
+      console.error("🔧 [RETELL TOOL CALL] Could not find user for agent:", agentId, "call:", callId, "all strategies exhausted");
       return res.status(404).json({ ok: false, error: "Could not identify the user for this call" });
     }
     
-    console.log("🔧 [RETELL TOOL CALL] Found user:", userId, "for agent:", agentId);
+    console.log("🔧 [RETELL TOOL CALL] Found user:", userId, "for agent:", resolvedAgentId);
     
     // Route to handleToolCall
     const toolForHandler = {
@@ -13984,7 +14057,7 @@ app.post("/retell-tool-call", async (req, res) => {
     
     const result = await handleToolCall({
       tool: toolForHandler,
-      agentId: agentId || "unknown",
+      agentId: resolvedAgentId || "unknown",
       userId,
     });
     
