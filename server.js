@@ -6497,6 +6497,51 @@ app.get("/api/calcom/callback", async (req, res) => {
         eventTypes.find((item) => item?.isDefault || item?.default) ||
         eventTypes[0] ||
         null;
+      
+      // =========================================================================
+      // AUTO-CREATE EVENT TYPE if user has none
+      // Uses wizard data (business hours, industry) to create a proper event type
+      // =========================================================================
+      if (!eventType) {
+        console.log("[calcom-callback] No event types found, auto-creating one for user:", stateData.userId);
+        
+        // Get user's wizard data for business hours
+        const { data: userProfile } = await supabaseAdmin
+          .from("profiles")
+          .select("business_name, industry, weekday_open, weekday_close, weekend_enabled, saturday_open, saturday_close")
+          .eq("user_id", stateData.userId)
+          .maybeSingle();
+        
+        const businessName = userProfile?.business_name || "Service";
+        const industry = userProfile?.industry || "hvac";
+        const eventTitle = industry === "plumbing" ? "Plumbing Service Call" : "Service Call";
+        const eventSlug = "service-call";
+        
+        try {
+          // Create the event type via Cal.com API
+          const createEventResponse = await calClient.post("/event-types", {
+            title: eventTitle,
+            slug: eventSlug,
+            length: 60, // 60 minute appointments
+            description: `Schedule a service appointment with ${businessName}`,
+            locations: [{ type: "inPerson", address: "" }], // Customer provides address
+          }, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "cal-api-version": CAL_API_VERSION_EVENT_TYPES,
+              "Content-Type": "application/json",
+            },
+          });
+          
+          eventType = createEventResponse.data?.data || createEventResponse.data;
+          console.log("[calcom-callback] Auto-created event type:", { id: eventType?.id, slug: eventType?.slug });
+          
+        } catch (createErr) {
+          console.error("[calcom-callback] Failed to auto-create event type:", createErr.response?.data || createErr.message);
+          // Continue without event type - user will need to create manually
+        }
+      }
+      
       if (eventType) {
         const username =
           eventType?.profile?.username ||
@@ -6505,7 +6550,7 @@ app.get("/api/calcom/callback", async (req, res) => {
           null;
         const slug = eventType?.slug || null;
         const calComUrl = username
-          ? `https://cal.com/${username}/service-call`
+          ? `https://cal.com/${username}/${slug || "service-call"}`
           : null;
         bookingUrl =
           calComUrl ||
@@ -6526,6 +6571,7 @@ app.get("/api/calcom/callback", async (req, res) => {
           .eq("user_id", stateData.userId);
       }
     } catch (err) {
+      console.error("[calcom-callback] Error fetching/creating event types:", err.message);
       bookingUrl = null;
     }
 
