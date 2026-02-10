@@ -7546,6 +7546,69 @@ const retellWebhookHandler = async (req, res) => {
       raw_payload_preview: JSON.stringify(payload).substring(0, 800),
     });
 
+    // =====================================================================
+    // CUSTOM FUNCTION CALL HANDLER (Retell Custom Functions)
+    // Retell custom functions send a different format than webhook events:
+    // { name: "book_appointment", args: {...}, call: {...} }
+    // NO event_type field - just args, name, and call metadata
+    // =====================================================================
+    const customFunctionName = payload.name || payload.function_name || payload.tool_name;
+    const customFunctionArgs = payload.args || payload.arguments;
+    
+    if (customFunctionArgs && customFunctionName) {
+      console.log("📞 [CUSTOM FUNCTION] Received:", {
+        function_name: customFunctionName,
+        args: JSON.stringify(customFunctionArgs).substring(0, 500),
+        call_id: call.call_id || payload.call_id,
+        agent_id: call.agent_id || payload.agent_id,
+      });
+      
+      const agentId = call.agent_id || payload.agent_id;
+      if (!agentId) {
+        console.error("[CUSTOM FUNCTION] Missing agent_id");
+        return res.status(400).json({ error: "Missing agent_id" });
+      }
+      
+      // Look up user by agent_id
+      const { data: agentRow, error: agentError } = await supabaseAdmin
+        .from("agents")
+        .select("user_id")
+        .eq("agent_id", agentId)
+        .maybeSingle();
+      
+      if (agentError || !agentRow) {
+        console.error("[CUSTOM FUNCTION] Agent not found:", agentId);
+        return res.status(404).json({ error: "Agent not found" });
+      }
+      
+      // Build tool object for handleToolCall
+      const toolForHandler = {
+        name: customFunctionName,
+        arguments: customFunctionArgs,
+      };
+      
+      try {
+        const result = await handleToolCall({
+          tool: toolForHandler,
+          agentId,
+          userId: agentRow.user_id,
+        });
+        
+        console.log("📞 [CUSTOM FUNCTION] Result:", {
+          function_name: customFunctionName,
+          ok: result?.ok,
+          error: result?.error,
+        });
+        
+        // Retell expects the response in a specific format
+        // Return the result directly so the agent can use it
+        return res.json(result);
+      } catch (toolErr) {
+        console.error("[CUSTOM FUNCTION] Error:", toolErr.message);
+        return res.status(500).json({ ok: false, error: toolErr.message });
+      }
+    }
+
     if (eventType === "call_started" || eventType === "call_initiated") {
       const agentId = call.agent_id || payload.agent_id;
       const callId = call.call_id || payload.call_id || payload.id || null;
