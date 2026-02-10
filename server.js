@@ -5875,8 +5875,31 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
     const calConfig = await getCalConfig(userId);
     console.log("[book_appointment] Cal config found:", Boolean(calConfig), calConfig ? { hasToken: Boolean(calConfig.cal_access_token), eventTypeId: calConfig.cal_event_type_id } : "null");
     if (calConfig) {
-      const booking = await createCalBooking({ config: calConfig, userId, start, args });
-      console.log("[book_appointment] Cal.com booking result:", booking ? { uid: booking.uid || booking.id, start: booking.start } : "null");
+      // Wrap Cal.com booking in try/catch to return proper error response
+      let booking;
+      try {
+        booking = await createCalBooking({ config: calConfig, userId, start, args });
+        console.log("[book_appointment] Cal.com booking result:", booking ? { uid: booking.uid || booking.id, start: booking.start } : "null");
+      } catch (calErr) {
+        // Extract useful error info from Cal.com response
+        const calErrorData = calErr.response?.data;
+        const calErrorMsg = typeof calErrorData === "string" 
+          ? calErrorData 
+          : calErrorData?.error?.message || calErrorData?.message || calErr.message;
+        console.error("[book_appointment] Cal.com booking FAILED:", {
+          status: calErr.response?.status,
+          errorData: JSON.stringify(calErrorData || {}).substring(0, 500),
+          message: calErrorMsg,
+        });
+        return { 
+          ok: false, 
+          error: `Calendar booking failed: ${calErrorMsg}`,
+          details: {
+            status: calErr.response?.status,
+            calError: typeof calErrorData === "object" ? calErrorData : null,
+          }
+        };
+      }
       
       // Also insert into appointments table so it appears in calendar UI
       const normalizedCustomerPhone = normalizePhoneE164(args.customer_phone || booking?.attendee?.phoneNumber);
