@@ -373,16 +373,20 @@ export default function WizardPage({
   const standardFeeRef = useRef(null);
   const emergencyFeeRef = useRef(null);
   
-  // Scroll to first error element smoothly
+  // Scroll to first error element smoothly - works in both embedded and regular mode
   const scrollToError = useCallback((ref) => {
     if (ref?.current) {
+      // Use scrollIntoView which works in any scrollable container
       ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
-      // Add focus if it's an input
-      if (ref.current.querySelector?.("input")) {
-        ref.current.querySelector("input").focus();
-      } else if (ref.current.tagName === "INPUT") {
-        ref.current.focus();
-      }
+      
+      // Add focus if it's an input - use small delay to ensure scroll completes first
+      requestAnimationFrame(() => {
+        const input = ref.current.querySelector?.("input") || 
+                     (ref.current.tagName === "INPUT" ? ref.current : null);
+        if (input) {
+          input.focus();
+        }
+      });
     }
   }, []);
   
@@ -499,10 +503,22 @@ export default function WizardPage({
     };
   }, [embeddedMode]);
 
+  // Ref for wizard container - used for scroll behavior
+  const wizardContainerRef = useRef(null);
+  
   // Scroll to top when step changes - ensures users always start at top of each step
+  // Works in both embedded mode (scrollable container) and regular mode (window)
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: "instant" });
-  }, [step]);
+    // Use requestAnimationFrame to ensure DOM is ready after step transition
+    requestAnimationFrame(() => {
+      if (embeddedMode && wizardContainerRef.current) {
+        // In embedded mode, scroll the container
+        wizardContainerRef.current.scrollTo({ top: 0, behavior: "instant" });
+      }
+      // Always scroll window for regular mode or as fallback
+      window.scrollTo({ top: 0, behavior: "instant" });
+    });
+  }, [step, embeddedMode]);
 
   const safeStep = Math.min(Math.max(1, step), maxStep);
   const currentStep = stepMeta[safeStep - 1];
@@ -1321,7 +1337,10 @@ export default function WizardPage({
   }
 
   return (
-    <div className={`${isEmbeddedLayout ? "min-h-0" : "min-h-screen"} bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30`}>
+    <div 
+      ref={wizardContainerRef}
+      className={`${isEmbeddedLayout ? "min-h-0" : "min-h-screen"} bg-void-black text-white relative overflow-hidden font-sans selection:bg-neon-cyan/30`}
+    >
       {!isEmbeddedLayout && <TopMenu />}
       <div
         className="absolute inset-0 bg-grid-lines opacity-40"
