@@ -8751,7 +8751,7 @@ const retellWebhookHandler = async (req, res) => {
         entity: "lead",
         entityId: agentId,
         req,
-        metadata: { sentiment: extracted.sentiment },
+        metadata: { sentiment: bestSentiment || null },
       });
       await logEvent({
         userId: agentRow.user_id,
