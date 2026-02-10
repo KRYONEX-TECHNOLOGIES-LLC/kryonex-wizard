@@ -2516,6 +2516,79 @@ const sendBookingAlert = async (userEmail, appointment) => {
 };
 
 /**
+ * Send SMS confirmation to customer when appointment is booked
+ * Only sends if confirmation_sms_enabled is true for the agent/user
+ */
+const sendBookingConfirmationSms = async ({ userId, customerPhone, customerName, startTime, businessName, location }) => {
+  if (!customerPhone) {
+    console.log("[sendBookingConfirmationSms] No customer phone, skipping");
+    return { sent: false, reason: "no_phone" };
+  }
+  
+  try {
+    // Check if confirmation SMS is enabled for this user
+    const { data: agent } = await supabaseAdmin
+      .from("agents")
+      .select("confirmation_sms_enabled")
+      .eq("user_id", userId)
+      .maybeSingle();
+    
+    // Default to true if setting doesn't exist
+    const confirmationEnabled = agent?.confirmation_sms_enabled ?? true;
+    
+    if (!confirmationEnabled) {
+      console.log("[sendBookingConfirmationSms] Confirmation SMS disabled for user:", userId);
+      return { sent: false, reason: "disabled" };
+    }
+    
+    // Format the appointment time
+    const appointmentDate = new Date(startTime);
+    const formattedDate = appointmentDate.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+    const formattedTime = appointmentDate.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    
+    // Build confirmation message
+    const business = businessName || "your service provider";
+    const name = customerName || "Customer";
+    let smsBody = `Hi ${name.split(" ")[0]}! Your appointment with ${business} is confirmed for ${formattedDate} at ${formattedTime}.`;
+    
+    if (location) {
+      smsBody += ` Location: ${location}.`;
+    }
+    
+    smsBody += " We'll see you then!";
+    
+    // Send the SMS
+    const result = await sendSmsInternal({
+      userId,
+      to: customerPhone,
+      body: smsBody,
+      source: "booking_confirmation",
+      skipBusinessPrefix: true, // Already includes business name in message
+    });
+    
+    console.log("[sendBookingConfirmationSms] Sent confirmation SMS to:", customerPhone, "result:", result?.success ? "success" : "failed");
+    return { sent: true, messageId: result?.messageId };
+    
+  } catch (err) {
+    console.error("[sendBookingConfirmationSms] Error sending confirmation:", err.message);
+    trackError({
+      error: err,
+      context: { userId, customerPhone, action: "booking_confirmation_sms" },
+      severity: "medium",
+    });
+    return { sent: false, reason: err.message };
+  }
+};
+
+/**
  * Send usage alert email when user hits 80% or 100% of their limit
  */
 const sendUsageAlertEmail = async (userId, alertType, usagePercent, details = {}) => {
@@ -5855,6 +5928,43 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
         trackError({ error: err, context: { source: "cal.com", action: "appointment_booked" }, severity: "medium" });
       });
       
+      // =========================================================================
+      // SEND CONFIRMATION SMS TO CUSTOMER (if enabled)
+      // =========================================================================
+      // Get business name and email for notifications
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("business_name, email")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      if (normalizedCustomerPhone && appointmentData?.id) {
+        sendBookingConfirmationSms({
+          userId,
+          customerPhone: normalizedCustomerPhone,
+          customerName: args.customer_name || booking?.attendee?.name || "Customer",
+          startTime: booking?.start || start.toISOString(),
+          businessName: profile?.business_name,
+          location: args.service_address || args.location || null,
+        }).catch(err => console.error("[book_appointment] Confirmation SMS error:", err.message));
+      }
+      
+      // =========================================================================
+      // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
+      // =========================================================================
+      if (appointmentData?.id) {
+        let ownerEmail = profile?.email;
+        if (!ownerEmail) {
+          const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+          ownerEmail = authUser?.user?.email;
+        }
+        if (ownerEmail) {
+          sendBookingAlert(ownerEmail, appointmentData).catch(err => 
+            console.error("[book_appointment] Email alert error:", err.message)
+          );
+        }
+      }
+      
       // Return success with warning if DB sync failed (Cal.com booking still exists)
       return { 
         ok: true, 
@@ -5915,6 +6025,43 @@ const handleToolCall = async ({ tool, agentId, userId }) => {
       console.error("[webhook] appointment_booked (internal) error:", err.message);
       trackError({ error: err, context: { source: "internal", action: "appointment_booked" }, severity: "medium" });
     });
+    
+    // =========================================================================
+    // SEND CONFIRMATION SMS TO CUSTOMER (if enabled)
+    // =========================================================================
+    // Get business name and email for notifications
+    const { data: internalProfile } = await supabaseAdmin
+      .from("profiles")
+      .select("business_name, email")
+      .eq("user_id", userId)
+      .maybeSingle();
+    
+    if (internalCustomerPhone && data?.id) {
+      sendBookingConfirmationSms({
+        userId,
+        customerPhone: internalCustomerPhone,
+        customerName: args.customer_name || "Customer",
+        startTime: data?.start_time || start.toISOString(),
+        businessName: internalProfile?.business_name,
+        location: args.service_address || args.location || null,
+      }).catch(err => console.error("[book_appointment] Confirmation SMS error:", err.message));
+    }
+    
+    // =========================================================================
+    // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
+    // =========================================================================
+    if (data?.id) {
+      let internalOwnerEmail = internalProfile?.email;
+      if (!internalOwnerEmail) {
+        const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+        internalOwnerEmail = authUser?.user?.email;
+      }
+      if (internalOwnerEmail) {
+        sendBookingAlert(internalOwnerEmail, data).catch(err => 
+          console.error("[book_appointment] Email alert error:", err.message)
+        );
+      }
+    }
     
     return { ok: true, appointment: data };
   }
@@ -7064,6 +7211,43 @@ app.post("/webhooks/calcom", async (req, res) => {
         created_at: new Date().toISOString(),
       }).catch(err => console.error("[calcom-webhook] outbound webhook error:", err.message));
       
+      // =========================================================================
+      // SEND CONFIRMATION SMS TO CUSTOMER (if enabled)
+      // =========================================================================
+      // Get user profile for business name and email
+      const { data: userProfile } = await supabaseAdmin
+        .from("profiles")
+        .select("business_name, email")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      // Also get user email from auth.users if not in profile
+      let userEmail = userProfile?.email;
+      if (!userEmail) {
+        const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+        userEmail = authUser?.user?.email;
+      }
+      
+      if (customerPhone) {
+        sendBookingConfirmationSms({
+          userId,
+          customerPhone,
+          customerName,
+          startTime,
+          businessName: userProfile?.business_name,
+          location,
+        }).catch(err => console.error("[calcom-webhook] Confirmation SMS error:", err.message));
+      }
+      
+      // =========================================================================
+      // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
+      // =========================================================================
+      if (userEmail) {
+        sendBookingAlert(userEmail, appointment).catch(err => 
+          console.error("[calcom-webhook] Email alert error:", err.message)
+        );
+      }
+      
       console.log("[calcom-webhook] Created appointment", { appointmentId: appointment.id, bookingUid });
       return res.json({ ok: true, appointment_id: appointment.id });
     }
@@ -8189,6 +8373,50 @@ const retellWebhookHandler = async (req, res) => {
                 cal_booking_uid: bookingUid,
                 call_id: callId,
               }).catch(err => console.error("[call_ended] appointment webhook error:", err.message));
+              
+              // =========================================================================
+              // SEND CONFIRMATION SMS TO CUSTOMER (if enabled)
+              // =========================================================================
+              // Get profile for business name and email
+              const { data: callEndedProfile } = await supabaseAdmin
+                .from("profiles")
+                .select("business_name, email")
+                .eq("user_id", agentRow.user_id)
+                .maybeSingle();
+              
+              if (customerPhone) {
+                sendBookingConfirmationSms({
+                  userId: agentRow.user_id,
+                  customerPhone,
+                  customerName,
+                  startTime: appointmentStart,
+                  businessName: callEndedProfile?.business_name,
+                  location: analysisData.service_address || null,
+                }).catch(err => console.error("[call_ended] Confirmation SMS error:", err.message));
+              }
+              
+              // =========================================================================
+              // SEND EMAIL ALERT TO BUSINESS OWNER (new booking notification)
+              // =========================================================================
+              let callEndedOwnerEmail = callEndedProfile?.email;
+              if (!callEndedOwnerEmail) {
+                const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(agentRow.user_id);
+                callEndedOwnerEmail = authUser?.user?.email;
+              }
+              if (callEndedOwnerEmail && newAppointment?.id) {
+                const appointmentForEmail = {
+                  id: newAppointment.id,
+                  customer_name: customerName,
+                  customer_phone: customerPhone,
+                  start_time: appointmentStart,
+                  end_time: appointmentEnd,
+                  location: analysisData.service_address || null,
+                  status: "scheduled",
+                };
+                sendBookingAlert(callEndedOwnerEmail, appointmentForEmail).catch(err => 
+                  console.error("[call_ended] Email alert error:", err.message)
+                );
+              }
             }
           } else {
             console.log("📞 [call_ended] Appointment already exists for booking_uid:", bookingUid);
