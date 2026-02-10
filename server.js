@@ -5761,12 +5761,23 @@ const fetchCalSlots = async ({ config, userId, start, end, durationMinutes }) =>
 
 const createCalBooking = async ({ config, userId, start, args }) => {
   const customerPhone = normalizePhoneE164(args.customer_phone || args.phone);
+  
+  // Generate a valid-looking email if none provided
+  // Cal.com requires a real email format - use phone-based email as fallback
+  const phoneDigits = customerPhone ? customerPhone.replace(/\D/g, "") : "";
+  const fallbackEmail = phoneDigits 
+    ? `customer-${phoneDigits}@booking.kryonextech.com`
+    : `booking-${Date.now()}@booking.kryonextech.com`;
+  
+  const customerEmail = args.customer_email || args.email || fallbackEmail;
+  const customerName = args.customer_name || args.name || "Customer";
+  
   const body = {
     start: start.toISOString(),
     attendee: {
-      name: args.customer_name || args.name || "Customer",
-      email: args.customer_email || args.email || "unknown@kryonex.local",
-      timeZone: args.time_zone || config.cal_time_zone || "UTC",
+      name: customerName,
+      email: customerEmail,
+      timeZone: args.time_zone || config.cal_time_zone || "America/New_York",
       phoneNumber: customerPhone,
     },
     eventTypeId: config.cal_event_type_id || undefined,
@@ -5784,21 +5795,40 @@ const createCalBooking = async ({ config, userId, start, args }) => {
       : undefined,
   };
 
-  // Use retry wrapper with auto-refresh
-  return calApiWithRetry(userId, async () => {
-    // Re-fetch token in case it was refreshed
-    const freshConfig = await getCalConfig(userId);
-    const token = freshConfig?.cal_access_token || config.cal_access_token || config.cal_api_key;
-
-    const response = await calClient.post("/bookings", body, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "cal-api-version": CAL_API_VERSION_BOOKINGS,
-        "Content-Type": "application/json",
-      },
-    });
-    return response.data?.data || response.data;
+  console.log("[createCalBooking] Attempting booking:", {
+    start: body.start,
+    attendee: body.attendee,
+    eventTypeId: body.eventTypeId,
+    username: body.username,
   });
+
+  // Use retry wrapper with auto-refresh
+  try {
+    return await calApiWithRetry(userId, async () => {
+      // Re-fetch token in case it was refreshed
+      const freshConfig = await getCalConfig(userId);
+      const token = freshConfig?.cal_access_token || config.cal_access_token || config.cal_api_key;
+
+      const response = await calClient.post("/bookings", body, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "cal-api-version": CAL_API_VERSION_BOOKINGS,
+          "Content-Type": "application/json",
+        },
+      });
+      console.log("[createCalBooking] SUCCESS:", response.data?.data?.uid || response.data?.uid || "created");
+      return response.data?.data || response.data;
+    });
+  } catch (err) {
+    // Log the full Cal.com error for debugging
+    console.error("[createCalBooking] FAILED:", {
+      status: err.response?.status,
+      statusText: err.response?.statusText,
+      data: JSON.stringify(err.response?.data || {}).substring(0, 1000),
+      message: err.message,
+    });
+    throw err;
+  }
 };
 
 const handleToolCall = async ({ tool, agentId, userId }) => {
