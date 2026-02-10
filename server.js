@@ -5511,20 +5511,40 @@ const parseToolArgs = (raw) => {
 };
 
 const resolveToolAppointmentWindow = ({ start_date, start_time, start_time_iso, duration_minutes }) => {
+  // Priority 1: ISO timestamp (most precise)
   if (start_time_iso) {
     const start = new Date(start_time_iso);
-    const duration = parseInt(duration_minutes || "60", 10);
-    const end = new Date(start.getTime() + duration * 60000);
-    return { start, end };
+    if (!isNaN(start.getTime())) {
+      const duration = parseInt(duration_minutes || "60", 10);
+      const end = new Date(start.getTime() + duration * 60000);
+      return { start, end };
+    }
   }
+  
+  // Priority 2: Date + Time combination
   if (start_date && start_time) {
     const [year, month, day] = String(start_date).split("-").map(Number);
     const [hour, minute] = String(start_time).split(":").map(Number);
-    const start = new Date(year, month - 1, day, hour, minute);
-    const duration = parseInt(duration_minutes || "60", 10);
-    const end = new Date(start.getTime() + duration * 60000);
-    return { start, end };
+    if (year && month && day && !isNaN(hour) && !isNaN(minute)) {
+      const start = new Date(year, month - 1, day, hour, minute);
+      const duration = parseInt(duration_minutes || "60", 10);
+      const end = new Date(start.getTime() + duration * 60000);
+      return { start, end };
+    }
   }
+  
+  // Priority 3: Date only - check whole business day (8am to 6pm)
+  // This handles when caller says "tomorrow" without a specific time
+  if (start_date) {
+    const [year, month, day] = String(start_date).split("-").map(Number);
+    if (year && month && day) {
+      // Start at 8am, end at 6pm (10 hour window)
+      const start = new Date(year, month - 1, day, 8, 0);
+      const end = new Date(year, month - 1, day, 18, 0);
+      return { start, end };
+    }
+  }
+  
   return { start: null, end: null };
 };
 
