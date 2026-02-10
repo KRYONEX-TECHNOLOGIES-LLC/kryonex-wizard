@@ -14382,11 +14382,20 @@ app.post("/webhooks/retell-inbound", async (req, res) => {
     // Only send override_agent_id when it actually changes the agent. If same as request, omit so Retell applies vars without "resetting".
     const sendOverride = overrideId && overrideId !== requestAgentId;
 
-    // Per Retell docs: omitting override_agent_version means use LATEST published version
-    // This ensures all calls automatically use the newest agent version after publishing
+    // VERSION CONTROL: Use version from Railway env vars
+    // RETELL_AGENT_VERSION_HVAC / RETELL_AGENT_VERSION_PLUMBING
+    // Update these in Railway when you publish new agent versions
+    const userIndustry = profile?.industry || "hvac";
+    const envVersionForCall = userIndustry === "plumbing" 
+      ? RETELL_AGENT_VERSION_PLUMBING 
+      : RETELL_AGENT_VERSION_HVAC;
+    const overrideVersion = envVersionForCall && !isNaN(parseInt(envVersionForCall, 10))
+      ? parseInt(envVersionForCall, 10)
+      : 1; // Default to 1 to avoid Draft
+    
     const callInbound = {
       ...(sendOverride && { override_agent_id: overrideId }),
-      // Note: override_agent_version intentionally omitted - Retell uses latest published version
+      override_agent_version: overrideVersion,
       agent_override: {
         retell_llm: {
           begin_message: `Hi, thanks for calling {{business_name}} — this is Grace. Quick question so I can route you correctly: Are you calling to (1) book new service, (2) reschedule an existing appointment, or (3) cancel an existing appointment?`,
@@ -17286,52 +17295,47 @@ const provisionPhoneNumberOnly = async ({
   // STEP 2: Create phone number pointing to the MASTER agent
   // Inbound webhook is set so we can inject dynamic variables per-call
   // 
-  // IMPORTANT: Per Retell docs, when inbound_agent_version/outbound_agent_version
-  // are NOT provided, Retell automatically uses the LATEST PUBLISHED version.
-  // This means when you publish new agent versions, all new agents automatically
-  // get the latest version without any code changes.
-  //
-  // Only set version explicitly if you need to LOCK to a specific version
-  // (e.g., for testing a draft or rolling back to an older version).
-  // Set RETELL_AGENT_VERSION_HVAC/PLUMBING to a number to lock, or leave unset for latest.
+  // VERSION CONTROL: Set via Railway environment variables
+  // - RETELL_AGENT_VERSION_HVAC = version number for HVAC agents (e.g., 25)
+  // - RETELL_AGENT_VERSION_PLUMBING = version number for Plumbing agents (e.g., 25)
+  // 
+  // When you publish a new version in Retell, update the env var in Railway.
+  // If not set, defaults to version 1 to avoid using Draft.
   
   const envVersion = industry === "plumbing"
     ? RETELL_AGENT_VERSION_PLUMBING
     : RETELL_AGENT_VERSION_HVAC;
   
-  // Only lock version if env var is explicitly set AND is a valid number > 0
-  // "latest" or "0" or empty = use latest published version (don't set version field)
-  const shouldLockVersion = envVersion && 
-    !["latest", "0", ""].includes(String(envVersion).toLowerCase().trim()) &&
-    !isNaN(parseInt(envVersion, 10)) &&
-    parseInt(envVersion, 10) > 0;
+  const envVarName = industry === "plumbing" 
+    ? "RETELL_AGENT_VERSION_PLUMBING" 
+    : "RETELL_AGENT_VERSION_HVAC";
   
-  const lockedVersion = shouldLockVersion ? parseInt(envVersion, 10) : null;
+  // Parse version - default to 1 if not set (avoids Draft)
+  const agentVersion = envVersion && !isNaN(parseInt(envVersion, 10))
+    ? parseInt(envVersion, 10)
+    : 1;
+  
+  if (!envVersion) {
+    console.warn(`[provisionAgent] ${envVarName} not set in Railway - defaulting to version 1. Set this env var to your latest published version number.`);
+  }
   
   const phonePayload = {
     inbound_agent_id: masterAgentId,
     outbound_agent_id: masterAgentId,
+    inbound_agent_version: agentVersion,
+    outbound_agent_version: agentVersion,
     area_code: areaCode && String(areaCode).length === 3 ? Number(areaCode) : undefined,
     country_code: "US",
     nickname: `${nickname} Line`,
     inbound_webhook_url: `${serverBaseUrl.replace(/\/$/, "")}/webhooks/retell-inbound`,
   };
   
-  // Only set version if explicitly locking - otherwise Retell uses latest published
-  if (lockedVersion !== null) {
-    phonePayload.inbound_agent_version = lockedVersion;
-    phonePayload.outbound_agent_version = lockedVersion;
-    console.info("[provisionAgent] LOCKING to specific version (env override)", {
-      deployRequestId: reqId,
-      lockedVersion,
-      envVar: industry === "plumbing" ? "RETELL_AGENT_VERSION_PLUMBING" : "RETELL_AGENT_VERSION_HVAC",
-    });
-  }
-  
   console.info("[provisionAgent] creating phone number linked to master", {
     deployRequestId: reqId,
     masterAgentId,
-    agentVersion: lockedVersion ?? "LATEST (auto-updates with new publishes)",
+    agentVersion,
+    envVarName,
+    envVarValue: envVersion || "(not set - using default 1)",
     area_code: phonePayload.area_code,
   });
   
