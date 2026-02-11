@@ -175,13 +175,57 @@ export default function LandingPage() {
           position: "relative",
           zIndex: 1,
           textAlign: "center",
-          padding: "2rem 1.5rem 4rem",
+          padding: "2rem 1.5rem 2rem",
         }}
       >
         <p style={{ color: "#6b7280", fontSize: "0.9rem", letterSpacing: "0.1rem" }}>
           BUILT FOR HVAC & PLUMBING CONTRACTORS
         </p>
       </motion.div>
+
+      {/* Footer */}
+      <footer
+        style={{
+          position: "relative",
+          zIndex: 1,
+          borderTop: "1px solid rgba(255,255,255,0.1)",
+          padding: "2rem 1.5rem",
+          textAlign: "center",
+        }}
+      >
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "2rem", marginBottom: "1rem" }}>
+          <span
+            onClick={() => navigate("/privacy")}
+            style={{ color: "#9ca3af", cursor: "pointer", fontSize: "0.9rem" }}
+            onMouseOver={(e) => e.target.style.color = "#22d3ee"}
+            onMouseOut={(e) => e.target.style.color = "#9ca3af"}
+          >
+            Privacy Policy
+          </span>
+          <span
+            onClick={() => navigate("/terms")}
+            style={{ color: "#9ca3af", cursor: "pointer", fontSize: "0.9rem" }}
+            onMouseOver={(e) => e.target.style.color = "#22d3ee"}
+            onMouseOut={(e) => e.target.style.color = "#9ca3af"}
+          >
+            Terms of Service
+          </span>
+          <a
+            href="mailto:support@kryonextech.com"
+            style={{ color: "#9ca3af", textDecoration: "none", fontSize: "0.9rem" }}
+            onMouseOver={(e) => e.target.style.color = "#22d3ee"}
+            onMouseOut={(e) => e.target.style.color = "#9ca3af"}
+          >
+            Contact
+          </a>
+        </div>
+        <p style={{ color: "#4b5563", fontSize: "0.85rem" }}>
+          © {new Date().getFullYear()} Kryonex Technologies LLC. All rights reserved.
+        </p>
+        <p style={{ color: "#4b5563", fontSize: "0.75rem", marginTop: "0.5rem" }}>
+          By using our service, you agree to receive SMS messages. Reply STOP to opt out. Msg & data rates may apply.
+        </p>
+      </footer>
     </div>
   );
 }

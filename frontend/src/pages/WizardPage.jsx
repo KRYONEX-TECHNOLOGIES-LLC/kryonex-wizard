@@ -1532,24 +1532,46 @@ export default function WizardPage({
                       }`}
                     >
                       <div className="text-xs uppercase tracking-wider text-white/50">
-                        Consent Protocol <span className="text-neon-pink">*</span>
+                        Terms & SMS Consent <span className="text-neon-pink">*</span>
                       </div>
                       <label className="mt-3 flex items-start gap-3 text-sm text-white/70 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={consentAccepted}
                           onChange={(event) => handleConsent(event.target.checked)}
-                          className="mt-0.5"
+                          className="mt-0.5 w-5 h-5 flex-shrink-0"
                         />
-                        <span>
-                          I confirm I have obtained all required customer consent
-                          for calls, SMS, and recordings, and accept the Terms &
-                          Privacy Policy.
+                        <span className="leading-relaxed">
+                          By checking this box, I agree to receive SMS/text messages from 
+                          Kryonex Technologies LLC including appointment confirmations, lead 
+                          alerts, and service notifications. Message frequency varies. 
+                          Message & data rates may apply. Reply STOP to opt out. 
+                          I confirm I have obtained all required customer consent for calls, 
+                          SMS, and recordings. I accept the{" "}
+                          <a 
+                            href="/terms" 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-neon-cyan hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            Terms of Service
+                          </a>{" "}
+                          and{" "}
+                          <a 
+                            href="/privacy" 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-neon-cyan hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            Privacy Policy
+                          </a>.
                         </span>
                       </label>
                       {validationAttempted.step1 && !consentAccepted && (
                         <div className="mt-2 text-neon-pink text-xs font-medium animate-pulse">
-                          ⚠ You must accept consent to continue
+                          ⚠ You must accept the terms and SMS consent to continue
                         </div>
                       )}
                       {consentError ? (

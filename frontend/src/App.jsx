@@ -3,6 +3,8 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import LandingGate from "./components/LandingGate.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import WizardPage from "./pages/WizardPage.jsx";
+import PrivacyPolicyPage from "./pages/PrivacyPolicyPage.jsx";
+import TermsOfServicePage from "./pages/TermsOfServicePage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
 import CalendarPage from "./pages/CalendarPage.jsx";
 import BillingPage from "./pages/BillingPage.jsx";
@@ -78,6 +80,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<LandingGate />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/privacy" element={<PrivacyPolicyPage />} />
+      <Route path="/terms" element={<TermsOfServicePage />} />
       <Route path="/thank-you" element={<ThankYouPage />} />
       <Route path="/affiliate" element={<AffiliatePage />} />
       <Route path="/affiliate/signup" element={<AffiliateSignupPage />} />
