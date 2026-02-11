@@ -439,21 +439,17 @@ export default function BillingTiersPage() {
                           texts
                         </div>
 
-                        {/* Who For */}
-                        <div
+                        {/* Description */}
+                        <p
                           style={{
-                            color: "#22d3ee",
+                            color: "#9ca3af",
                             fontSize: "0.85rem",
                             marginBottom: "1rem",
-                            padding: "0.65rem 0.75rem",
-                            background: "rgba(34, 211, 238, 0.08)",
-                            borderRadius: "8px",
                             lineHeight: 1.5,
-                            border: "1px solid rgba(34, 211, 238, 0.15)",
                           }}
                         >
-                          {tier.whoFor}
-                        </div>
+                          {tier.description}
+                        </p>
 
                         {/* Highlights */}
                         {tier.highlights && (
@@ -488,6 +484,22 @@ export default function BillingTiersPage() {
                               </li>
                             ))}
                           </ul>
+                        )}
+
+                        {/* Note */}
+                        {tier.note && (
+                          <p
+                            style={{
+                              color: "#6b7280",
+                              fontSize: "0.75rem",
+                              fontStyle: "italic",
+                              marginBottom: "1rem",
+                              paddingTop: "0.5rem",
+                              borderTop: "1px solid rgba(255,255,255,0.05)",
+                            }}
+                          >
+                            {tier.note}
+                          </p>
                         )}
 
                         {/* CTA Button */}

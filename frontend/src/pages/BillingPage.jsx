@@ -231,17 +231,14 @@ export default function BillingPage() {
               <div style={{ color: "#9ca3af", fontSize: "0.9rem", marginBottom: "0.75rem" }}>
                 {plan.minutes} minutes · {plan.sms || 0} texts
               </div>
-              <div style={{ 
-                color: "#22d3ee", 
+              <p style={{ 
+                color: "#9ca3af", 
                 fontSize: "0.85rem", 
                 marginBottom: "1rem",
-                padding: "0.5rem",
-                background: "rgba(34, 211, 238, 0.08)",
-                borderRadius: "6px",
                 lineHeight: 1.4,
               }}>
-                {plan.whoFor}
-              </div>
+                {plan.description}
+              </p>
               {plan.highlights && (
                 <ul style={{ margin: "0 0 1rem 0", padding: 0, listStyle: "none" }}>
                   {plan.highlights.slice(0, 4).map((h, i) => (
@@ -258,6 +255,11 @@ export default function BillingPage() {
                     </li>
                   ))}
                 </ul>
+              )}
+              {plan.note && (
+                <p style={{ fontSize: "0.75rem", color: "#6b7280", fontStyle: "italic", marginBottom: "0.75rem" }}>
+                  {plan.note}
+                </p>
               )}
               <p style={{ fontSize: "0.8rem", color: "#6b7280", marginBottom: "1rem" }}>
                 Top-ups: +300 min $195, +800 min $520, +500 SMS $50, +1000 SMS $100
