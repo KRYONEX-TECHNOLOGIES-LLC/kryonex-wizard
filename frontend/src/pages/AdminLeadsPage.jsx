@@ -98,6 +98,7 @@ export default function AdminLeadsPage() {
         tags: lead.metadata?.tags || [],
         city: lead.metadata?.city || lead.city || "",
         state: lead.metadata?.state || lead.state || "",
+        niche: lead.metadata?.niche || lead.niche || "",
         call_outcome: lead.metadata?.call_outcome || CALL_OUTCOMES.NOT_CALLED,
         lastOutcome: lead.outcome || lead.summary?.slice(0, 50) || "--",
         lastActivity: lead.created_at || new Date().toISOString(),
@@ -356,46 +357,64 @@ export default function AdminLeadsPage() {
   };
 
   // Parse pasted lead data (supports multiple formats)
-  // Format: Business Name, Phone, Email, City, State (or tab-separated)
+  // Format: Business Name, Phone, Email, City, State, Niche (or tab-separated)
   const parseImportText = (text) => {
     const lines = text.trim().split("\n").filter(line => line.trim());
     const leads = [];
+    
+    // Detect niche from content
+    const detectNiche = (text) => {
+      const lower = text.toLowerCase();
+      if (lower.includes("hvac") || lower.includes("heating") || lower.includes("cooling") || lower.includes("air")) return "HVAC";
+      if (lower.includes("plumb") || lower.includes("pipe") || lower.includes("drain") || lower.includes("water")) return "Plumbing";
+      return "";
+    };
     
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       
-      // Try CSV format: "Business Name, Phone, Email, City, State"
+      // Try CSV format: "Business Name, Phone, Email, City, State, Niche"
       if (trimmed.includes(",")) {
         const parts = trimmed.split(",").map(p => p.trim());
+        const businessName = parts[0] || "Unknown";
+        const explicitNiche = parts[5] || "";
+        const detectedNiche = explicitNiche || detectNiche(businessName);
         leads.push({
-          business_name: parts[0] || "Unknown",
+          business_name: businessName,
           phone: parts[1] || "",
           email: parts[2] || "",
           city: parts[3] || "",
           state: parts[4] || "",
+          niche: detectedNiche,
         });
       } 
       // Try tab-separated
       else if (trimmed.includes("\t")) {
         const parts = trimmed.split("\t").map(p => p.trim());
+        const businessName = parts[0] || "Unknown";
+        const explicitNiche = parts[5] || "";
+        const detectedNiche = explicitNiche || detectNiche(businessName);
         leads.push({
-          business_name: parts[0] || "Unknown",
+          business_name: businessName,
           phone: parts[1] || "",
           email: parts[2] || "",
           city: parts[3] || "",
           state: parts[4] || "",
+          niche: detectedNiche,
         });
       }
       // Single value - assume it's a business name or phone
       else {
         const isPhone = /^[\d\s\-\(\)\+]+$/.test(trimmed) && trimmed.replace(/\D/g, "").length >= 10;
+        const businessName = isPhone ? "Unknown" : trimmed;
         leads.push({
-          business_name: isPhone ? "Unknown" : trimmed,
+          business_name: businessName,
           phone: isPhone ? trimmed : "",
           email: "",
           city: "",
           state: "",
+          niche: detectNiche(businessName),
         });
       }
     }
@@ -768,8 +787,19 @@ export default function AdminLeadsPage() {
                       />
                     </div>
                     <div>
-                      <div className="text-sm font-semibold">
+                      <div className="text-sm font-semibold flex items-center gap-2">
                         {lead.business_name}
+                        {lead.niche && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide ${
+                            lead.niche.toLowerCase() === 'hvac' 
+                              ? 'bg-blue-500/30 text-blue-300 border border-blue-400/50' 
+                              : lead.niche.toLowerCase() === 'plumbing'
+                              ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/50'
+                              : 'bg-white/10 text-white/60 border border-white/20'
+                          }`}>
+                            {lead.niche}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-white/40">{lead.phone}</div>
                     </div>
@@ -959,31 +989,51 @@ export default function AdminLeadsPage() {
                   type="button"
                   className="rounded bg-white/10 px-2 py-1 text-xs text-white/80 hover:bg-white/20"
                   onClick={() => {
-                    const example = `Give me a list of 100 HVAC/plumbing companies in [YOUR AREA].
+                    const example = `Give me a list of 100 HVAC companies in [YOUR AREA].
 
-Format each as: Business Name, Phone, Email, City, State
+Format each as: Business Name, Phone, Email, City, State, Niche
 One company per line. Example:
 
-ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH
-Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH
-Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH`;
+ABC Cooling, 614-555-1234, abc@email.com, Columbus, OH, HVAC
+Johnson Heating & Air, 555-987-6543, johnson@email.com, Cleveland, OH, HVAC
+Elite HVAC Services, 555-123-4567, elite@email.com, Cincinnati, OH, HVAC`;
                     navigator.clipboard.writeText(example);
                     showToast("Prompt copied — paste into your AI.");
                   }}
                 >
-                  Copy example
+                  Copy HVAC
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-white/10 px-2 py-1 text-xs text-white/80 hover:bg-white/20 ml-2"
+                  onClick={() => {
+                    const example = `Give me a list of 100 plumbing companies in [YOUR AREA].
+
+Format each as: Business Name, Phone, Email, City, State, Niche
+One company per line. Example:
+
+ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH, Plumbing
+Johnson Plumbers, 555-987-6543, johnson@email.com, Cleveland, OH, Plumbing
+Elite Drain Services, 555-123-4567, elite@email.com, Cincinnati, OH, Plumbing`;
+                    navigator.clipboard.writeText(example);
+                    showToast("Prompt copied — paste into your AI.");
+                  }}
+                >
+                  Copy Plumbing
                 </button>
               </div>
               <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-white/80 text-xs leading-relaxed">
-{`Give me a list of 100 HVAC/plumbing companies in [YOUR AREA].
+{`Give me a list of 100 [HVAC/plumbing] companies in [YOUR AREA].
 
-Format each as: Business Name, Phone, Email, City, State
-One company per line. Example:
+Format: Business Name, Phone, Email, City, State, Niche
 
-ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH
-Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH
-Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH`}
+ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH, Plumbing
+Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH, HVAC
+Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH, HVAC`}
               </pre>
+              <p className="mt-2 text-[10px] text-neon-cyan/70">
+                💡 Niche auto-detects from business name if not specified (HVAC, Heating, Cooling, Plumbing, Drain, etc.)
+              </p>
             </div>
             
             <textarea
@@ -991,13 +1041,13 @@ Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH`}
               style={{ minHeight: "200px" }}
               placeholder={`Paste your full list here — one lead per line:
 
-Format: Business Name, Phone, Email, City, State
+Format: Business Name, Phone, Email, City, State, Niche
 
-ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH
-Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH
-Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH
-Quality Air, 555-222-3333, quality@email.com, Dayton, OH
-Pro Plumbers, 555-444-5555, pro@email.com, Toledo, OH`}
+ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH, Plumbing
+Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH, HVAC
+Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH, HVAC
+Quality Air, 555-222-3333, quality@email.com, Dayton, OH, HVAC
+Pro Plumbers, 555-444-5555, pro@email.com, Toledo, OH, Plumbing`}
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
             />

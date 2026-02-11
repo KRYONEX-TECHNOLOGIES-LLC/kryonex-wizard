@@ -13674,7 +13674,7 @@ app.post(
       };
 
       // Build rows for insert - use only columns that exist in leads table
-      // Store city, state, and call_outcome in metadata jsonb column
+      // Store city, state, niche, and call_outcome in metadata jsonb column
       const rows = leads.map((lead) => ({
         user_id: req.user.id, // Admin owns imported leads
         owner_id: req.user.id,
@@ -13685,6 +13685,7 @@ app.post(
         metadata: {
           city: (lead.city || "").substring(0, 100),
           state: (lead.state || "").substring(0, 50),
+          niche: (lead.niche || "").substring(0, 50),
           call_outcome: "not_called",
           tags: [],
           imported_at: new Date().toISOString(),

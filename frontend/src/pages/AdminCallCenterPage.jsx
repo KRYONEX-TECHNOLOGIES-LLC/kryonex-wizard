@@ -423,16 +423,27 @@ export default function AdminCallCenterPage() {
                       onClick={() => handleSelectLead(lead)}
                     >
                       <div>
-                        <div className="text-sm font-semibold">
+                        <div className="text-sm font-semibold flex items-center gap-2 flex-wrap">
                           {lead.business_name || "Unnamed"}
+                          {(lead.niche || lead.metadata?.niche) && (
+                            <span className={`text-[8px] px-1 py-0.5 rounded font-bold uppercase tracking-wide ${
+                              (lead.niche || lead.metadata?.niche || '').toLowerCase() === 'hvac' 
+                                ? 'bg-blue-500/30 text-blue-300 border border-blue-400/50' 
+                                : (lead.niche || lead.metadata?.niche || '').toLowerCase() === 'plumbing'
+                                ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/50'
+                                : 'bg-white/10 text-white/60 border border-white/20'
+                            }`}>
+                              {lead.niche || lead.metadata?.niche}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-white/40">{lead.phone || "No phone"}</div>
                       </div>
                       <div className="text-[10px] text-white/50">
-                        {(lead.city || lead.metadata?.city) && (lead.state || lead.metadata?.state) ? (
+                        {(lead.city || lead.metadata?.city || lead.state || lead.metadata?.state) ? (
                           <>
-                            <div>{lead.city || lead.metadata?.city}</div>
-                            <div className="text-white/30">{lead.state || lead.metadata?.state}</div>
+                            <div>{lead.city || lead.metadata?.city || "—"}</div>
+                            <div className="text-white/30">{lead.state || lead.metadata?.state || ""}</div>
                           </>
                         ) : (
                           "—"
