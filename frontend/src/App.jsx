@@ -37,6 +37,7 @@ import ThankYouPage from "./pages/ThankYouPage.jsx";
 import AdminStripeSuccessPage from "./pages/AdminStripeSuccessPage.jsx";
 import AdminReferralsPage from "./pages/AdminReferralsPage.jsx";
 import AdminOpsPage from "./pages/AdminOpsPage.jsx";
+import AdminLiveScriptsPage from "./pages/AdminLiveScriptsPage.jsx";
 import MessagesPage from "./pages/MessagesPage.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import RequireOnboarding from "./components/RequireOnboarding.jsx";
@@ -244,6 +245,16 @@ export default function App() {
           <ProtectedRoute>
             <RequireAdmin>
               <AdminCallCenterPage />
+            </RequireAdmin>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/live-scripts"
+        element={
+          <ProtectedRoute>
+            <RequireAdmin>
+              <AdminLiveScriptsPage />
             </RequireAdmin>
           </ProtectedRoute>
         }

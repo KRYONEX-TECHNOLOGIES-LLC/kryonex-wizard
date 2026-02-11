@@ -232,6 +232,9 @@ export default function SideNav({
                 <Link to="/admin/call-center" className="side-nav-link" onClick={handleLinkClick}>
                   Live Dialer
                 </Link>
+                <Link to="/admin/live-scripts" className="side-nav-link" onClick={handleLinkClick}>
+                  Live Scripts
+                </Link>
                 <Link to="/admin/sellers" className="side-nav-link" onClick={handleLinkClick}>
                   Personnel
                 </Link>
