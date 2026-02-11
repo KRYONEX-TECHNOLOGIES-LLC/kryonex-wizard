@@ -448,6 +448,32 @@ export default function AdminLeadsPage() {
     }
   };
 
+  // Bulk delete selected leads
+  const handleBulkDelete = async () => {
+    if (!selectedIds.length) {
+      showToast("Select at least one lead to delete.");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete ${selectedIds.length} lead(s)? This cannot be undone.`)) return;
+    
+    try {
+      // Remove from local state immediately
+      setLeads((prev) => prev.filter((lead) => !selectedIds.includes(lead.id)));
+      
+      // Delete from database - only UUIDs
+      const uuidIds = selectedIds.filter((id) => isUuid(id));
+      if (uuidIds.length > 0) {
+        await supabase.from("leads").delete().in("id", uuidIds);
+      }
+      
+      showToast(`Deleted ${selectedIds.length} lead(s).`);
+      persistSelectedIdsValue([]);
+    } catch (err) {
+      showToast("Failed to delete some leads.");
+      fetchLeads(); // Refresh to restore state
+    }
+  };
+
   // Update call outcome for a lead
   const updateCallOutcome = async (leadId, outcome) => {
     const lead = leads.find((l) => l.id === leadId);
@@ -536,6 +562,15 @@ export default function AdminLeadsPage() {
               >
                 <Upload size={14} /> Import Leads
               </button>
+              {selectedIds.length > 0 && (
+                <button
+                  className="button-secondary text-neon-pink border-neon-pink/40 hover:bg-neon-pink/20"
+                  onClick={handleBulkDelete}
+                  type="button"
+                >
+                  <Trash2 size={14} /> Delete Selected ({selectedIds.length})
+                </button>
+              )}
               <button
                 className="glow-button"
                 onClick={handleTransferToDialer}
