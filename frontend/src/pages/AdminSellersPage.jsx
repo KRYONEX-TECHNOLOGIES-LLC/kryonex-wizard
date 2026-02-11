@@ -167,7 +167,7 @@ export default function AdminSellersPage() {
               {error && (
                 <div className="text-neon-pink text-sm">{error}</div>
               )}
-              <div className="grid grid-cols-[2fr_0.8fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-4 text-[0.65rem] uppercase tracking-[0.4em] text-white/40 border-b border-white/10 pb-3">
+              <div className="sellers-table-header grid grid-cols-[2fr_0.8fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-4 text-[0.65rem] uppercase tracking-[0.4em] text-white/40 border-b border-white/10 pb-3">
                 <div>Name</div>
                 <div>Status</div>
                 <div>Calls Today</div>
@@ -186,7 +186,7 @@ export default function AdminSellersPage() {
                       <button
                         key={seller.user_id}
                         type="button"
-                        className={`grid grid-cols-[2fr_0.8fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-4 items-start rounded-2xl border px-4 py-3 text-left transition ${
+                        className={`seller-row grid grid-cols-[2fr_0.8fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-4 items-start rounded-2xl border px-4 py-3 text-left transition ${
                           isSelected
                             ? "border-neon-cyan/60 bg-neon-cyan/5"
                             : "border-white/5 bg-black/30 hover:border-neon-cyan/40 hover:bg-cyan-900/10"

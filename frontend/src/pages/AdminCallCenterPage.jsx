@@ -366,7 +366,7 @@ export default function AdminCallCenterPage() {
             </p>
             <h1 className="text-4xl font-semibold">Admin Call Center</h1>
           </div>
-          <div className="grid gap-6" style={{ gridTemplateColumns: "3fr 1fr" }}>
+          <div className="grid gap-6 admin-call-center-layout" style={{ gridTemplateColumns: "3fr 1fr" }}>
             <motion.div
               className="glass-panel rounded-3xl border border-white/10 p-6 min-h-[600px]"
               initial={{ opacity: 0, y: 12 }}
@@ -386,7 +386,7 @@ export default function AdminCallCenterPage() {
                 </div>
               </div>
               {error ? <div className="text-neon-pink">{error}</div> : null}
-              <div className="text-xs uppercase tracking-widest text-white/40 grid grid-cols-[1fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 pb-3 border-b border-white/10">
+              <div className="text-xs uppercase tracking-widest text-white/40 grid grid-cols-[1fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 pb-3 border-b border-white/10 call-center-header">
                 <div>Business Name</div>
                 <div>Location</div>
                 <div>Contact</div>
@@ -415,7 +415,7 @@ export default function AdminCallCenterPage() {
                     return (
                     <div
                       key={lead.id}
-                      className={`grid grid-cols-[1fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 transition hover:bg-cyan-900/20 cursor-pointer ${
+                      className={`call-center-lead-row grid grid-cols-[1fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 transition hover:bg-cyan-900/20 cursor-pointer ${
                         selectedLeadId === lead.id
                           ? "lead-active-gold border-neon-gold/80"
                           : ""
@@ -526,11 +526,20 @@ export default function AdminCallCenterPage() {
                   🚀 CLOSE DEAL
                 </button>
               </div>
-              <button className="glow-button w-full mb-3" onClick={handleCall}>
+              {/* Desktop: Button triggers in-app call flow */}
+              <button className="glow-button w-full mb-3 desktop-call-button" onClick={handleCall}>
                 {callState === "calling"
                   ? "CALLING..."
                   : `CALL ${selectedLead?.business_name || "LEAD"}`}
               </button>
+              {/* Mobile: Link opens native phone app */}
+              <a
+                href={`tel:${dialNumber || selectedLead?.phone || ""}`}
+                className="glow-button w-full mb-3 mobile-phone-link text-center no-underline"
+                style={{ display: "none" }}
+              >
+                📞 CALL {selectedLead?.business_name || "LEAD"}
+              </a>
               <div className="flex gap-2 mb-3">
                 <button className="button-primary flex-1" onClick={handleEndCall}>
                   End Call

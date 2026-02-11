@@ -163,8 +163,23 @@ export default function AdminLiveScriptsPage() {
             </div>
           </motion.div>
 
+          {/* Mobile category selector (visible only on mobile) */}
+          <div className="live-scripts-mobile-nav">
+            <select
+              className="glass-input w-full"
+              value={activeScript}
+              onChange={(e) => handleCategoryClick(e.target.value)}
+            >
+              {SCRIPT_CATEGORIES.map((cat) => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.icon} {cat.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* 3-Panel Layout */}
-          <div className="grid gap-4" style={{ gridTemplateColumns: "220px 1fr 280px" }}>
+          <div className="live-scripts-layout grid gap-4" style={{ gridTemplateColumns: "220px 1fr 280px" }}>
             {/* Left Sidebar - Categories */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}

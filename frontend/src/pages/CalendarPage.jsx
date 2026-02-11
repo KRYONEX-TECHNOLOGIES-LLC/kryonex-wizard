@@ -585,7 +585,7 @@ export default function CalendarPage() {
           isAdmin={isAdmin}
         />
 
-        <div className="war-room-shell w-full max-w-full px-4 sm:px-6 lg:px-8">
+        <div className="war-room-shell w-full max-w-full px-4 sm:px-6 lg:px-8 calendar-page-wrapper">
           <div className="calendar-header">
             <div>
               <div className="war-room-kicker">SCHEDULING CORE</div>

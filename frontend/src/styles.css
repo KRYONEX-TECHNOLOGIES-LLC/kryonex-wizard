@@ -12258,3 +12258,684 @@ input:checked + .toggle-slider.small:before {
     flex: 1 1 45%;
   }
 }
+
+/* ==========================================
+   MOBILE RESPONSIVE - ADMIN PAGES
+   Tablet: 768px-1024px
+   Mobile: <768px
+   ========================================== */
+
+/* === ADMIN LEAD GRID PAGE - MOBILE === */
+@media (max-width: 1024px) {
+  .lead-grid-header-extended {
+    display: none !important;
+  }
+  
+  .lead-row-extended {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.75rem;
+    padding: 1rem !important;
+    grid-template-columns: unset !important;
+  }
+  
+  .lead-row-extended > div {
+    width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Admin Leads - Convert to card layout */
+  .lead-grid-header-extended,
+  .lead-grid-header {
+    display: none !important;
+  }
+  
+  .lead-row-extended,
+  .lead-row {
+    display: block !important;
+    padding: 1rem !important;
+    margin-bottom: 0.5rem;
+    border-radius: 16px !important;
+    grid-template-columns: unset !important;
+  }
+  
+  .lead-row-extended .flex.items-center.justify-center {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+  }
+  
+  .lead-row-extended {
+    position: relative;
+    padding-right: 3rem !important;
+  }
+  
+  /* Lead card mobile layout */
+  .lead-row-extended > div:nth-child(2) {
+    margin-bottom: 0.5rem;
+  }
+  
+  .lead-row-extended > div:nth-child(2) .text-sm {
+    font-size: 1rem !important;
+    font-weight: 600;
+  }
+  
+  .lead-row-actions {
+    display: flex !important;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    opacity: 1 !important;
+  }
+  
+  .lead-row-actions .action-button {
+    flex: 1;
+    min-width: 70px;
+    justify-content: center;
+  }
+  
+  /* Lead grid filters mobile */
+  .lead-grid-body {
+    max-height: calc(100vh - 320px);
+  }
+}
+
+/* === ADMIN CALL CENTER (LIVE DIALER) - MOBILE === */
+@media (max-width: 1024px) {
+  /* Stack the two panels vertically */
+  .admin-call-center-layout {
+    grid-template-columns: 1fr !important;
+    gap: 1.5rem;
+  }
+  
+  .call-center-header {
+    display: none !important;
+  }
+  
+  .call-center-lead-row {
+    display: block !important;
+    grid-template-columns: unset !important;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Call center mobile - dialer first for quick access */
+  .admin-call-center-layout {
+    display: flex !important;
+    flex-direction: column-reverse !important;
+  }
+  
+  /* Hide grid header on mobile */
+  .call-center-header {
+    display: none !important;
+  }
+  
+  /* Lead row card layout */
+  .call-center-lead-row {
+    display: block !important;
+    padding: 1rem !important;
+    grid-template-columns: unset !important;
+  }
+  
+  .call-center-lead-row > div {
+    margin-bottom: 0.4rem;
+  }
+  
+  .call-center-lead-row > div:first-child {
+    margin-bottom: 0.5rem;
+  }
+  
+  .call-center-lead-row > div:first-child .text-sm {
+    font-size: 1rem !important;
+    font-weight: 600;
+  }
+  
+  /* Location and contact inline */
+  .call-center-lead-row > div:nth-child(2),
+  .call-center-lead-row > div:nth-child(3) {
+    display: inline-block;
+    width: 48%;
+    vertical-align: top;
+  }
+  
+  /* Call status badge */
+  .call-center-lead-row > div:nth-child(4) {
+    margin-top: 0.5rem;
+  }
+  
+  /* Actions */
+  .call-center-lead-row > div:last-child {
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  /* Lead list mobile in call center */
+  .lead-scroll {
+    max-height: 300px !important;
+    height: auto !important;
+  }
+  
+  /* Sniper kit buttons mobile */
+  .sniper-kit {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.5rem !important;
+  }
+  
+  .sniper-button {
+    padding: 0.75rem 0.5rem !important;
+    font-size: 0.7rem !important;
+  }
+  
+  /* Keypad mobile */
+  .admin-call-center-layout .grid.grid-cols-3 {
+    gap: 0.5rem;
+  }
+  
+  .admin-call-center-layout .grid.grid-cols-3 button {
+    padding: 0.75rem !important;
+    font-size: 1rem;
+  }
+  
+  /* Call outcome buttons mobile */
+  .admin-call-center-layout .grid.grid-cols-3.gap-2 button {
+    padding: 0.75rem 0.5rem !important;
+    font-size: 0.75rem !important;
+  }
+}
+
+/* === PHONE CALL BUTTON - MOBILE === */
+/* Make call button trigger actual phone call on mobile */
+@media (max-width: 768px) {
+  .mobile-phone-link {
+    display: block !important;
+  }
+  
+  .desktop-call-button {
+    display: none !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .mobile-phone-link {
+    display: none !important;
+  }
+  
+  .desktop-call-button {
+    display: block !important;
+  }
+}
+
+/* === ADMIN SELLERS (PERSONNEL) PAGE - MOBILE === */
+@media (max-width: 1024px) {
+  .sellers-table-header {
+    display: none !important;
+  }
+  
+  .seller-row {
+    display: block !important;
+    grid-template-columns: unset !important;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Seller rows become cards on mobile */
+  .sellers-table-header {
+    display: none !important;
+  }
+  
+  .seller-row {
+    display: block !important;
+    padding: 1rem !important;
+    grid-template-columns: unset !important;
+  }
+  
+  .seller-row > div {
+    margin-bottom: 0.5rem;
+  }
+  
+  .seller-row > div:first-child {
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  .seller-row > div:first-child .text-sm {
+    font-size: 1rem !important;
+    font-weight: 600;
+  }
+  
+  /* Create inline stat pairs */
+  .seller-row > div:nth-child(3),
+  .seller-row > div:nth-child(4),
+  .seller-row > div:nth-child(5),
+  .seller-row > div:nth-child(6) {
+    display: inline-block;
+    width: 48%;
+    margin-bottom: 0.5rem;
+  }
+  
+  .seller-row > div:nth-child(3)::before {
+    content: "Calls: ";
+    font-size: 0.65rem;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  
+  .seller-row > div:nth-child(4)::before {
+    content: "Deals: ";
+    font-size: 0.65rem;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  
+  .seller-row > div:nth-child(5)::before {
+    content: "Commission: ";
+    font-size: 0.65rem;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  
+  .seller-row > div:nth-child(6)::before {
+    content: "Conv: ";
+    font-size: 0.65rem;
+    color: rgba(255, 255, 255, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  
+  /* Dossier panel mobile */
+  .lg\\:grid-cols-\\[1\\.1fr_0\\.9fr\\] {
+    grid-template-columns: 1fr !important;
+  }
+  
+  /* Commission grid mobile */
+  .grid-cols-\\[1\\.1fr_1fr_0\\.8fr_0\\.6fr\\] {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.5rem !important;
+  }
+}
+
+/* === ADMIN USERS (FLEET REGISTRY) PAGE - MOBILE === */
+@media (max-width: 1024px) {
+  .users-table-header {
+    display: none !important;
+  }
+  
+  .users-table-row {
+    display: block !important;
+    grid-template-columns: unset !important;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Users page mobile card layout */
+  .users-table-header {
+    display: none !important;
+  }
+  
+  .users-table-row {
+    display: block !important;
+    padding: 1rem !important;
+    grid-template-columns: unset !important;
+  }
+  
+  .users-table-row > div {
+    margin-bottom: 0.5rem;
+  }
+  
+  /* First child: Client name */
+  .users-table-row > div:first-child {
+    margin-bottom: 0.25rem;
+  }
+  
+  .users-table-row > div:first-child .text-sm {
+    font-size: 1rem !important;
+    font-weight: 600;
+  }
+  
+  .users-table-row > div:first-child .text-xs {
+    font-size: 0.65rem !important;
+    display: none;
+  }
+  
+  /* Second child: Email */
+  .users-table-row > div:nth-child(2) {
+    font-size: 0.8rem !important;
+    color: rgba(255, 255, 255, 0.5);
+    margin-bottom: 0.75rem;
+  }
+  
+  /* Plan, Status, Usage in a row */
+  .users-table-row > div:nth-child(3),
+  .users-table-row > div:nth-child(4),
+  .users-table-row > div:nth-child(5) {
+    display: inline-block;
+    width: 32%;
+    vertical-align: top;
+  }
+  
+  /* Actions full width */
+  .users-table-row > div:nth-child(6) {
+    display: block;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  .users-table-row > div:nth-child(6) .glow-button {
+    width: 100%;
+  }
+  
+  /* Fleet drawer mobile */
+  .fleet-drawer {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  
+  .fleet-drawer-header {
+    flex-direction: column;
+    gap: 0.75rem;
+    align-items: stretch !important;
+  }
+  
+  .fleet-drawer-header > div:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  
+  .fleet-drawer-header > div:last-child button {
+    flex: 1;
+    min-width: 80px;
+  }
+  
+  /* Fleet registry filters mobile */
+  .fleet-filters {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .fleet-filters input,
+  .fleet-filters select {
+    width: 100%;
+  }
+}
+
+/* === CALENDAR PAGE - USER MOBILE === */
+@media (max-width: 768px) {
+  .calendar-page-wrapper {
+    padding: 0.5rem !important;
+  }
+  
+  /* Calendar day cells mobile */
+  .calendar-day {
+    padding: 0.5rem !important;
+    min-height: 60px !important;
+  }
+  
+  .calendar-day-number {
+    font-size: 0.9rem !important;
+  }
+  
+  .calendar-day span {
+    font-size: 0.6rem !important;
+  }
+  
+  /* Calendar top controls */
+  .calendar-top {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  
+  .calendar-actions {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  
+  .calendar-actions button {
+    flex: 1;
+    min-width: 80px;
+    font-size: 0.75rem !important;
+    padding: 0.5rem !important;
+  }
+  
+  /* Calendar drawer mobile */
+  .calendar-drawer {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  
+  .calendar-drawer .calendar-manifest-scroll {
+    max-height: calc(100vh - 200px);
+  }
+  
+  /* Calendar create/edit modal mobile */
+  .calendar-modal-card {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+  
+  .calendar-modal-grid {
+    grid-template-columns: 1fr !important;
+    gap: 1rem !important;
+  }
+  
+  .calendar-modal-footer {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .calendar-modal-footer button {
+    width: 100%;
+  }
+}
+
+/* Tablet calendar */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .calendar-day {
+    min-height: 80px !important;
+    padding: 0.75rem !important;
+  }
+  
+  .calendar-modal-card {
+    width: 90vw !important;
+    max-width: 700px !important;
+  }
+}
+
+/* === GENERAL ADMIN MOBILE FIXES === */
+@media (max-width: 768px) {
+  /* Dashboard layout mobile */
+  .dashboard-layout {
+    padding: 0.5rem !important;
+    padding-top: 4rem !important;
+  }
+  
+  /* Glass panels mobile */
+  .glass-panel {
+    padding: 1rem !important;
+    border-radius: 16px !important;
+  }
+  
+  /* Page titles mobile */
+  .dashboard-layout h1 {
+    font-size: 1.5rem !important;
+  }
+  
+  /* Buttons mobile */
+  .button-primary,
+  .button-secondary,
+  .glow-button {
+    padding: 0.6rem 1rem !important;
+    font-size: 0.8rem !important;
+  }
+  
+  /* Status pills mobile */
+  .status-pill {
+    font-size: 0.65rem !important;
+    padding: 0.25rem 0.5rem !important;
+  }
+  
+  /* Form inputs mobile */
+  .glass-input {
+    padding: 0.75rem !important;
+    font-size: 1rem !important;
+  }
+  
+  /* Admin stats grids mobile */
+  .admin-stats-grid,
+  .kpi-hero.enhanced {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0.75rem !important;
+  }
+  
+  /* Filter rows mobile */
+  .filter-row,
+  .filters-bar {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .filter-row > *,
+  .filters-bar > * {
+    width: 100%;
+  }
+  
+  /* Tab buttons mobile */
+  .tabs-row,
+  .outcome-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 0.25rem !important;
+  }
+  
+  .tabs-row::-webkit-scrollbar,
+  .outcome-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  
+  .tabs-row button,
+  .outcome-tabs button {
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-size: 0.7rem !important;
+    padding: 0.5rem 0.75rem !important;
+  }
+  
+  /* Admin Dashboard specific */
+  .status-ring {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .panic-button {
+    padding: 0.5rem 0.75rem !important;
+    font-size: 0.7rem !important;
+  }
+  
+  /* Ticker bar mobile */
+  .ticker-bar {
+    font-size: 0.7rem;
+  }
+  
+  /* Live clock admin */
+  .live-clock-admin {
+    font-size: 1rem;
+  }
+  
+  /* Admin metrics panels */
+  .admin-metrics-grid {
+    grid-template-columns: 1fr !important;
+  }
+  
+  /* System health grid */
+  .system-health-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* === TABLET OPTIMIZATIONS === */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .dashboard-layout {
+    padding: 1rem !important;
+    padding-top: 4rem !important;
+  }
+  
+  .admin-stats-grid,
+  .kpi-hero.enhanced {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+  
+  .glass-panel {
+    padding: 1.25rem !important;
+  }
+}
+
+/* === LIVE SCRIPTS PAGE - MOBILE === */
+/* Hide mobile nav by default */
+.live-scripts-mobile-nav {
+  display: none;
+}
+
+@media (max-width: 1024px) {
+  .live-scripts-layout {
+    grid-template-columns: 1fr !important;
+  }
+  
+  /* Hide sidebar on tablet/mobile */
+  .live-scripts-layout > div:first-child {
+    display: none !important;
+  }
+  
+  /* Hide notes panel on tablet/mobile */
+  .live-scripts-layout > div:last-child {
+    display: none !important;
+  }
+  
+  /* Show mobile category selector */
+  .live-scripts-mobile-nav {
+    display: block !important;
+    margin-bottom: 1rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .live-scripts-layout {
+    gap: 0.75rem !important;
+  }
+  
+  /* Main panel adjustments */
+  .live-scripts-layout > div:nth-child(2) {
+    height: calc(100vh - 240px) !important;
+  }
+  
+  .live-scripts-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 0.5rem;
+  }
+  
+  .live-scripts-content {
+    font-size: 0.9rem !important;
+    line-height: 1.6 !important;
+  }
+  
+  /* Mobile dropdown styling */
+  .live-scripts-mobile-nav select {
+    font-size: 1rem;
+    padding: 0.75rem 1rem;
+  }
+}

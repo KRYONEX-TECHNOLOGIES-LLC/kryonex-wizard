@@ -294,7 +294,7 @@ export default function AdminUsersPage() {
             transition={{ duration: 0.6, delay: 0.1 }}
             className="glass-panel rounded-3xl border border-white/10 p-6 overflow-hidden"
           >
-            <div className="grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 text-[0.65rem] uppercase tracking-widest text-white/40 border-b border-white/10 pb-3">
+            <div className="users-table-header grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 text-[0.65rem] uppercase tracking-widest text-white/40 border-b border-white/10 pb-3">
               <div>Client</div>
               <div>Email</div>
               <div>Plan</div>
@@ -315,7 +315,7 @@ export default function AdminUsersPage() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter") openUserDetail(user.id);
                   }}
-                  className="grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 hover:border-neon-cyan/40 transition cursor-pointer"
+                  className="users-table-row grid grid-cols-[1fr_1fr_1fr_0.7fr_0.8fr_0.8fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 hover:border-neon-cyan/40 transition cursor-pointer"
                 >
                   <div>
                     <div className="text-sm font-semibold flex items-center gap-2">
