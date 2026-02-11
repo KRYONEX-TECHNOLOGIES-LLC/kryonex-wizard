@@ -6,12 +6,21 @@ import SideNav from "../components/SideNav.jsx";
 import { createCallRecording, triggerDemoCall } from "../lib/api.js";
 import { getSavedState, saveState } from "../lib/persistence.js";
 import { normalizePhone } from "../lib/phone.js";
+import { supabase, supabaseReady } from "../lib/supabase";
 
 const keypadKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 const FINAL_LOGS_KEY = "kryonex_final_logs";
 const CALL_CENTER_QUEUE_KEY = "callCenter.queue";
 const CALL_CENTER_SELECTED_KEY = "callCenter.selectedLeadId";
 const LOCAL_DIALER_QUEUE_KEY = "kryonex_dialer_queue"; // Sync key for other components
+
+// Call outcome constants - sync with AdminLeadsPage
+const CALL_OUTCOMES = {
+  NOT_CALLED: "not_called",
+  CALLED: "called",
+  NO_ANSWER: "no_answer",
+  FOLLOW_UP: "follow_up",
+};
 
 const isUuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -112,6 +121,47 @@ export default function AdminCallCenterPage() {
       }
       return next;
     });
+  };
+
+  // Update call outcome for a lead and optionally remove from queue
+  const markCallOutcome = async (leadId, outcome) => {
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+
+    // Update local state with new outcome
+    mutateQueue((prev) =>
+      prev.map((l) =>
+        l.id === leadId
+          ? { ...l, call_outcome: outcome, metadata: { ...(l.metadata || {}), call_outcome: outcome } }
+          : l
+      )
+    );
+
+    // Update database if it's a real UUID
+    if (isUuid(leadId) && supabaseReady) {
+      try {
+        const newMetadata = { ...(lead.metadata || {}), call_outcome: outcome };
+        await supabase
+          .from("leads")
+          .update({ metadata: newMetadata })
+          .eq("id", leadId);
+      } catch (err) {
+        console.error("Failed to update call outcome:", err);
+      }
+    }
+
+    // If marked as "Called", remove from queue (completed)
+    if (outcome === CALL_OUTCOMES.CALLED) {
+      appendFinalLog(lead, "Called - Completed");
+      removeLeadFromQueue(leadId);
+      triggerToast("Marked as Called - Removed from queue");
+    } else if (outcome === CALL_OUTCOMES.NO_ANSWER) {
+      appendFinalLog(lead, "No Answer - Callback later");
+      triggerToast("Marked No Answer - Will stay in queue");
+    } else if (outcome === CALL_OUTCOMES.FOLLOW_UP) {
+      appendFinalLog(lead, "Follow Up - Try again");
+      triggerToast("Marked Follow Up - Will stay in queue");
+    }
   };
 
   // Load leads from local dialer queue only - leads must be explicitly transferred
@@ -336,11 +386,11 @@ export default function AdminCallCenterPage() {
                 </div>
               </div>
               {error ? <div className="text-neon-pink">{error}</div> : null}
-              <div className="text-xs uppercase tracking-widest text-white/40 grid grid-cols-[1fr_1fr_0.7fr_0.9fr_0.7fr_0.9fr] gap-4 pb-3 border-b border-white/10">
+              <div className="text-xs uppercase tracking-widest text-white/40 grid grid-cols-[1fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 pb-3 border-b border-white/10">
                 <div>Business Name</div>
+                <div>Location</div>
                 <div>Contact</div>
-                <div>Status</div>
-                <div>Last Outcome</div>
+                <div>Call Status</div>
                 <div>Tags</div>
                 <div className="text-right">Actions</div>
               </div>
@@ -348,37 +398,65 @@ export default function AdminCallCenterPage() {
                 {loading ? (
                   <div className="text-white/60">Fetching leads...</div>
                 ) : leads.length ? (
-                  leads.map((lead) => (
+                  leads.map((lead) => {
+                    const callOutcome = lead.call_outcome || lead.metadata?.call_outcome || CALL_OUTCOMES.NOT_CALLED;
+                    const outcomeStyles = {
+                      not_called: "bg-white/10 text-white/60",
+                      called: "bg-neon-green/20 text-neon-green",
+                      no_answer: "bg-neon-gold/20 text-neon-gold",
+                      follow_up: "bg-neon-purple/20 text-neon-purple",
+                    };
+                    const outcomeLabels = {
+                      not_called: "Pending",
+                      called: "Called ✓",
+                      no_answer: "No Answer",
+                      follow_up: "Follow Up",
+                    };
+                    return (
                     <div
                       key={lead.id}
-                      className={`grid grid-cols-[1fr_1fr_0.7fr_0.9fr_0.7fr_0.9fr] gap-4 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 transition hover:bg-cyan-900/20 cursor-pointer ${
+                      className={`grid grid-cols-[1fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 items-center rounded-2xl border border-white/5 bg-black/40 px-4 py-3 transition hover:bg-cyan-900/20 cursor-pointer ${
                         selectedLeadId === lead.id
                           ? "lead-active-gold border-neon-gold/80"
                           : ""
                       }`}
                       onClick={() => handleSelectLead(lead)}
                     >
-                      <div className="text-sm font-semibold">
-                        {lead.business_name || "Unnamed"}
+                      <div>
+                        <div className="text-sm font-semibold">
+                          {lead.business_name || "Unnamed"}
+                        </div>
+                        <div className="text-[10px] text-white/40">{lead.phone || "No phone"}</div>
                       </div>
-                      <div className="text-xs text-white/60">
-                        {lead.phone || "No phone"}
+                      <div className="text-[10px] text-white/50">
+                        {(lead.city || lead.metadata?.city) && (lead.state || lead.metadata?.state) ? (
+                          <>
+                            <div>{lead.city || lead.metadata?.city}</div>
+                            <div className="text-white/30">{lead.state || lead.metadata?.state}</div>
+                          </>
+                        ) : (
+                          "—"
+                        )}
                       </div>
-                      <div className="text-xs uppercase tracking-widest text-white/70">
-                        {lead.status || "new"}
+                      <div className="text-[10px] text-white/60">
+                        {lead.contact || lead.email || "—"}
                       </div>
-                      <div className="text-xs text-white/50">
-                        {lead.last_outcome || "—"}
-                      </div>
-                      <div className="flex gap-1">
-                        <span className="px-2 py-0.5 text-[10px] uppercase tracking-widest bg-white/10 rounded-full">
-                          VIP
+                      <div>
+                        <span className={`px-2 py-0.5 text-[9px] uppercase tracking-widest rounded-full ${outcomeStyles[callOutcome] || outcomeStyles.not_called}`}>
+                          {outcomeLabels[callOutcome] || "Pending"}
                         </span>
+                      </div>
+                      <div className="flex gap-1 flex-wrap">
+                        {(lead.tags || lead.metadata?.tags || []).slice(0, 1).map((tag) => (
+                          <span key={tag} className="px-2 py-0.5 text-[9px] uppercase tracking-widest bg-white/10 rounded-full">
+                            {tag}
+                          </span>
+                        ))}
                       </div>
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
-                          className="action-button"
+                          className="action-button text-[10px]"
                           onClick={(event) => {
                             event.stopPropagation();
                             handleEraseLead(lead.id);
@@ -388,7 +466,7 @@ export default function AdminCallCenterPage() {
                         </button>
                       </div>
                     </div>
-                  ))
+                  );})
                 ) : (
                   <div className="text-white/60">No leads assigned.</div>
                 )}
@@ -458,6 +536,36 @@ export default function AdminCallCenterPage() {
                   End Call
                 </button>
               </div>
+
+              {/* Call Outcome Buttons */}
+              {selectedLeadId && (
+                <div className="mb-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+                  <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2">
+                    Mark Outcome
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      className="text-[10px] py-2 px-2 rounded-xl border border-neon-green/40 bg-neon-green/10 text-neon-green hover:bg-neon-green/30 transition"
+                      onClick={() => markCallOutcome(selectedLeadId, CALL_OUTCOMES.CALLED)}
+                    >
+                      ✓ Called
+                    </button>
+                    <button
+                      className="text-[10px] py-2 px-2 rounded-xl border border-neon-gold/40 bg-neon-gold/10 text-neon-gold hover:bg-neon-gold/30 transition"
+                      onClick={() => markCallOutcome(selectedLeadId, CALL_OUTCOMES.NO_ANSWER)}
+                    >
+                      📵 No Answer
+                    </button>
+                    <button
+                      className="text-[10px] py-2 px-2 rounded-xl border border-neon-purple/40 bg-neon-purple/10 text-neon-purple hover:bg-neon-purple/30 transition"
+                      onClick={() => markCallOutcome(selectedLeadId, CALL_OUTCOMES.FOLLOW_UP)}
+                    >
+                      🔄 Follow Up
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="mt-2 rounded-2xl border border-white/10 bg-black/40 p-4">
                 <input
                   className="input-field w-full mb-3"

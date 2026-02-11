@@ -944,6 +944,56 @@ a {
   opacity: 1;
 }
 
+/* Extended lead grid with city/state column */
+.lead-grid-header-extended {
+  display: grid;
+  grid-template-columns: 0.5fr 1.2fr 0.8fr 1fr 0.9fr 1fr 1.2fr;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  background: rgba(8, 12, 20, 0.7);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  color: rgba(255, 255, 255, 0.5);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.lead-row-extended {
+  display: grid;
+  grid-template-columns: 0.5fr 1.2fr 0.8fr 1fr 0.9fr 1fr 1.2fr;
+  gap: 0.75rem;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  position: relative;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+  align-items: start;
+}
+
+.lead-row-extended.active,
+.lead-row-extended:hover {
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.lead-row-extended.selected {
+  background: rgba(16, 185, 129, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.4);
+}
+
+.lead-row-extended.lead-row-stale {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.lead-row-extended.lead-row-hot {
+  box-shadow: inset 0 0 18px rgba(34, 211, 238, 0.2);
+}
+
+.lead-row-extended:hover .lead-row-actions {
+  opacity: 1;
+}
+
 .action-button {
   border: 1px solid rgba(34, 211, 238, 0.4);
   background: rgba(34, 211, 238, 0.12);

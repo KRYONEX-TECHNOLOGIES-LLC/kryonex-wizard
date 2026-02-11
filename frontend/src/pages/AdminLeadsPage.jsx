@@ -19,6 +19,21 @@ const TAG_OPTIONS = [
   "Payment Ready",
 ];
 
+// Call outcome statuses for admin workflow
+const CALL_OUTCOMES = {
+  NOT_CALLED: "not_called",
+  CALLED: "called",
+  NO_ANSWER: "no_answer",
+  FOLLOW_UP: "follow_up",
+};
+
+const CALL_OUTCOME_LABELS = {
+  not_called: { label: "Not Called", color: "bg-white/10 text-white/60 border-white/20" },
+  called: { label: "Called ✓", color: "bg-neon-green/20 text-neon-green border-neon-green/40" },
+  no_answer: { label: "No Answer", color: "bg-neon-gold/20 text-neon-gold border-neon-gold/40" },
+  follow_up: { label: "Follow Up", color: "bg-neon-purple/20 text-neon-purple border-neon-purple/40" },
+};
+
 const STATUS_COLORS = {
   new: "bg-neon-cyan/20 text-neon-cyan border-neon-cyan/40",
   contacted: "bg-neon-purple/20 text-neon-purple border-neon-purple/40",
@@ -63,6 +78,9 @@ export default function AdminLeadsPage() {
   const [importing, setImporting] = React.useState(false);
   const [dateFilter, setDateFilter] = React.useState("all"); // all, today, week, new
   const [statusFilter, setStatusFilter] = React.useState("all"); // all, new, contacted, interested, not_interested
+  const [outcomeTab, setOutcomeTab] = React.useState("active"); // active, no_answer, called, follow_up, all
+  const [cityFilter, setCityFilter] = React.useState("all");
+  const [stateFilter, setStateFilter] = React.useState("all");
 
   // Fetch real leads from backend
   const fetchLeads = React.useCallback(async () => {
@@ -78,11 +96,15 @@ export default function AdminLeadsPage() {
         email: lead.email || "--",
         status: lead.status || "new",
         tags: lead.metadata?.tags || [],
+        city: lead.metadata?.city || lead.city || "",
+        state: lead.metadata?.state || lead.state || "",
+        call_outcome: lead.metadata?.call_outcome || CALL_OUTCOMES.NOT_CALLED,
         lastOutcome: lead.outcome || lead.summary?.slice(0, 50) || "--",
         lastActivity: lead.created_at || new Date().toISOString(),
         user_id: lead.user_id,
         sentiment: lead.sentiment,
         flagged: lead.flagged,
+        metadata: lead.metadata || {},
       }));
       setLeads(allLeads);
     } catch (err) {
@@ -248,19 +270,47 @@ export default function AdminLeadsPage() {
     return d >= weekAgo;
   };
 
+  // Get unique cities and states for filter dropdowns
+  const uniqueCities = React.useMemo(() => {
+    const cities = [...new Set(leads.map(l => l.city).filter(Boolean))].sort();
+    return cities;
+  }, [leads]);
+
+  const uniqueStates = React.useMemo(() => {
+    const states = [...new Set(leads.map(l => l.state).filter(Boolean))].sort();
+    return states;
+  }, [leads]);
+
   // Apply all filters to leads
   const getFilteredLeads = () => {
     return leads.filter((lead) => {
-      // Text search
+      // Text search (includes city/state)
       if (searchFilter) {
         const term = searchFilter.toLowerCase();
         const matchesSearch = 
           (lead.business_name || "").toLowerCase().includes(term) ||
           (lead.contact || "").toLowerCase().includes(term) ||
           (lead.phone || "").toLowerCase().includes(term) ||
+          (lead.city || "").toLowerCase().includes(term) ||
+          (lead.state || "").toLowerCase().includes(term) ||
           (lead.status || "").toLowerCase().includes(term) ||
           (lead.tags || []).some(tag => tag.toLowerCase().includes(term));
         if (!matchesSearch) return false;
+      }
+      
+      // City filter
+      if (cityFilter !== "all" && lead.city !== cityFilter) return false;
+      
+      // State filter
+      if (stateFilter !== "all" && lead.state !== stateFilter) return false;
+      
+      // Call outcome tab filter
+      if (outcomeTab !== "all") {
+        const outcome = lead.call_outcome || CALL_OUTCOMES.NOT_CALLED;
+        if (outcomeTab === "active" && outcome !== CALL_OUTCOMES.NOT_CALLED) return false;
+        if (outcomeTab === "no_answer" && outcome !== CALL_OUTCOMES.NO_ANSWER) return false;
+        if (outcomeTab === "called" && outcome !== CALL_OUTCOMES.CALLED) return false;
+        if (outcomeTab === "follow_up" && outcome !== CALL_OUTCOMES.FOLLOW_UP) return false;
       }
       
       // Date filter
@@ -283,6 +333,15 @@ export default function AdminLeadsPage() {
 
   const filteredLeads = getFilteredLeads();
 
+  // Get counts for each outcome tab
+  const outcomeCounts = React.useMemo(() => ({
+    active: leads.filter(l => (l.call_outcome || CALL_OUTCOMES.NOT_CALLED) === CALL_OUTCOMES.NOT_CALLED).length,
+    no_answer: leads.filter(l => l.call_outcome === CALL_OUTCOMES.NO_ANSWER).length,
+    called: leads.filter(l => l.call_outcome === CALL_OUTCOMES.CALLED).length,
+    follow_up: leads.filter(l => l.call_outcome === CALL_OUTCOMES.FOLLOW_UP).length,
+    all: leads.length,
+  }), [leads]);
+
   // Select all visible (filtered) leads
   const handleSelectAll = () => {
     const allFilteredIds = filteredLeads.map(lead => lead.id);
@@ -297,6 +356,7 @@ export default function AdminLeadsPage() {
   };
 
   // Parse pasted lead data (supports multiple formats)
+  // Format: Business Name, Phone, Email, City, State (or tab-separated)
   const parseImportText = (text) => {
     const lines = text.trim().split("\n").filter(line => line.trim());
     const leads = [];
@@ -305,14 +365,15 @@ export default function AdminLeadsPage() {
       const trimmed = line.trim();
       if (!trimmed) continue;
       
-      // Try CSV format: "Business Name, Phone, Email" or "Business Name, Phone"
+      // Try CSV format: "Business Name, Phone, Email, City, State"
       if (trimmed.includes(",")) {
         const parts = trimmed.split(",").map(p => p.trim());
         leads.push({
           business_name: parts[0] || "Unknown",
           phone: parts[1] || "",
           email: parts[2] || "",
-          contact: parts[3] || "",
+          city: parts[3] || "",
+          state: parts[4] || "",
         });
       } 
       // Try tab-separated
@@ -322,7 +383,8 @@ export default function AdminLeadsPage() {
           business_name: parts[0] || "Unknown",
           phone: parts[1] || "",
           email: parts[2] || "",
-          contact: parts[3] || "",
+          city: parts[3] || "",
+          state: parts[4] || "",
         });
       }
       // Single value - assume it's a business name or phone
@@ -332,7 +394,8 @@ export default function AdminLeadsPage() {
           business_name: isPhone ? "Unknown" : trimmed,
           phone: isPhone ? trimmed : "",
           email: "",
-          contact: "",
+          city: "",
+          state: "",
         });
       }
     }
@@ -383,6 +446,37 @@ export default function AdminLeadsPage() {
       showToast("Failed to delete lead.");
       fetchLeads(); // Refresh to restore state
     }
+  };
+
+  // Update call outcome for a lead
+  const updateCallOutcome = async (leadId, outcome) => {
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+
+    // Update local state immediately
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === leadId
+          ? { ...l, call_outcome: outcome, metadata: { ...l.metadata, call_outcome: outcome } }
+          : l
+      )
+    );
+
+    // Update database if it's a real UUID
+    if (isUuid(leadId) && supabaseReady) {
+      try {
+        const newMetadata = { ...(lead.metadata || {}), call_outcome: outcome };
+        await supabase
+          .from("leads")
+          .update({ metadata: newMetadata })
+          .eq("id", leadId);
+      } catch (err) {
+        console.error("Failed to update call outcome:", err);
+      }
+    }
+
+    const label = CALL_OUTCOME_LABELS[outcome]?.label || outcome;
+    showToast(`Marked as ${label}`);
   };
 
   return (
@@ -453,8 +547,44 @@ export default function AdminLeadsPage() {
           </div>
             {error && <div className="mt-3 text-neon-pink text-sm">{error}</div>}
             
+            {/* Call Outcome Tabs */}
+            <div className="mt-5 flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/5 p-1">
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${outcomeTab === "active" ? "bg-neon-cyan/20 text-neon-cyan" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setOutcomeTab("active")}
+                >
+                  📞 Active ({outcomeCounts.active})
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${outcomeTab === "no_answer" ? "bg-neon-gold/20 text-neon-gold" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setOutcomeTab("no_answer")}
+                >
+                  📵 No Answer ({outcomeCounts.no_answer})
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${outcomeTab === "follow_up" ? "bg-neon-purple/20 text-neon-purple" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setOutcomeTab("follow_up")}
+                >
+                  🔄 Follow Up ({outcomeCounts.follow_up})
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${outcomeTab === "called" ? "bg-neon-green/20 text-neon-green" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setOutcomeTab("called")}
+                >
+                  ✓ Called ({outcomeCounts.called})
+                </button>
+                <button
+                  className={`px-3 py-1.5 text-xs rounded-lg transition ${outcomeTab === "all" ? "bg-white/20 text-white" : "text-white/60 hover:text-white"}`}
+                  onClick={() => setOutcomeTab("all")}
+                >
+                  All ({outcomeCounts.all})
+                </button>
+              </div>
+            </div>
+
             {/* Filter Row */}
-            <div className="mt-5 flex flex-wrap items-center gap-3">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               {/* Date Filters */}
               <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/5 p-1">
                 <button
@@ -482,6 +612,34 @@ export default function AdminLeadsPage() {
                   New Only
                 </button>
               </div>
+
+              {/* City Filter */}
+              {uniqueCities.length > 0 && (
+                <select
+                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 outline-none"
+                  value={cityFilter}
+                  onChange={(e) => setCityFilter(e.target.value)}
+                >
+                  <option value="all">All Cities</option>
+                  {uniqueCities.map((city) => (
+                    <option key={city} value={city}>{city}</option>
+                  ))}
+                </select>
+              )}
+
+              {/* State Filter */}
+              {uniqueStates.length > 0 && (
+                <select
+                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 outline-none"
+                  value={stateFilter}
+                  onChange={(e) => setStateFilter(e.target.value)}
+                >
+                  <option value="all">All States</option>
+                  {uniqueStates.map((state) => (
+                    <option key={state} value={state}>{state}</option>
+                  ))}
+                </select>
+              )}
 
               {/* Status Filter */}
               <select
@@ -528,12 +686,12 @@ export default function AdminLeadsPage() {
           </motion.div>
 
           <div className="glass-panel rounded-3xl border border-white/10 bg-black/40 overflow-hidden">
-            <div className="lead-grid-header">
+            <div className="lead-grid-header-extended">
               <div>Select</div>
               <div>Business</div>
+              <div>Location</div>
               <div>Contact</div>
-              <div>Status</div>
-              <div>Last Outcome</div>
+              <div>Call Status</div>
               <div>Tags</div>
               <div className="text-right">Actions</div>
             </div>
@@ -558,10 +716,11 @@ export default function AdminLeadsPage() {
                     : days <= 2
                     ? "lead-row-hot"
                     : "lead-row-active";
+                const outcomeInfo = CALL_OUTCOME_LABELS[lead.call_outcome] || CALL_OUTCOME_LABELS.not_called;
                 return (
                   <div
                     key={lead.id}
-                    className={`lead-row ${rowTone} ${
+                    className={`lead-row-extended ${rowTone} ${
                       selectedIds.includes(lead.id) ? "selected" : ""
                     }`}
                   >
@@ -580,33 +739,58 @@ export default function AdminLeadsPage() {
                       <div className="text-xs text-white/40">{lead.phone}</div>
                     </div>
                     <div>
-                      <div className="text-sm">{lead.contact}</div>
-                      <div className="text-xs text-white/40">{lead.email}</div>
+                      {(lead.city || lead.state) ? (
+                        <>
+                          <div className="text-sm">{lead.city || "--"}</div>
+                          <div className="text-xs text-white/40">{lead.state || "--"}</div>
+                        </>
+                      ) : (
+                        <div className="text-xs text-white/30">--</div>
+                      )}
                     </div>
                     <div>
-                      <span
-                        className={`status-pill ${
-                          STATUS_COLORS[lead.status] || ""
-                        }`}
-                      >
-                        {lead.status}
+                      <div className="text-sm">{lead.contact}</div>
+                      <div className="text-xs text-white/40">{lead.email}</div>
+                      <div className="text-[11px] text-white/40 mt-1">{days}d ago</div>
+                    </div>
+                    <div>
+                      <span className={`status-pill text-[10px] px-2 py-0.5 rounded-full border ${outcomeInfo.color}`}>
+                        {outcomeInfo.label}
                       </span>
-                      <div className="text-[11px] text-white/40 mt-1">
-                        {days}d ago
+                      {/* Quick outcome buttons */}
+                      <div className="flex gap-1 mt-2">
+                        <button
+                          className={`text-[9px] px-1.5 py-0.5 rounded border transition ${lead.call_outcome === CALL_OUTCOMES.CALLED ? "bg-neon-green/30 border-neon-green/50 text-neon-green" : "border-white/20 text-white/40 hover:border-neon-green/50 hover:text-neon-green"}`}
+                          onClick={() => updateCallOutcome(lead.id, CALL_OUTCOMES.CALLED)}
+                          title="Mark as Called"
+                        >
+                          ✓
+                        </button>
+                        <button
+                          className={`text-[9px] px-1.5 py-0.5 rounded border transition ${lead.call_outcome === CALL_OUTCOMES.NO_ANSWER ? "bg-neon-gold/30 border-neon-gold/50 text-neon-gold" : "border-white/20 text-white/40 hover:border-neon-gold/50 hover:text-neon-gold"}`}
+                          onClick={() => updateCallOutcome(lead.id, CALL_OUTCOMES.NO_ANSWER)}
+                          title="No Answer"
+                        >
+                          NA
+                        </button>
+                        <button
+                          className={`text-[9px] px-1.5 py-0.5 rounded border transition ${lead.call_outcome === CALL_OUTCOMES.FOLLOW_UP ? "bg-neon-purple/30 border-neon-purple/50 text-neon-purple" : "border-white/20 text-white/40 hover:border-neon-purple/50 hover:text-neon-purple"}`}
+                          onClick={() => updateCallOutcome(lead.id, CALL_OUTCOMES.FOLLOW_UP)}
+                          title="Follow Up"
+                        >
+                          FU
+                        </button>
                       </div>
                     </div>
-                    <div className="text-sm text-white/60">
-                      {lead.lastOutcome}
-                    </div>
                     <div className="flex items-center gap-2">
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-1">
                         {lead.tags.slice(0, 2).map((tag) => (
-                          <span key={tag} className="tag-pill">
+                          <span key={tag} className="tag-pill text-[10px]">
                             {tag}
                           </span>
                         ))}
                         {lead.tags.length > 2 && (
-                          <span className="tag-pill muted">
+                          <span className="tag-pill muted text-[10px]">
                             +{lead.tags.length - 2}
                           </span>
                         )}
@@ -619,7 +803,7 @@ export default function AdminLeadsPage() {
                           persistTagSearch("");
                         }}
                       >
-                        <Tag size={14} />
+                        <Tag size={12} />
                       </button>
                       {tagEditor === lead.id ? (
                         <div className="tag-picker" onClick={(e) => e.stopPropagation()}>
@@ -656,19 +840,19 @@ export default function AdminLeadsPage() {
                     </div>
                     <div className="lead-row-actions">
                           <button
-                            className="action-button"
+                            className="action-button text-[10px]"
                             onClick={() => persistTextModal(lead)}
                           >
-                        <MessageSquare size={14} /> Text
+                        <MessageSquare size={12} /> Text
                       </button>
-                      <button className="action-button">
-                        <Phone size={14} /> Call
+                      <button className="action-button text-[10px]">
+                        <Phone size={12} /> Call
                       </button>
-                      <button className="action-button">
-                        <Mail size={14} /> Email
+                      <button className="action-button text-[10px]">
+                        <Mail size={12} /> Email
                       </button>
                       <button
-                        className="action-button"
+                        className="action-button text-[10px]"
                         onClick={() => handleDeleteLead(lead.id)}
                       >
                         <Trash2 size={14} /> Delete
@@ -742,12 +926,12 @@ export default function AdminLeadsPage() {
                   onClick={() => {
                     const example = `Give me a list of 100 HVAC/plumbing companies in [YOUR AREA].
 
-Format each as: Business Name, Phone, Email
+Format each as: Business Name, Phone, Email, City, State
 One company per line. Example:
 
-ABC Plumbing, 614-555-1234, abc@email.com
-Johnson HVAC, 555-987-6543, johnson@email.com
-Elite Heating, 555-123-4567, elite@email.com`;
+ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH
+Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH
+Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH`;
                     navigator.clipboard.writeText(example);
                     showToast("Prompt copied — paste into your AI.");
                   }}
@@ -758,12 +942,12 @@ Elite Heating, 555-123-4567, elite@email.com`;
               <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-white/80 text-xs leading-relaxed">
 {`Give me a list of 100 HVAC/plumbing companies in [YOUR AREA].
 
-Format each as: Business Name, Phone, Email
+Format each as: Business Name, Phone, Email, City, State
 One company per line. Example:
 
-ABC Plumbing, 614-555-1234, abc@email.com
-Johnson HVAC, 555-987-6543, johnson@email.com
-Elite Heating, 555-123-4567, elite@email.com`}
+ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH
+Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH
+Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH`}
               </pre>
             </div>
             
@@ -772,11 +956,13 @@ Elite Heating, 555-123-4567, elite@email.com`}
               style={{ minHeight: "200px" }}
               placeholder={`Paste your full list here — one lead per line:
 
-ABC Plumbing, 614-555-1234, abc@email.com
-Johnson HVAC, 555-987-6543, johnson@email.com
-Elite Heating & Cooling, 555-123-4567, elite@email.com
-Quality Air Services, 555-222-3333, quality@email.com
-Pro Plumbers Inc, 555-444-5555, pro@email.com`}
+Format: Business Name, Phone, Email, City, State
+
+ABC Plumbing, 614-555-1234, abc@email.com, Columbus, OH
+Johnson HVAC, 555-987-6543, johnson@email.com, Cleveland, OH
+Elite Heating, 555-123-4567, elite@email.com, Cincinnati, OH
+Quality Air, 555-222-3333, quality@email.com, Dayton, OH
+Pro Plumbers, 555-444-5555, pro@email.com, Toledo, OH`}
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
             />

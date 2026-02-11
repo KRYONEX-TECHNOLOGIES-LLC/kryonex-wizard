@@ -13674,6 +13674,7 @@ app.post(
       };
 
       // Build rows for insert - use only columns that exist in leads table
+      // Store city, state, and call_outcome in metadata jsonb column
       const rows = leads.map((lead) => ({
         user_id: req.user.id, // Admin owns imported leads
         owner_id: req.user.id,
@@ -13681,6 +13682,13 @@ app.post(
         phone: normalizePhone(lead.phone || ""),
         status: "new",
         summary: lead.email ? `Imported lead. Email: ${lead.email}` : "Imported lead",
+        metadata: {
+          city: (lead.city || "").substring(0, 100),
+          state: (lead.state || "").substring(0, 50),
+          call_outcome: "not_called",
+          tags: [],
+          imported_at: new Date().toISOString(),
+        },
       }));
 
       const { data, error } = await supabaseAdmin
