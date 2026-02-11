@@ -32,6 +32,9 @@ export default function AdminLiveScriptsPage() {
     }
   }, [notes]);
 
+  // Refs for scrolling to sections
+  const sectionRefs = React.useRef({});
+
   const showToast = (message) => {
     setToast(message);
     setTimeout(() => setToast(""), 2000);
@@ -43,6 +46,14 @@ export default function AdminLiveScriptsPage() {
       setOpenScripts([...openScripts, categoryId]);
     }
     setExpandedSections((prev) => ({ ...prev, [categoryId]: true }));
+    
+    // Scroll to the section after a brief delay to allow expansion
+    setTimeout(() => {
+      sectionRefs.current[categoryId]?.scrollIntoView({ 
+        behavior: "smooth", 
+        block: "start" 
+      });
+    }, 100);
   };
 
   const handleCloseScript = (categoryId, e) => {
@@ -196,7 +207,16 @@ export default function AdminLiveScriptsPage() {
                   return (
                     <button
                       key={scriptId}
-                      onClick={() => setActiveScript(scriptId)}
+                      onClick={() => {
+                        setActiveScript(scriptId);
+                        setExpandedSections((prev) => ({ ...prev, [scriptId]: true }));
+                        setTimeout(() => {
+                          sectionRefs.current[scriptId]?.scrollIntoView({ 
+                            behavior: "smooth", 
+                            block: "start" 
+                          });
+                        }, 50);
+                      }}
                       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition ${
                         activeScript === scriptId
                           ? "bg-neon-cyan/20 text-neon-cyan"
@@ -226,6 +246,7 @@ export default function AdminLiveScriptsPage() {
                   return (
                     <div
                       key={scriptId}
+                      ref={(el) => (sectionRefs.current[scriptId] = el)}
                       className={`rounded-xl border transition-all ${
                         activeScript === scriptId
                           ? "border-neon-cyan/30 bg-black/40"
