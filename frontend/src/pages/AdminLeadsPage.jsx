@@ -795,21 +795,21 @@ export default function AdminLeadsPage() {
                       {/* Quick outcome buttons */}
                       <div className="flex gap-1 mt-2">
                         <button
-                          className={`text-[9px] px-1.5 py-0.5 rounded border transition ${lead.call_outcome === CALL_OUTCOMES.CALLED ? "bg-neon-green/30 border-neon-green/50 text-neon-green" : "border-white/20 text-white/40 hover:border-neon-green/50 hover:text-neon-green"}`}
+                          className={`text-[10px] px-2 py-1 rounded border-2 transition font-semibold ${lead.call_outcome === CALL_OUTCOMES.CALLED ? "bg-neon-green/50 border-neon-green text-white shadow-[0_0_8px_rgba(0,255,170,0.5)]" : "border-white/20 text-white/40 hover:border-neon-green hover:text-neon-green bg-transparent"}`}
                           onClick={() => updateCallOutcome(lead.id, CALL_OUTCOMES.CALLED)}
                           title="Mark as Called"
                         >
                           ✓
                         </button>
                         <button
-                          className={`text-[9px] px-1.5 py-0.5 rounded border transition ${lead.call_outcome === CALL_OUTCOMES.NO_ANSWER ? "bg-neon-gold/30 border-neon-gold/50 text-neon-gold" : "border-white/20 text-white/40 hover:border-neon-gold/50 hover:text-neon-gold"}`}
+                          className={`text-[10px] px-2 py-1 rounded border-2 transition font-semibold ${lead.call_outcome === CALL_OUTCOMES.NO_ANSWER ? "bg-neon-gold/50 border-neon-gold text-white shadow-[0_0_8px_rgba(255,200,0,0.5)]" : "border-white/20 text-white/40 hover:border-neon-gold hover:text-neon-gold bg-transparent"}`}
                           onClick={() => updateCallOutcome(lead.id, CALL_OUTCOMES.NO_ANSWER)}
                           title="No Answer"
                         >
                           NA
                         </button>
                         <button
-                          className={`text-[9px] px-1.5 py-0.5 rounded border transition ${lead.call_outcome === CALL_OUTCOMES.FOLLOW_UP ? "bg-neon-purple/30 border-neon-purple/50 text-neon-purple" : "border-white/20 text-white/40 hover:border-neon-purple/50 hover:text-neon-purple"}`}
+                          className={`text-[10px] px-2 py-1 rounded border-2 transition font-semibold ${lead.call_outcome === CALL_OUTCOMES.FOLLOW_UP ? "bg-neon-purple/50 border-neon-purple text-white shadow-[0_0_8px_rgba(180,100,255,0.5)]" : "border-white/20 text-white/40 hover:border-neon-purple hover:text-neon-purple bg-transparent"}`}
                           onClick={() => updateCallOutcome(lead.id, CALL_OUTCOMES.FOLLOW_UP)}
                           title="Follow Up"
                         >
