@@ -49,6 +49,10 @@ VITE_API_URL=http://localhost:3000             # Backend API URL
 # Optional: Admin access by email
 VITE_ADMIN_EMAIL=admin@domain.com
 VITE_ADMIN_EMAILS=admin1@domain.com,admin2@domain.com
+
+# Optional: AI Helper UI toggle
+# - default: enabled (unless explicitly set to false)
+VITE_ASSISTANT_ENABLED=true
 ```
 
 ---

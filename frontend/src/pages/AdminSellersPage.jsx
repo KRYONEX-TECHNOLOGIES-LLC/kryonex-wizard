@@ -150,7 +150,7 @@ export default function AdminSellersPage() {
             </div>
           </motion.div>
 
-          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr] admin-sellers-layout">
             <motion.div
               className="glass-panel rounded-3xl border border-white/10 p-6 space-y-4 shadow-glow"
               initial={{ opacity: 0, y: 12 }}
@@ -299,7 +299,7 @@ export default function AdminSellersPage() {
                       </p>
                     </div>
                   </div>
-                  <div className="grid grid-cols-[1.1fr_1fr_0.8fr_0.6fr] gap-3 text-[0.65rem] uppercase tracking-[0.4em] text-white/40">
+                  <div className="commission-ledger-grid grid grid-cols-[1.1fr_1fr_0.8fr_0.6fr] gap-3 text-[0.65rem] uppercase tracking-[0.4em] text-white/40">
                     <div>Deal Value</div>
                     <div>Payout</div>
                     <div>Status</div>
@@ -310,7 +310,7 @@ export default function AdminSellersPage() {
                       dossier.commissions.map((commission) => (
                         <div
                           key={commission.id}
-                          className="grid grid-cols-[1.1fr_1fr_0.8fr_0.6fr] gap-3 items-center rounded-2xl border border-white/5 bg-black/40 px-3 py-2"
+                          className="commission-ledger-grid grid grid-cols-[1.1fr_1fr_0.8fr_0.6fr] gap-3 items-center rounded-2xl border border-white/5 bg-black/40 px-3 py-2"
                         >
                           <div className="text-sm font-semibold">
                             {formatCurrency(commission.deal_amount)}

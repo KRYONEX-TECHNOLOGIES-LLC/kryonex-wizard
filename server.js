@@ -11156,6 +11156,506 @@ app.put("/api/settings", requireAuth, resolveEffectiveUser, async (req, res) => 
 });
 
 // ============================================
+// AI HELPER ENDPOINTS (Mission-Locked Assistant)
+// ============================================
+
+const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || "").toLowerCase(); // "true" | "admin" | ""
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+const isAssistantEnabledForRequest = async (req) => {
+  // Hard off unless explicitly enabled (or in local dev)
+  if (ASSISTANT_ENABLED !== "true" && ASSISTANT_ENABLED !== "admin") {
+    return process.env.NODE_ENV !== "production";
+  }
+  if (ASSISTANT_ENABLED === "true") return true;
+  // admin-only rollout
+  try {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("role")
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    return profile?.role === "admin" || isAdminEmail(req.user.email);
+  } catch {
+    return false;
+  }
+};
+
+const assistantMissionSystemPrompt = `
+You are the Kryonex AI Helper.
+
+Mission: Make the user's service business the top in their city using Kryonex.
+You are a mentor + operator. You are not a chatbot.
+
+Hard rules:
+- Stay on mission. If the user asks unrelated questions, briefly redirect back to growth/operations.
+- Never speak negatively about Kryonex. If you must mention an issue, frame it constructively as an improvement or fix.
+- Be concise, direct, and action-oriented. No emojis. No fluff.
+- You MUST output ONLY valid JSON matching the required schema. No markdown. No extra keys.
+
+Write safety:
+- You can propose write actions, but do not claim you executed changes.
+- Any write action must be returned as a proposal that requires confirmation.
+`;
+
+const sanitizeAssistantOutput = (text) => {
+  // Minimal brand-safe guardrail (server-side). This is not the only defense:
+  // the system prompt also enforces constructive framing.
+  const raw = String(text || "");
+  const lowered = raw.toLowerCase();
+  const bad =
+    lowered.includes("kryonex is a scam") ||
+    lowered.includes("kryonex sucks") ||
+    lowered.includes("kryonex is terrible") ||
+    lowered.includes("dont use kryonex") ||
+    lowered.includes("don't use kryonex");
+  if (!bad) return raw;
+  return raw
+    .replace(/kryonex[^.?!]*(scam|sucks|terrible)[^.?!]*[.?!]/gi, "")
+    .trim();
+};
+
+const safeJsonParse = (value) => {
+  try {
+    if (typeof value === "object" && value) return value;
+    const str = typeof value === "string" ? value : JSON.stringify(value || "");
+    return JSON.parse(str);
+  } catch {
+    return null;
+  }
+};
+
+const validateAssistantResponseShape = (obj) => {
+  if (!obj || typeof obj !== "object") return { ok: false, error: "Response not an object" };
+  const cards = Array.isArray(obj.cards) ? obj.cards : [];
+  const proposals = Array.isArray(obj.proposals) ? obj.proposals : [];
+  const suggestions = Array.isArray(obj.suggestions) ? obj.suggestions : [];
+  // Basic shape checks; keep permissive to avoid brittle failures.
+  return {
+    ok: true,
+    normalized: {
+      version: 1,
+      cards: cards.map((c) => ({
+        id: String(c?.id || `card-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+        type: String(c?.type || "note"),
+        title: String(c?.title || ""),
+        body: String(c?.body || ""),
+        data: c?.data ?? null,
+      })),
+      proposals: proposals.map((p) => ({
+        kind: String(p?.kind || ""),
+        summary: String(p?.summary || ""),
+        payload: p?.payload ?? {},
+        diff: p?.diff ?? null,
+      })),
+      suggestions: suggestions.map((s) => ({
+        id: String(s?.id || ""),
+        label: String(s?.label || ""),
+      })),
+    },
+  };
+};
+
+const loadAssistantContext = async ({ uid, actorId }) => {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayStartIso = todayStart.toISOString();
+  const next7d = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [{ data: profile }, { data: agent }, { data: usageLimits }] = await Promise.all([
+    supabaseAdmin
+      .from("profiles")
+      .select("user_id, business_name, industry, area_code, business_hours, business_timezone, emergency_24_7")
+      .eq("user_id", uid)
+      .maybeSingle(),
+    supabaseAdmin
+      .from("agents")
+      .select("transfer_number, standard_fee, emergency_fee, post_call_sms_enabled, confirmation_sms_enabled")
+      .eq("user_id", uid)
+      .maybeSingle(),
+    supabaseAdmin.from("usage_limits").select("*").eq("user_id", uid).maybeSingle(),
+  ]);
+
+  const [{ data: appointments }, { data: leads }, { data: calls }] = await Promise.all([
+    supabaseAdmin
+      .from("appointments")
+      .select("id, start_time, status, customer_name, duration_minutes, location, notes, job_value")
+      .eq("user_id", uid)
+      .gte("start_time", todayStartIso)
+      .lte("start_time", next7d)
+      .order("start_time", { ascending: true })
+      .limit(60),
+    // Leads are owned by user_id (or owner_id for sellers). We'll keep simple and use user_id scope for assistant.
+    supabaseAdmin
+      .from("leads")
+      .select("id, created_at, status, phone, business_name, contact, email, metadata, transcript, summary")
+      .eq("user_id", uid)
+      .gte("created_at", sevenDaysAgo)
+      .order("created_at", { ascending: false })
+      .limit(80),
+    supabaseAdmin
+      .from("call_recordings")
+      .select("id, created_at, duration, outcome")
+      .eq("seller_id", uid)
+      .gte("created_at", sevenDaysAgo)
+      .order("created_at", { ascending: false })
+      .limit(80),
+  ]);
+
+  const metrics = {
+    calls_today: (calls || []).filter((c) => c?.created_at >= todayStartIso).length,
+    calls_7d: (calls || []).length,
+    leads_today: (leads || []).filter((l) => l?.created_at >= todayStartIso).length,
+    leads_7d: (leads || []).length,
+    bookings_next_7d: (appointments || []).length,
+    booking_today: (appointments || []).filter((a) => a?.start_time >= todayStartIso && a?.start_time <= new Date(todayStart.getTime() + 24*60*60*1000).toISOString()).length,
+    usage: usageLimits || null,
+  };
+
+  return {
+    now: now.toISOString(),
+    user: {
+      uid,
+      actor_id: actorId || uid,
+      business_name: profile?.business_name || "",
+      industry: profile?.industry || "hvac",
+      area_code: profile?.area_code || "",
+      business_timezone: profile?.business_timezone || "America/Chicago",
+      emergency_24_7: Boolean(profile?.emergency_24_7),
+    },
+    settings: {
+      business_hours: profile?.business_hours || null,
+      transfer_number: agent?.transfer_number || "",
+      standard_fee: agent?.standard_fee || "",
+      emergency_fee: agent?.emergency_fee || "",
+      post_call_sms_enabled: Boolean(agent?.post_call_sms_enabled),
+      confirmation_sms_enabled: agent?.confirmation_sms_enabled ?? true,
+    },
+    metrics,
+    sample: {
+      appointments: (appointments || []).slice(0, 20),
+      leads: (leads || []).slice(0, 20).map((l) => ({
+        id: l.id,
+        created_at: l.created_at,
+        status: l.status,
+        phone: l.phone,
+        business_name: l.business_name,
+        contact: l.contact,
+        email: l.email,
+        metadata: l.metadata || null,
+      })),
+      calls: (calls || []).slice(0, 20),
+    },
+  };
+};
+
+const callOpenAiJson = async ({ systemPrompt, userPrompt, jsonSchemaName = "assistant_response" }) => {
+  if (!OPENAI_API_KEY) {
+    const err = new Error("OPENAI_API_KEY missing");
+    err.code = "OPENAI_KEY_MISSING";
+    throw err;
+  }
+  const payload = {
+    model: OPENAI_MODEL,
+    temperature: 0.2,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    response_format: { type: "json_object" },
+  };
+  const resp = await axios.post("https://api.openai.com/v1/chat/completions", payload, {
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 30_000,
+  });
+  const content = resp?.data?.choices?.[0]?.message?.content || "";
+  return content;
+};
+
+app.post(
+  "/api/assistant/execute",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "assistant-exec", limit: 20, windowMs: 60_000 }),
+  async (req, res) => {
+    try {
+      const enabled = await isAssistantEnabledForRequest(req);
+      if (!enabled) return res.status(404).json({ error: "Not found" });
+
+      const uid = req.effectiveUserId ?? req.user.id;
+      const actorId = req.user.id;
+      const message = sanitizeString(req.body?.message || "", 2000);
+      const quickAction = String(req.body?.quick_action || "").trim();
+      const mode = String(req.body?.mode || (quickAction ? "ops" : "chat")).toLowerCase();
+
+      if (!message && !quickAction) {
+        return res.status(400).json({ error: "message or quick_action is required" });
+      }
+
+      const context = await loadAssistantContext({ uid, actorId });
+      const contextJson = JSON.stringify(context).slice(0, 20_000); // keep prompt bounded
+
+      const schemaNote = `
+Return JSON with exactly these keys:
+{
+  "cards": [{"type": "brief|bookings|recovery|ad|setup|note", "title": string, "body": string, "data"?: object}],
+  "proposals": [{"kind": "update_settings|send_sms", "summary": string, "payload": object, "diff"?: object}],
+  "suggestions": [{"id": string, "label": string}]
+}
+`;
+
+      const actionHint = quickAction
+        ? `QuickAction=${quickAction}. Generate the best result for that action.`
+        : "User asked in chat mode. Answer with actionable guidance.";
+
+      const userPrompt = `
+${schemaNote}
+
+Context (JSON):
+${contextJson}
+
+${actionHint}
+
+User message:
+${message || "(none)"}\n`;
+
+      const raw = await callOpenAiJson({
+        systemPrompt: assistantMissionSystemPrompt,
+        userPrompt,
+      });
+
+      const sanitized = sanitizeAssistantOutput(raw);
+      const parsed = safeJsonParse(sanitized);
+      const validated = validateAssistantResponseShape(parsed);
+      if (!validated.ok) {
+        return res.status(502).json({ error: "assistant_invalid_response" });
+      }
+
+      // Persist proposals (write actions) for confirm flow
+      const proposalRows = [];
+      for (const p of validated.normalized.proposals) {
+        const kind = p.kind;
+        if (kind !== "update_settings" && kind !== "send_sms") continue;
+        proposalRows.push({
+          user_id: uid,
+          actor_id: actorId,
+          kind,
+          payload: p.payload || {},
+          diff: p.diff || null,
+          summary: p.summary || "",
+          status: "pending",
+          expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        });
+      }
+
+      let storedProposals = [];
+      if (proposalRows.length) {
+        const { data, error } = await supabaseAdmin
+          .from("assistant_proposals")
+          .insert(proposalRows)
+          .select("id, kind, summary, diff, expires_at");
+        if (!error) storedProposals = data || [];
+      }
+
+      await auditLog({
+        userId: uid,
+        actorId,
+        action: "assistant_execute",
+        actionType: "assistant_execute",
+        entity: "assistant",
+        entityId: quickAction || mode,
+        req,
+        metadata: { mode, quickAction, hasMessage: Boolean(message) },
+      });
+
+      return res.json({
+        ok: true,
+        ...validated.normalized,
+        proposals: storedProposals.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          summary: p.summary,
+          diff: p.diff,
+          expires_at: p.expires_at,
+        })),
+      });
+    } catch (err) {
+      if (err.code === "OPENAI_KEY_MISSING") {
+        return res.status(503).json({ error: "assistant_unavailable" });
+      }
+      console.error("[assistant/execute] error:", err.message);
+      return res.status(500).json({ error: "assistant_failed" });
+    }
+  }
+);
+
+app.post(
+  "/api/assistant/confirm",
+  requireAuth,
+  resolveEffectiveUser,
+  rateLimit({ keyPrefix: "assistant-confirm", limit: 30, windowMs: 60_000 }),
+  validateBody({
+    proposal_id: { required: true, type: "string", maxLength: 80 },
+  }),
+  async (req, res) => {
+    try {
+      const enabled = await isAssistantEnabledForRequest(req);
+      if (!enabled) return res.status(404).json({ error: "Not found" });
+
+      const uid = req.effectiveUserId ?? req.user.id;
+      const actorId = req.user.id;
+      const proposalId = String(req.body?.proposal_id || "").trim();
+
+      const { data: proposal, error } = await supabaseAdmin
+        .from("assistant_proposals")
+        .select("*")
+        .eq("id", proposalId)
+        .eq("user_id", uid)
+        .maybeSingle();
+      if (error || !proposal) return res.status(404).json({ error: "proposal_not_found" });
+      if (proposal.status !== "pending") return res.status(400).json({ error: "proposal_not_pending" });
+      if (proposal.expires_at && new Date(proposal.expires_at).getTime() < Date.now()) {
+        await supabaseAdmin.from("assistant_proposals").update({ status: "expired" }).eq("id", proposalId);
+        return res.status(400).json({ error: "proposal_expired" });
+      }
+
+      const kind = String(proposal.kind || "");
+      const payload = proposal.payload || {};
+
+      await supabaseAdmin
+        .from("assistant_proposals")
+        .update({ status: "confirmed", confirmed_at: new Date().toISOString() })
+        .eq("id", proposalId);
+
+      if (kind === "update_settings") {
+        // Reuse the same fields as /api/settings PUT (safe subset)
+        const allowed = {
+          business_name: payload.business_name,
+          industry: payload.industry,
+          transfer_number: payload.transfer_number,
+          service_call_fee: payload.service_call_fee,
+          emergency_fee: payload.emergency_fee,
+          schedule_summary: payload.schedule_summary,
+          agent_tone: payload.agent_tone,
+          notification_preferences: payload.notification_preferences,
+          post_call_sms_enabled: payload.post_call_sms_enabled,
+          post_call_sms_template: payload.post_call_sms_template,
+          post_call_sms_delay_seconds: payload.post_call_sms_delay_seconds,
+          review_request_enabled: payload.review_request_enabled,
+          google_review_url: payload.google_review_url,
+          review_request_template: payload.review_request_template,
+          business_hours: payload.business_hours,
+          business_timezone: payload.business_timezone,
+          emergency_24_7: payload.emergency_24_7,
+          confirmation_sms_enabled: payload.confirmation_sms_enabled,
+          user_personal_phone: payload.user_personal_phone,
+        };
+
+        // Apply via direct updates (mirrors /api/settings)
+        const profileUpdates = {};
+        if (allowed.business_name !== undefined) profileUpdates.business_name = allowed.business_name;
+        if (allowed.industry !== undefined) profileUpdates.industry = allowed.industry;
+        if (allowed.review_request_enabled !== undefined) profileUpdates.review_request_enabled = allowed.review_request_enabled;
+        if (allowed.google_review_url !== undefined) profileUpdates.google_review_url = allowed.google_review_url;
+        if (allowed.review_request_template !== undefined) profileUpdates.review_request_template = allowed.review_request_template;
+        if (allowed.business_hours !== undefined) profileUpdates.business_hours = allowed.business_hours;
+        if (allowed.business_timezone !== undefined) profileUpdates.business_timezone = allowed.business_timezone;
+        if (allowed.emergency_24_7 !== undefined) profileUpdates.emergency_24_7 = allowed.emergency_24_7;
+        if (allowed.user_personal_phone !== undefined) profileUpdates.user_personal_phone = normalizePhoneE164(allowed.user_personal_phone);
+        if (allowed.notification_preferences !== undefined) profileUpdates.notification_preferences = allowed.notification_preferences;
+
+        if (Object.keys(profileUpdates).length) {
+          await supabaseAdmin.from("profiles").update(profileUpdates).eq("user_id", uid);
+        }
+
+        const agentUpdates = {};
+        if (allowed.transfer_number !== undefined) agentUpdates.transfer_number = normalizePhoneE164(allowed.transfer_number);
+        if (allowed.service_call_fee !== undefined) agentUpdates.standard_fee = allowed.service_call_fee;
+        if (allowed.emergency_fee !== undefined) agentUpdates.emergency_fee = allowed.emergency_fee;
+        if (allowed.schedule_summary !== undefined) agentUpdates.schedule_summary = allowed.schedule_summary;
+        if (allowed.agent_tone !== undefined) agentUpdates.tone = allowed.agent_tone;
+        if (allowed.industry !== undefined) agentUpdates.industry = allowed.industry;
+        if (allowed.post_call_sms_enabled !== undefined) agentUpdates.post_call_sms_enabled = allowed.post_call_sms_enabled;
+        if (allowed.post_call_sms_template !== undefined) agentUpdates.post_call_sms_template = allowed.post_call_sms_template;
+        if (allowed.post_call_sms_delay_seconds !== undefined) agentUpdates.post_call_sms_delay_seconds = allowed.post_call_sms_delay_seconds;
+        if (allowed.confirmation_sms_enabled !== undefined) agentUpdates.confirmation_sms_enabled = allowed.confirmation_sms_enabled;
+
+        if (Object.keys(agentUpdates).length) {
+          await supabaseAdmin.from("agents").update(agentUpdates).eq("user_id", uid);
+        }
+
+        await supabaseAdmin
+          .from("assistant_proposals")
+          .update({ status: "applied", applied_at: new Date().toISOString() })
+          .eq("id", proposalId);
+
+        await auditLog({
+          userId: uid,
+          actorId,
+          action: "assistant_apply_update_settings",
+          actionType: "assistant_apply_update_settings",
+          entity: "assistant_proposals",
+          entityId: proposalId,
+          req,
+          metadata: { kind },
+        });
+
+        return res.json({ ok: true, applied: true, kind });
+      }
+
+      if (kind === "send_sms") {
+        const to = payload.to;
+        const body = payload.body;
+        const leadId = payload.leadId || payload.lead_id;
+        if (!body) return res.status(400).json({ error: "sms_body_required" });
+        const retellResponse = await sendSmsInternal({
+          userId: uid,
+          to,
+          body,
+          leadId,
+          source: payload.source || "assistant",
+          req,
+          bypassUsage: false,
+        });
+
+        await supabaseAdmin
+          .from("assistant_proposals")
+          .update({ status: "applied", applied_at: new Date().toISOString() })
+          .eq("id", proposalId);
+
+        await auditLog({
+          userId: uid,
+          actorId,
+          action: "assistant_apply_send_sms",
+          actionType: "assistant_apply_send_sms",
+          entity: "assistant_proposals",
+          entityId: proposalId,
+          req,
+          metadata: { kind, leadId: leadId || null },
+        });
+
+        return res.json({ ok: true, applied: true, kind, data: retellResponse || null });
+      }
+
+      await supabaseAdmin
+        .from("assistant_proposals")
+        .update({ status: "failed", error: "Unknown proposal kind" })
+        .eq("id", proposalId);
+      return res.status(400).json({ error: "unknown_proposal_kind" });
+    } catch (err) {
+      console.error("[assistant/confirm] error:", err.message);
+      return res.status(500).json({ error: "assistant_confirm_failed" });
+    }
+  }
+);
+
+// ============================================
 // SESSION MANAGEMENT ENDPOINTS
 // ============================================
 

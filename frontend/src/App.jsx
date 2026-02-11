@@ -45,6 +45,7 @@ import { supabaseReady } from "./lib/supabase";
 import RequireAdmin from "./components/RequireAdmin.jsx";
 import RequireRole from "./components/RequireRole.jsx";
 import RequireAccountType from "./components/RequireAccountType.jsx";
+import AssistantProvider from "./components/Assistant/AssistantProvider.jsx";
 
 export default function App() {
   if (!supabaseReady) {
@@ -75,51 +76,52 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/" element={<LandingGate />} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/thank-you" element={<ThankYouPage />} />
-      <Route path="/affiliate" element={<AffiliatePage />} />
-      <Route path="/affiliate/signup" element={<AffiliateSignupPage />} />
-      <Route
-        path="/affiliate/dashboard"
-        element={
-          <ProtectedRoute>
-            <RequireAccountType types={["affiliate", "both"]}>
-              <AffiliateDashboardPage />
-            </RequireAccountType>
-          </ProtectedRoute>
-        }
-      />
-      <Route path="/admin/stripe-success" element={<AdminStripeSuccessPage />} />
-      <Route
-        path="/wizard"
-        element={
-          <ProtectedRoute>
-            <WizardPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard"
-        element={
-          <ProtectedRoute>
-            <RequireOnboarding>
-              <DashboardPage />
-            </RequireOnboarding>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/billing"
-        element={
-          <ProtectedRoute>
-            <RequireOnboarding>
-              <BillingPage />
-            </RequireOnboarding>
-          </ProtectedRoute>
-        }
-      />
+    <AssistantProvider>
+      <Routes>
+        <Route path="/" element={<LandingGate />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/thank-you" element={<ThankYouPage />} />
+        <Route path="/affiliate" element={<AffiliatePage />} />
+        <Route path="/affiliate/signup" element={<AffiliateSignupPage />} />
+        <Route
+          path="/affiliate/dashboard"
+          element={
+            <ProtectedRoute>
+              <RequireAccountType types={["affiliate", "both"]}>
+                <AffiliateDashboardPage />
+              </RequireAccountType>
+            </ProtectedRoute>
+          }
+        />
+        <Route path="/admin/stripe-success" element={<AdminStripeSuccessPage />} />
+        <Route
+          path="/wizard"
+          element={
+            <ProtectedRoute>
+              <WizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <RequireOnboarding>
+                <DashboardPage />
+              </RequireOnboarding>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/billing"
+          element={
+            <ProtectedRoute>
+              <RequireOnboarding>
+                <BillingPage />
+              </RequireOnboarding>
+            </ProtectedRoute>
+          }
+        />
       <Route
         path="/billing/tiers"
         element={
@@ -400,6 +402,7 @@ export default function App() {
       <Route path="/track/:token" element={<TrackingSharePage />} />
       <Route path="/tech/track/:token" element={<TechTrackingPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </AssistantProvider>
   );
 }

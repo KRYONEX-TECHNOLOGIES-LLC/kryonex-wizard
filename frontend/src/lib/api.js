@@ -140,6 +140,12 @@ export const getSettings = () => api.get("/api/settings");
 export const updateSettings = (data) => api.put("/api/settings", data);
 export const getLeads = (filters = {}) => api.get("/leads", { params: filters });
 export const getFilteredLeads = (filters) => api.get("/leads", { params: filters });
+
+// AI Helper
+export const assistantExecute = (payload) =>
+  api.post("/api/assistant/execute", payload || {});
+export const assistantConfirm = (proposal_id) =>
+  api.post("/api/assistant/confirm", { proposal_id });
 export const getAdminLeads = () => api.get("/admin/leads");
 export const getAdminAppointments = () => api.get("/admin/appointments");
 export const getAdminUsageStats = () => api.get("/admin/usage-stats");
