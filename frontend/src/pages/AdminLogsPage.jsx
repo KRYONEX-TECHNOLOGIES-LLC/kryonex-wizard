@@ -43,7 +43,7 @@ export default function AdminLogsPage() {
           lastUpdated={new Date()}
           isAdmin
         />
-        <div className="flex-1 px-6 py-8 space-y-6">
+        <div className="flex-1 min-h-0 px-6 py-8 space-y-6 overflow-y-auto">
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}

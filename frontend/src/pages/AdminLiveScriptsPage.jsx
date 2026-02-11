@@ -34,6 +34,20 @@ export default function AdminLiveScriptsPage() {
 
   // Refs for scrolling to sections
   const sectionRefs = React.useRef({});
+  const scriptScrollRef = React.useRef(null);
+
+  const scrollPanelToScript = React.useCallback((scriptId) => {
+    const container = scriptScrollRef.current;
+    const el = sectionRefs.current?.[scriptId];
+    if (!container || !el) return;
+
+    // Scroll only the script panel (prevents whole-page jump)
+    const containerTop = container.getBoundingClientRect().top;
+    const elTop = el.getBoundingClientRect().top;
+    const delta = elTop - containerTop;
+    const targetTop = Math.max(0, container.scrollTop + delta - 12);
+    container.scrollTo({ top: targetTop, behavior: "smooth" });
+  }, []);
 
   const showToast = (message) => {
     setToast(message);
@@ -46,14 +60,13 @@ export default function AdminLiveScriptsPage() {
       setOpenScripts([...openScripts, categoryId]);
     }
     setExpandedSections((prev) => ({ ...prev, [categoryId]: true }));
-    
-    // Scroll to the section after a brief delay to allow expansion
-    setTimeout(() => {
-      sectionRefs.current[categoryId]?.scrollIntoView({ 
-        behavior: "smooth", 
-        block: "start" 
+
+    // Scroll after layout settles (avoid jitter)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollPanelToScript(categoryId);
       });
-    }, 100);
+    });
   };
 
   const handleCloseScript = (categoryId, e) => {
@@ -220,17 +233,30 @@ export default function AdminLiveScriptsPage() {
                 {openScripts.map((scriptId) => {
                   const cat = SCRIPT_CATEGORIES.find((c) => c.id === scriptId);
                   return (
-                    <button
+                    <div
                       key={scriptId}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => {
                         setActiveScript(scriptId);
                         setExpandedSections((prev) => ({ ...prev, [scriptId]: true }));
-                        setTimeout(() => {
-                          sectionRefs.current[scriptId]?.scrollIntoView({ 
-                            behavior: "smooth", 
-                            block: "start" 
+                        requestAnimationFrame(() => {
+                          requestAnimationFrame(() => {
+                            scrollPanelToScript(scriptId);
                           });
-                        }, 50);
+                        });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setActiveScript(scriptId);
+                          setExpandedSections((prev) => ({ ...prev, [scriptId]: true }));
+                          requestAnimationFrame(() => {
+                            requestAnimationFrame(() => {
+                              scrollPanelToScript(scriptId);
+                            });
+                          });
+                        }
                       }}
                       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition ${
                         activeScript === scriptId
@@ -246,13 +272,13 @@ export default function AdminLiveScriptsPage() {
                       >
                         ×
                       </button>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
 
               {/* Script Content - Accordion Style */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div ref={scriptScrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
                 {openScripts.map((scriptId) => {
                   const script = SCRIPTS[scriptId];
                   const cat = SCRIPT_CATEGORIES.find((c) => c.id === scriptId);
