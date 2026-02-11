@@ -125,8 +125,9 @@ export default function SideNav({
     window.addEventListener(IMPERSONATION_EVENT, update);
     return () => window.removeEventListener(IMPERSONATION_EVENT, update);
   }, []);
-  // When impersonating, treat as User View: no admin links, no admin bypass
-  const adminEnabled = isAdmin && viewMode === "admin" && !impersonation.active;
+  // Show admin links whenever user is an admin (unless impersonating)
+  // Admin links should always be visible for admin users to quickly access tools
+  const adminEnabled = isAdmin && !impersonation.active;
   const statusLabel = String(billingStatus || "none").toUpperCase();
   const tierLabel = tier ? tier.toUpperCase() : "NONE";
   const timeLabel = lastUpdated ? lastUpdated.toLocaleTimeString() : "--";
