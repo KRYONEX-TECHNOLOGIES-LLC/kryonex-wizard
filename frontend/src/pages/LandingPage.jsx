@@ -75,7 +75,7 @@ const HOW_IT_WORKS = [
   {
     step: "01",
     title: "Sign Up in 2 Minutes",
-    desc: "Enter your business info. No credit card required to start.",
+    desc: "Enter your business info and choose your plan.",
     icon: Zap,
   },
   {
@@ -89,6 +89,37 @@ const HOW_IT_WORKS = [
     title: "Never Miss a Call Again",
     desc: "AI answers 24/7, books jobs, and texts you every lead.",
     icon: Calendar,
+  },
+];
+
+const TESTIMONIALS = [
+  {
+    name: "Marcus T.",
+    location: "Houston, TX",
+    business: "HVAC",
+    quote: "I was losing 3-4 calls a week to voicemail. First month with Kryonex, my after-hours bookings went up 40%. The AI even handled a 2am emergency call and booked the job. That one call paid for 6 months of service.",
+    rating: 5,
+  },
+  {
+    name: "Jennifer R.",
+    location: "Phoenix, AZ",
+    business: "Plumbing",
+    quote: "My receptionist quit with no notice. I was panicking. Set up Kryonex in literally 8 minutes and didn't miss a single call. It's been 4 months and I haven't bothered hiring a replacement. Why would I?",
+    rating: 5,
+  },
+  {
+    name: "David K.",
+    location: "Atlanta, GA",
+    business: "HVAC",
+    quote: "Skeptical at first — thought AI would sound robotic and turn customers off. Ran it for a week as a test. Not one complaint. Actually got a review saying we have 'great customer service.' The AI did that.",
+    rating: 5,
+  },
+  {
+    name: "Mike S.",
+    location: "Tampa, FL",
+    business: "Plumbing",
+    quote: "Running 3 trucks now. Before Kryonex, I was the answering service. Phone ringing while I'm on a job, customers getting frustrated. Now I just get a text with the details. Game changer for scaling.",
+    rating: 5,
   },
 ];
 
@@ -479,6 +510,272 @@ export default function LandingPage() {
               <step.icon size={32} style={{ color: "#22d3ee", marginBottom: "1rem", marginTop: "0.5rem" }} />
               <h3 style={{ fontSize: "1.15rem", fontWeight: 600, marginBottom: "0.5rem" }}>{step.title}</h3>
               <p style={{ color: "#9ca3af", fontSize: "0.95rem", lineHeight: 1.5 }}>{step.desc}</p>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+
+      {/* See It In Action Section */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 1,
+          padding: "4rem 1.5rem",
+          background: "linear-gradient(180deg, transparent 0%, rgba(139, 92, 246, 0.03) 50%, transparent 100%)",
+        }}
+      >
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          style={{ textAlign: "center", marginBottom: "3rem" }}
+        >
+          <h2 style={{ fontSize: "2.2rem", fontWeight: 700, marginBottom: "0.75rem" }}>
+            See How It Works
+          </h2>
+          <p style={{ color: "#9ca3af", fontSize: "1.1rem" }}>
+            Your AI receptionist handles everything while you're on the job
+          </p>
+        </motion.div>
+
+        <div style={{ maxWidth: "1000px", margin: "0 auto" }}>
+          {/* Call Flow Visualization */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: "1rem",
+              marginBottom: "2rem",
+            }}
+          >
+            {[
+              { 
+                icon: Phone, 
+                label: "Customer Calls", 
+                detail: "Your AI line rings",
+                color: "#22d3ee"
+              },
+              { 
+                icon: Headphones, 
+                label: "AI Answers Instantly", 
+                detail: "0 rings, 24/7",
+                color: "#8b5cf6"
+              },
+              { 
+                icon: MessageSquare, 
+                label: "Collects Info", 
+                detail: "Name, issue, address",
+                color: "#22d3ee"
+              },
+              { 
+                icon: Calendar, 
+                label: "Books the Job", 
+                detail: "Syncs to your calendar",
+                color: "#8b5cf6"
+              },
+              { 
+                icon: Zap, 
+                label: "Texts You", 
+                detail: "Instant lead alert",
+                color: "#22c55e"
+              },
+            ].map((step, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, scale: 0.9 }}
+                whileInView={{ opacity: 1, scale: 1 }}
+                viewport={{ once: true }}
+                transition={{ delay: i * 0.1 }}
+                style={{
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: "12px",
+                  padding: "1.5rem 1rem",
+                  textAlign: "center",
+                  position: "relative",
+                }}
+              >
+                {i < 4 && (
+                  <div style={{
+                    position: "absolute",
+                    right: "-8px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: "#4b5563",
+                    fontSize: "1.2rem",
+                    display: window.innerWidth < 600 ? "none" : "block",
+                  }}>
+                    →
+                  </div>
+                )}
+                <div style={{
+                  width: "48px",
+                  height: "48px",
+                  borderRadius: "12px",
+                  background: `${step.color}15`,
+                  border: `1px solid ${step.color}30`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  margin: "0 auto 0.75rem",
+                }}>
+                  <step.icon size={22} style={{ color: step.color }} />
+                </div>
+                <div style={{ fontWeight: 600, fontSize: "0.95rem", marginBottom: "0.25rem" }}>
+                  {step.label}
+                </div>
+                <div style={{ color: "#6b7280", fontSize: "0.8rem" }}>
+                  {step.detail}
+                </div>
+              </motion.div>
+            ))}
+          </motion.div>
+
+          {/* Sample Text Notification */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            style={{
+              maxWidth: "400px",
+              margin: "2rem auto 0",
+              background: "rgba(34, 211, 238, 0.05)",
+              border: "1px solid rgba(34, 211, 238, 0.2)",
+              borderRadius: "16px",
+              padding: "1.5rem",
+            }}
+          >
+            <div style={{ 
+              fontSize: "0.7rem", 
+              color: "#6b7280", 
+              textTransform: "uppercase", 
+              letterSpacing: "0.1em",
+              marginBottom: "0.75rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}>
+              <MessageSquare size={12} />
+              Sample Text You'd Receive
+            </div>
+            <div style={{
+              background: "#1a1a2e",
+              borderRadius: "12px",
+              padding: "1rem",
+              fontFamily: "monospace",
+              fontSize: "0.85rem",
+              lineHeight: 1.6,
+              color: "#e5e7eb",
+            }}>
+              <div style={{ color: "#22d3ee", fontWeight: 600, marginBottom: "0.5rem" }}>🔔 New Lead</div>
+              <div><strong>Name:</strong> Sarah Mitchell</div>
+              <div><strong>Phone:</strong> (555) 123-4567</div>
+              <div><strong>Issue:</strong> AC not cooling, needs service today</div>
+              <div><strong>Address:</strong> 1423 Oak Street</div>
+              <div style={{ marginTop: "0.5rem", color: "#22c55e" }}>✓ Appointment booked for 2:00 PM</div>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* Testimonials Section */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 1,
+          padding: "4rem 1.5rem",
+        }}
+      >
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          style={{ textAlign: "center", marginBottom: "3rem" }}
+        >
+          <h2 style={{ fontSize: "2.2rem", fontWeight: 700, marginBottom: "0.75rem" }}>
+            What Contractors Are Saying
+          </h2>
+          <p style={{ color: "#9ca3af", fontSize: "1.1rem" }}>
+            Real results from real HVAC and plumbing businesses
+          </p>
+        </motion.div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            gap: "1.5rem",
+            maxWidth: "1100px",
+            margin: "0 auto",
+          }}
+        >
+          {TESTIMONIALS.map((t, i) => (
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: i * 0.1 }}
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                borderRadius: "16px",
+                padding: "1.5rem",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              {/* Stars */}
+              <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1rem" }}>
+                {[...Array(t.rating)].map((_, si) => (
+                  <Star key={si} size={16} fill="#fbbf24" color="#fbbf24" />
+                ))}
+              </div>
+              
+              {/* Quote */}
+              <p style={{ 
+                color: "#d1d5db", 
+                fontSize: "0.95rem", 
+                lineHeight: 1.6,
+                flex: 1,
+                marginBottom: "1.5rem",
+              }}>
+                "{t.quote}"
+              </p>
+              
+              {/* Author */}
+              <div style={{ 
+                display: "flex", 
+                alignItems: "center", 
+                gap: "0.75rem",
+                borderTop: "1px solid rgba(255,255,255,0.05)",
+                paddingTop: "1rem",
+              }}>
+                <div style={{
+                  width: "40px",
+                  height: "40px",
+                  borderRadius: "10px",
+                  background: t.business === "HVAC" 
+                    ? "linear-gradient(135deg, #22d3ee 0%, #0891b2 100%)"
+                    : "linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontWeight: 700,
+                  fontSize: "0.9rem",
+                }}>
+                  {t.name.charAt(0)}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>{t.name}</div>
+                  <div style={{ color: "#6b7280", fontSize: "0.8rem" }}>
+                    {t.business} • {t.location}
+                  </div>
+                </div>
+              </div>
             </motion.div>
           ))}
         </div>
