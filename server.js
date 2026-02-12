@@ -4471,7 +4471,7 @@ const isValidEmailFormat = (value) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 256;
 };
 
-const DEFAULT_COMMISSION_RATE = 0.2;
+const DEFAULT_COMMISSION_RATE = 0.1;
 
 const getStartOfDayIso = () => {
   const now = new Date();
