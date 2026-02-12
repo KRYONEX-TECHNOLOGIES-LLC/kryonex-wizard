@@ -159,18 +159,25 @@ export default function LandingPage() {
   const [demoMessage, setDemoMessage] = React.useState("");
 
   const formatPhoneInput = (value) => {
-    const digits = value.replace(/\D/g, "");
-    if (digits.length === 0) return "";
-    if (digits.length <= 3) return `(${digits}`;
-    if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`;
+    // Strip everything except digits
+    let digits = value.replace(/\D/g, "");
+    // If they typed +1 or 1 at the start, remove it (we'll add it back)
+    if (digits.startsWith("1") && digits.length > 10) {
+      digits = digits.slice(1);
+    }
+    if (digits.length === 0) return "+1 ";
+    if (digits.length <= 3) return `+1 (${digits}`;
+    if (digits.length <= 6) return `+1 (${digits.slice(0, 3)}) ${digits.slice(3)}`;
+    return `+1 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`;
   };
 
   const handleDemoCall = async () => {
     if (demoLoading) return;
     
     const digits = demoPhone.replace(/\D/g, "");
-    if (digits.length < 10) {
+    // Account for the "1" country code if present
+    const cleanDigits = digits.startsWith("1") && digits.length === 11 ? digits.slice(1) : digits;
+    if (cleanDigits.length < 10) {
       setDemoStatus("error");
       setDemoMessage("Please enter a valid 10-digit phone number");
       return;
@@ -181,7 +188,8 @@ export default function LandingPage() {
     setDemoMessage("");
     
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE || ""}/public/demo-call`, {
+      const apiBase = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const response = await fetch(`${apiBase}/public/demo-call`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -815,9 +823,10 @@ export default function LandingPage() {
                 {/* Phone field (required) */}
                 <input
                   type="tel"
-                  placeholder="(555) 123-4567"
-                  value={demoPhone}
+                  placeholder="+1 (555) 123-4567"
+                  value={demoPhone || "+1 "}
                   onChange={(e) => setDemoPhone(formatPhoneInput(e.target.value))}
+                  onFocus={(e) => { if (!demoPhone) setDemoPhone("+1 "); }}
                   style={{
                     width: "100%",
                     padding: "0.9rem 1rem",
