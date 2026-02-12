@@ -766,33 +766,30 @@ export default function LandingPage() {
             }} />
             
             <div style={{ position: "relative", zIndex: 1 }}>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "0.75rem",
-                marginBottom: "1rem",
-              }}>
+              <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
                 <div style={{
-                  width: "48px",
-                  height: "48px",
+                  width: "56px",
+                  height: "56px",
                   borderRadius: "50%",
                   background: "linear-gradient(135deg, #22d3ee 0%, #8b5cf6 100%)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   animation: "pulse 2s infinite",
+                  margin: "0 auto 1rem",
                 }}>
-                  <Phone size={24} color="#fff" />
+                  <Phone size={26} color="#fff" />
                 </div>
-                <div>
-                  <h3 style={{ fontSize: "1.4rem", fontWeight: 700, margin: 0 }}>
-                    Try It Now — Free
-                  </h3>
-                  <p style={{ color: "#9ca3af", fontSize: "0.9rem", margin: 0 }}>
-                    Get a live demo call in 30 seconds
-                  </p>
-                </div>
+                <h3 style={{ fontSize: "1.5rem", fontWeight: 700, margin: "0 0 0.5rem 0" }}>
+                  🎧 Hear Your AI Receptionist Live
+                </h3>
+                <p style={{ color: "#22d3ee", fontSize: "1rem", margin: "0 0 0.5rem 0", fontWeight: 500 }}>
+                  Experience exactly what your customers will hear
+                </p>
+                <p style={{ color: "#9ca3af", fontSize: "0.9rem", margin: 0, lineHeight: 1.5 }}>
+                  Enter your number and our AI will call you in 30 seconds. 
+                  <br />Try booking a fake appointment — see how smooth it handles everything.
+                </p>
               </div>
               
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
@@ -896,7 +893,7 @@ export default function LandingPage() {
                   ) : (
                     <>
                       <Phone size={20} />
-                      Call Me Now
+                      Ring My Phone 📞
                     </>
                   )}
                 </button>
@@ -925,13 +922,13 @@ export default function LandingPage() {
               
               <p style={{ 
                 color: "#6b7280", 
-                fontSize: "0.75rem", 
+                fontSize: "0.8rem", 
                 textAlign: "center", 
                 marginTop: "1rem",
-                lineHeight: 1.4,
+                lineHeight: 1.5,
               }}>
-                Standard rates apply. We'll call you once to demonstrate our AI. 
-                <br />Limited to 3 demo calls per hour.
+                💡 <span style={{ color: "#9ca3af" }}>Pro tip:</span> Pretend you're a customer with an emergency. 
+                <br />Ask about pricing, availability, or try to book a service call.
               </p>
             </div>
           </motion.div>
