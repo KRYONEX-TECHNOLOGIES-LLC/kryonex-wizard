@@ -14800,6 +14800,89 @@ app.post(
   }
 );
 
+// PUBLIC demo call endpoint for landing page - no auth required
+// Strict rate limiting: 3 calls per IP per hour to prevent abuse
+app.post(
+  "/public/demo-call",
+  rateLimit({ keyPrefix: "public-demo-call", limit: 3, windowMs: 60 * 60 * 1000 }), // 3 per hour per IP
+  async (req, res) => {
+    try {
+      const { phone, name, website } = req.body || {};
+      
+      // Honeypot field - if "website" is filled, it's a bot
+      if (website) {
+        console.warn("[public-demo] Bot detected via honeypot");
+        // Pretend success to confuse bots
+        return res.json({ success: true, message: "Call initiated" });
+      }
+      
+      if (!phone) {
+        return res.status(400).json({ error: "Phone number is required" });
+      }
+      
+      const normalizedPhone = normalizePhoneE164(phone);
+      if (!normalizedPhone) {
+        return res.status(400).json({ error: "Invalid phone number format. Use format: (555) 123-4567" });
+      }
+      
+      if (!RETELL_DEMO_AGENT_ID || !RETELL_DEMO_FROM_NUMBER) {
+        return res.status(500).json({ error: "Demo calls are temporarily unavailable" });
+      }
+      
+      // Log the demo request
+      console.info("[public-demo] Demo call requested", { 
+        to: normalizedPhone.slice(0, 6) + "****", 
+        name: name || "Visitor",
+        ip: req.ip,
+      });
+      
+      const dateTimeVars = getCurrentDateTimeVars("America/New_York");
+      
+      const payload = {
+        from_number: RETELL_DEMO_FROM_NUMBER,
+        to_number: normalizedPhone,
+        override_agent_id: RETELL_DEMO_AGENT_ID,
+        retell_llm_dynamic_variables: {
+          customer_name: name || "there",
+          ...dateTimeVars,
+        },
+        metadata: {
+          source: "landing_page_demo",
+          visitor_name: name || null,
+          ip: req.ip,
+        },
+      };
+
+      const retellResponse = await retellClient.post("/v2/create-phone-call", payload);
+      
+      // Log for analytics
+      await logEvent({
+        userId: null,
+        actionType: "PUBLIC_DEMO_CALL",
+        req,
+        metaData: {
+          call_id: retellResponse.data?.call_id || retellResponse.data?.id || null,
+          to_number_masked: normalizedPhone.slice(0, 6) + "****",
+          source: "landing_page",
+        },
+      });
+
+      return res.json({ 
+        success: true, 
+        message: "Call initiated! You should receive a call within 30 seconds.",
+        callId: retellResponse.data?.call_id || retellResponse.data?.id,
+      });
+    } catch (err) {
+      console.error("[public-demo] Error:", err.response?.data || err.message);
+      let message = err.response?.data?.error || err.response?.data || err.message;
+      if (typeof message === "object" && message !== null) {
+        message = message.message || "Failed to initiate demo call";
+      }
+      return res.status(500).json({ error: message });
+    }
+  }
+);
+
 app.post(
   "/tracking/create",
   requireAuth,

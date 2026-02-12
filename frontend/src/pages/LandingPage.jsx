@@ -149,6 +149,65 @@ const FAQS = [
 export default function LandingPage() {
   const navigate = useNavigate();
   const [openFaq, setOpenFaq] = React.useState(null);
+  
+  // Demo call state
+  const [demoPhone, setDemoPhone] = React.useState("");
+  const [demoName, setDemoName] = React.useState("");
+  const [demoHoneypot, setDemoHoneypot] = React.useState(""); // Bot trap
+  const [demoLoading, setDemoLoading] = React.useState(false);
+  const [demoStatus, setDemoStatus] = React.useState(null); // 'success' | 'error' | null
+  const [demoMessage, setDemoMessage] = React.useState("");
+
+  const formatPhoneInput = (value) => {
+    const digits = value.replace(/\D/g, "");
+    if (digits.length === 0) return "";
+    if (digits.length <= 3) return `(${digits}`;
+    if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`;
+  };
+
+  const handleDemoCall = async () => {
+    if (demoLoading) return;
+    
+    const digits = demoPhone.replace(/\D/g, "");
+    if (digits.length < 10) {
+      setDemoStatus("error");
+      setDemoMessage("Please enter a valid 10-digit phone number");
+      return;
+    }
+    
+    setDemoLoading(true);
+    setDemoStatus(null);
+    setDemoMessage("");
+    
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE || ""}/public/demo-call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: demoPhone,
+          name: demoName || undefined,
+          website: demoHoneypot, // Honeypot - should be empty
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to initiate call");
+      }
+      
+      setDemoStatus("success");
+      setDemoMessage("Call incoming! Answer your phone in the next 30 seconds.");
+      setDemoPhone("");
+      setDemoName("");
+    } catch (err) {
+      setDemoStatus("error");
+      setDemoMessage(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setDemoLoading(false);
+    }
+  };
 
   const scrollToPricing = () => {
     document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
@@ -678,6 +737,216 @@ export default function LandingPage() {
               <div style={{ marginTop: "0.5rem", color: "#22c55e" }}>✓ Appointment booked for 2:00 PM</div>
             </div>
           </motion.div>
+
+          {/* TRY IT NOW - Demo Call Section */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            style={{
+              maxWidth: "500px",
+              margin: "3rem auto 0",
+              background: "linear-gradient(135deg, rgba(34, 211, 238, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%)",
+              border: "1px solid rgba(34, 211, 238, 0.25)",
+              borderRadius: "20px",
+              padding: "2rem",
+              position: "relative",
+              overflow: "hidden",
+            }}
+          >
+            {/* Glow effect */}
+            <div style={{
+              position: "absolute",
+              top: "-50%",
+              left: "-50%",
+              width: "200%",
+              height: "200%",
+              background: "radial-gradient(circle, rgba(34, 211, 238, 0.1) 0%, transparent 70%)",
+              pointerEvents: "none",
+            }} />
+            
+            <div style={{ position: "relative", zIndex: 1 }}>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "0.75rem",
+                marginBottom: "1rem",
+              }}>
+                <div style={{
+                  width: "48px",
+                  height: "48px",
+                  borderRadius: "50%",
+                  background: "linear-gradient(135deg, #22d3ee 0%, #8b5cf6 100%)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  animation: "pulse 2s infinite",
+                }}>
+                  <Phone size={24} color="#fff" />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: "1.4rem", fontWeight: 700, margin: 0 }}>
+                    Try It Now — Free
+                  </h3>
+                  <p style={{ color: "#9ca3af", fontSize: "0.9rem", margin: 0 }}>
+                    Get a live demo call in 30 seconds
+                  </p>
+                </div>
+              </div>
+              
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                {/* Name field (optional) */}
+                <input
+                  type="text"
+                  placeholder="Your name (optional)"
+                  value={demoName}
+                  onChange={(e) => setDemoName(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "0.9rem 1rem",
+                    borderRadius: "12px",
+                    border: "1px solid rgba(255,255,255,0.15)",
+                    background: "rgba(0,0,0,0.4)",
+                    color: "#fff",
+                    fontSize: "1rem",
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
+                
+                {/* Phone field (required) */}
+                <input
+                  type="tel"
+                  placeholder="(555) 123-4567"
+                  value={demoPhone}
+                  onChange={(e) => setDemoPhone(formatPhoneInput(e.target.value))}
+                  style={{
+                    width: "100%",
+                    padding: "0.9rem 1rem",
+                    borderRadius: "12px",
+                    border: "1px solid rgba(34, 211, 238, 0.4)",
+                    background: "rgba(0,0,0,0.4)",
+                    color: "#fff",
+                    fontSize: "1.1rem",
+                    fontWeight: 500,
+                    outline: "none",
+                    boxSizing: "border-box",
+                    letterSpacing: "0.02em",
+                  }}
+                />
+                
+                {/* Honeypot field - hidden from users, catches bots */}
+                <input
+                  type="text"
+                  name="website"
+                  value={demoHoneypot}
+                  onChange={(e) => setDemoHoneypot(e.target.value)}
+                  style={{ 
+                    position: "absolute", 
+                    left: "-9999px", 
+                    opacity: 0, 
+                    pointerEvents: "none" 
+                  }}
+                  tabIndex={-1}
+                  autoComplete="off"
+                />
+                
+                {/* Submit button */}
+                <button
+                  onClick={handleDemoCall}
+                  disabled={demoLoading || demoStatus === "success"}
+                  style={{
+                    width: "100%",
+                    padding: "1rem",
+                    borderRadius: "12px",
+                    border: "none",
+                    background: demoStatus === "success" 
+                      ? "linear-gradient(135deg, #10b981 0%, #059669 100%)"
+                      : "linear-gradient(135deg, #22d3ee 0%, #8b5cf6 100%)",
+                    color: "#fff",
+                    fontSize: "1.1rem",
+                    fontWeight: 600,
+                    cursor: demoLoading || demoStatus === "success" ? "default" : "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "0.5rem",
+                    opacity: demoLoading ? 0.7 : 1,
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  {demoLoading ? (
+                    <>
+                      <div style={{
+                        width: "20px",
+                        height: "20px",
+                        border: "2px solid rgba(255,255,255,0.3)",
+                        borderTopColor: "#fff",
+                        borderRadius: "50%",
+                        animation: "spin 1s linear infinite",
+                      }} />
+                      Calling...
+                    </>
+                  ) : demoStatus === "success" ? (
+                    <>
+                      <Check size={20} />
+                      Check Your Phone!
+                    </>
+                  ) : (
+                    <>
+                      <Phone size={20} />
+                      Call Me Now
+                    </>
+                  )}
+                </button>
+                
+                {/* Status message */}
+                {demoMessage && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    style={{
+                      padding: "0.75rem 1rem",
+                      borderRadius: "10px",
+                      background: demoStatus === "success" 
+                        ? "rgba(16, 185, 129, 0.15)"
+                        : "rgba(239, 68, 68, 0.15)",
+                      border: `1px solid ${demoStatus === "success" ? "rgba(16, 185, 129, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
+                      color: demoStatus === "success" ? "#10b981" : "#ef4444",
+                      fontSize: "0.9rem",
+                      textAlign: "center",
+                    }}
+                  >
+                    {demoMessage}
+                  </motion.div>
+                )}
+              </div>
+              
+              <p style={{ 
+                color: "#6b7280", 
+                fontSize: "0.75rem", 
+                textAlign: "center", 
+                marginTop: "1rem",
+                lineHeight: 1.4,
+              }}>
+                Standard rates apply. We'll call you once to demonstrate our AI. 
+                <br />Limited to 3 demo calls per hour.
+              </p>
+            </div>
+          </motion.div>
+
+          {/* Keyframe animations */}
+          <style>{`
+            @keyframes pulse {
+              0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.4); }
+              50% { box-shadow: 0 0 0 12px rgba(34, 211, 238, 0); }
+            }
+            @keyframes spin {
+              from { transform: rotate(0deg); }
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
         </div>
       </div>
 
