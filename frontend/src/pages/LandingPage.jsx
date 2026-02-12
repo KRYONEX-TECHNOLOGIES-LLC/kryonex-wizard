@@ -215,6 +215,10 @@ export default function LandingPage() {
     document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
   };
 
+  const scrollToDemo = () => {
+    document.getElementById("demo-call")?.scrollIntoView({ behavior: "smooth" });
+  };
+
   return (
     <div style={{ minHeight: "100vh", position: "relative", overflow: "hidden", background: "#030712" }}>
       <BackgroundGrid />
@@ -457,6 +461,29 @@ export default function LandingPage() {
         >
           Setup takes under 10 minutes • Cancel anytime
         </motion.p>
+
+        <motion.button
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.85, duration: 0.7 }}
+          onClick={scrollToDemo}
+          style={{ 
+            background: "transparent", 
+            border: "none", 
+            cursor: "pointer",
+            marginTop: "1.25rem",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            color: "#22d3ee",
+            fontSize: "0.95rem",
+            fontWeight: 500,
+          }}
+        >
+          <Phone size={16} />
+          Or try a free demo — hear the AI call you live
+          <ArrowRight size={14} style={{ opacity: 0.7 }} />
+        </motion.button>
       </div>
 
       {/* Benefits Strip */}
@@ -742,6 +769,7 @@ export default function LandingPage() {
 
           {/* TRY IT NOW - Demo Call Section */}
           <motion.div
+            id="demo-call"
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
