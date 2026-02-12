@@ -1242,7 +1242,7 @@ export default function LandingPage() {
             Want to Earn Even More?
           </h3>
           <p style={{ color: "#9ca3af", fontSize: "1rem", marginBottom: "1.25rem", maxWidth: "500px", margin: "0 auto 1.25rem" }}>
-            Become a Partner and earn <span style={{ color: "#8b5cf6", fontWeight: 600 }}>20% recurring commission</span> every month — not just once.
+            Become a Partner and earn <span style={{ color: "#8b5cf6", fontWeight: 600 }}>$25 bonus + 10% monthly</span> from every referral's subscription — forever.
           </p>
           <button
             onClick={() => navigate("/affiliate/signup")}
