@@ -333,7 +333,7 @@ export default function LandingPage() {
               gap: "0.5rem",
             }}
           >
-            Get Started Free
+            Get Started — Live in Under 10 Minutes
             <ArrowRight size={18} />
           </button>
           <button
@@ -363,7 +363,7 @@ export default function LandingPage() {
           transition={{ delay: 0.7, duration: 0.7 }}
           style={{ color: "#6b7280", fontSize: "0.9rem", marginTop: "0.5rem" }}
         >
-          No credit card required • Live in under 10 minutes
+          Setup takes under 10 minutes • Cancel anytime
         </motion.p>
       </div>
 
@@ -829,7 +829,7 @@ export default function LandingPage() {
               fontWeight: 600,
             }}
           >
-            Get Started — It's Free
+            Get Started Now
           </button>
         </motion.div>
       </div>
