@@ -927,8 +927,8 @@ export default function LandingPage() {
                 marginTop: "1rem",
                 lineHeight: 1.5,
               }}>
-                💡 <span style={{ color: "#9ca3af" }}>Pro tip:</span> Pretend you're a customer with an emergency. 
-                <br />Ask about pricing, availability, or try to book a service call.
+                💡 <span style={{ color: "#9ca3af" }}>Pro tip:</span> Pretend you're a customer with an emergency 
+                <br />or try to book a service call.
               </p>
             </div>
           </motion.div>
