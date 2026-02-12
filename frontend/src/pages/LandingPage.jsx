@@ -158,32 +158,24 @@ export default function LandingPage() {
   const [demoStatus, setDemoStatus] = React.useState(null); // 'success' | 'error' | null
   const [demoMessage, setDemoMessage] = React.useState("");
 
+  // Simple - just digits, add +1 at the end when complete
   const formatPhoneInput = (value) => {
-    // Get only digits
-    const digits = value.replace(/\D/g, "");
-    // Remove leading 1 if present (country code)
-    const local = digits.startsWith("1") && digits.length > 10 ? digits.slice(1) : 
-                  digits.startsWith("1") && digits.length === 11 ? digits.slice(1) : digits;
-    // Cap at 10 digits
-    const capped = local.slice(0, 10);
-    
-    if (capped.length === 0) return "";
-    if (capped.length <= 3) return `+1 (${capped}`;
-    if (capped.length <= 6) return `+1 (${capped.slice(0, 3)}) ${capped.slice(3)}`;
-    return `+1 (${capped.slice(0, 3)}) ${capped.slice(3, 6)}-${capped.slice(6, 10)}`;
+    const digits = value.replace(/\D/g, "").slice(0, 10);
+    return digits;
   };
 
   const handleDemoCall = async () => {
     if (demoLoading) return;
     
     const digits = demoPhone.replace(/\D/g, "");
-    // Remove leading 1 country code if present
-    const cleanDigits = digits.startsWith("1") && digits.length >= 11 ? digits.slice(1) : digits;
-    if (cleanDigits.length !== 10) {
+    if (digits.length !== 10) {
       setDemoStatus("error");
       setDemoMessage("Please enter a valid 10-digit phone number");
       return;
     }
+    
+    // Format for API: +1XXXXXXXXXX
+    const formattedPhone = `+1${digits}`;
     
     setDemoLoading(true);
     setDemoStatus(null);
@@ -195,7 +187,7 @@ export default function LandingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          phone: demoPhone,
+          phone: formattedPhone,
           name: demoName || undefined,
           website: demoHoneypot, // Honeypot - should be empty
         }),
@@ -823,25 +815,37 @@ export default function LandingPage() {
                 />
                 
                 {/* Phone field (required) */}
-                <input
-                  type="tel"
-                  placeholder="+1 (555) 123-4567"
-                  value={demoPhone}
-                  onChange={(e) => setDemoPhone(formatPhoneInput(e.target.value))}
-                  style={{
-                    width: "100%",
-                    padding: "0.9rem 1rem",
-                    borderRadius: "12px",
-                    border: "1px solid rgba(34, 211, 238, 0.4)",
-                    background: "rgba(0,0,0,0.4)",
-                    color: "#fff",
+                <div style={{ position: "relative" }}>
+                  <span style={{
+                    position: "absolute",
+                    left: "1rem",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    color: "#22d3ee",
                     fontSize: "1.1rem",
-                    fontWeight: 500,
-                    outline: "none",
-                    boxSizing: "border-box",
-                    letterSpacing: "0.02em",
-                  }}
-                />
+                    fontWeight: 600,
+                    pointerEvents: "none",
+                  }}>+1</span>
+                  <input
+                    type="tel"
+                    placeholder="4195551234"
+                    value={demoPhone}
+                    onChange={(e) => setDemoPhone(formatPhoneInput(e.target.value))}
+                    style={{
+                      width: "100%",
+                      padding: "0.9rem 1rem 0.9rem 3rem",
+                      borderRadius: "12px",
+                      border: "1px solid rgba(34, 211, 238, 0.4)",
+                      background: "rgba(0,0,0,0.4)",
+                      color: "#fff",
+                      fontSize: "1.1rem",
+                      fontWeight: 500,
+                      outline: "none",
+                      boxSizing: "border-box",
+                      letterSpacing: "0.1em",
+                    }}
+                  />
+                </div>
                 
                 {/* Honeypot field - hidden from users, catches bots */}
                 <input
