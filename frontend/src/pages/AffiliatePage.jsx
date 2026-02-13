@@ -143,7 +143,7 @@ export default function AffiliatePage() {
           >
             <div className="step-number">03</div>
             <h3>They Subscribe</h3>
-            <p>When they sign up and pay, you earn $25 + 10% monthly (after 30-day hold).</p>
+            <p>When they sign up and pay, you earn $25 + 10% monthly for 12 months (after 30-day hold).</p>
           </motion.div>
           <motion.div 
             className="step-card"

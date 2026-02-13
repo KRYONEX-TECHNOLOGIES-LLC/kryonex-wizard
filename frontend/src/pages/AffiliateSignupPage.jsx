@@ -266,7 +266,7 @@ export default function AffiliateSignupPage() {
             }}
           >
             Earn <span style={{ color: "#10b981", fontWeight: 600 }}>$25</span> + 
-            <span style={{ color: "#22d3ee", fontWeight: 600 }}> 10% monthly</span> for 
+            <span style={{ color: "#22d3ee", fontWeight: 600 }}> 10% monthly for 12 months</span> for 
             every business you refer
           </p>
         </motion.div>
